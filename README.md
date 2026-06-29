@@ -374,9 +374,34 @@ OpenRouter `usage.cost`.
   **12× schneller** als das lokale `qwen3-coder:30b` (≈10 Min), das dafür
   kostenlos und offline ist.
 - **Gleiches Modell, lokal vs. Cloud:** `gemma4:26b` liefert beidseitig die volle
-  App — lokal in **261 s ($0)**, via OpenRouter (`google/gemma-4-26b-a4b-it`) in
-  **48 s für $0.0014**. Der Cloud-Aufpreis ist minimal, der Tempogewinn ~5×; lokal
-  punktet dafür mit Offline-Betrieb und Datenschutz.
+  App — lokal in **261 s**, via OpenRouter (`google/gemma-4-26b-a4b-it`) in
+  **48 s für $0.0014**. Der Tempogewinn ist ~5×; lokal punktet mit Offline-Betrieb
+  und Datenschutz.
+
+#### Was kostet „lokal" wirklich? (Strom)
+
+„Lokal = kostenlos" gilt nur, wenn der Rechner ohnehin läuft. Rechnet man den
+**Strom** mit, ergibt sich (Mac mini M4 Pro, **0,33 €/kWh**):
+
+Apple nennt **155 W** max. Dauerleistung; real messen Tester unter Last aber nur
+**~65–95 W**. Für LLM-Inferenz (GPU-lastig) ist **~90 W** eine vernünftige Annahme
+→ rund **0,00082 ct/s**.
+
+Formel: `Kosten = Leistung(kW) × Dauer(h) × Strompreis(€/kWh)`
+
+| Modell (lokal) | Dauer | Strom @ ~90 W |
+|---|---:|---:|
+| qwen3-coder:30b | 593 s | ~0,49 ct |
+| gemma4:26b-mlx | 261 s | ~0,22 ct |
+
+**Pointe:** Beim selben Modell `gemma4:26b` kostet der lokale Lauf **~0,22 ct
+Strom**, der Cloud-Lauf über OpenRouter nur **~0,13 ct** ($0.0014) — und ist dabei
+5× schneller. Ein günstiges Cloud-Modell kann das lokale Setup also auch beim
+*Preis* schlagen, sobald man Strom einrechnet. Bei teureren Cloud-Modellen
+(z. B. `glm-5.2` mit ~1,7 ct) kehrt sich das wieder um — da ist lokal billiger.
+
+> Stromverbrauchs-Quellen siehe unten. Rechnerkauf, Abschreibung und Leerlauf
+> sind hier bewusst ausgeklammert — es geht nur um die reine Energie pro Lauf.
 - **Coding-Spezialist gewinnt lokal — aber nicht allein:** `qwen3-coder:30b` und
   `gemma4:26b-mlx` ziehen die Multi-File-Aufgabe sauber durch; gemma4 ist dabei
   mit 261 s sogar gut 2× schneller. Die kleineren Gemmas (4b/12b) scheitern.
