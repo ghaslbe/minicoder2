@@ -3,3 +3,8 @@
 # Python-Standardbibliothek (argparse, json, os, re, subprocess, sys, urllib).
 #
 # Voraussetzung: Python 3.7 oder neuer.
+#
+# Optional: PySocks – nur nötig, wenn ein SOCKS-Proxy verwendet wird
+# (--proxy socks5h://…), z. B. hinter lokalen Zscaler-/SASE-Agents:
+#   python -m pip install PySocks
+# PySocks

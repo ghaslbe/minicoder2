@@ -153,11 +153,22 @@ oft fehl:
   python3 mc.py --insecure "..."        # nur als Notnagel
   ```
 
-- **`timed out`** (besonders bei einem geratenen Proxy wie `127.0.0.1:9001`) →
-  dort lauscht kein brauchbarer Proxy. Den **echten** Proxy ermitteln:
+- **`timed out` bei einem lokalen Proxy** (z. B. `127.0.0.1:9001`) → der Port
+  lauscht zwar, spricht aber ein anderes Protokoll. Lokale Firmen-Agents (Zscaler
+  u. a.) sind oft **SOCKS**-Proxies, kein reines HTTP. Erst Typ bestimmen:
 
   ```bash
-  python3 mc.py --debug-net          # zeigt System-Proxy / PAC-URL / Registry
+  curl.exe -v -k --proxy http://127.0.0.1:9001    https://chat.hcim.de/v1/models
+  curl.exe -v -k --proxy socks5h://127.0.0.1:9001 https://chat.hcim.de/v1/models
+  ```
+
+  Die Variante, die JSON liefert, ist die richtige. Für SOCKS dann `mc` mit
+  `socks5h://` aufrufen (siehe „SOCKS-Proxy" unten).
+
+- **Proxy ermitteln, falls unbekannt:**
+
+  ```bash
+  python3 mc.py --debug-net          # DNS-Test + System-Proxy / PAC-URL / Registry
   ```
 
   Unter Windows steckt der Proxy hinter Zscaler meist in einer **PAC-Datei**
@@ -168,6 +179,20 @@ oft fehl:
 Entsprechende Env-Variablen: `MC_PROXY`, `MC_CA_BUNDLE` (sowie die Standard-Vars
 `HTTP_PROXY` / `HTTPS_PROXY`, die `mc` automatisch beachtet). `mc` gibt bei
 solchen Fehlern direkt einen passenden Hinweis aus.
+
+#### SOCKS-Proxy
+
+Für SOCKS-Proxies (häufig bei lokalen Zscaler-/SASE-Agents) wird das Paket
+**PySocks** benötigt:
+
+```bash
+python -m pip install PySocks
+python3 mc.py --proxy socks5h://127.0.0.1:9001 --base-url https://server/v1 -v --list-models
+```
+
+`socks5h://` löst DNS **am Proxy** auf — wichtig, wenn der lokale Rechner externe
+Namen nicht selbst auflösen kann (das war die Ursache von `getaddrinfo failed`).
+Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 
 ### Umgebungsvariablen
 

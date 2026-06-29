@@ -36,9 +36,11 @@ import re
 import subprocess
 import sys
 import http.client
+import socket
 import ssl
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 
 BASE_URL = os.environ.get("MC_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 DEFAULT_MODEL = os.environ.get("MC_MODEL", "qwen3-coder:30b")
@@ -94,6 +96,25 @@ def log(msg):
 
 # --------------------------- HTTP / API-Aufruf -----------------------------
 
+def _socks_handler(proxy_url):
+    """SOCKS-Proxy-Handler (benoetigt das Paket PySocks: pip install PySocks).
+    socks5h://… loest DNS am Proxy auf (wichtig hinter Zscaler, wenn der lokale
+    Rechner externe Namen nicht aufloesen kann)."""
+    try:
+        import socks  # PySocks
+        from sockshandler import SocksiPyHandler
+    except ImportError:
+        raise SystemExit(
+            f"{C.RED}SOCKS-Proxy angegeben, aber PySocks fehlt.{C.RESET}\n"
+            f"  Installieren:  python -m pip install PySocks\n"
+            f"  Danach erneut:  ... --proxy {re.sub(r'//[^@/]*@', '//***@', proxy_url)} ...")
+    s = urlsplit(proxy_url)
+    rdns = s.scheme.lower() in ("socks5h", "socks4a")
+    ptype = socks.SOCKS4 if s.scheme.lower().startswith("socks4") else socks.SOCKS5
+    return SocksiPyHandler(ptype, s.hostname, s.port or 1080, rdns=rdns,
+                           username=s.username, password=s.password)
+
+
 def build_opener():
     """Baut einen urllib-Opener mit Proxy- und TLS-Einstellungen.
 
@@ -107,7 +128,10 @@ def build_opener():
         # Passwort im Log maskieren.
         shown = re.sub(r"//[^@/]*@", "//***@", PROXY)
         log(f"nutze Proxy {shown}")
-        handlers.append(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+        if PROXY.lower().startswith(("socks5", "socks4")):
+            handlers.append(_socks_handler(PROXY))
+        else:
+            handlers.append(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
     # ohne explizite Angabe nutzt urllib automatisch HTTP_PROXY/HTTPS_PROXY aus env.
 
     if INSECURE:
@@ -231,6 +255,33 @@ def debug_net():
     print(f"  Plattform        : {sys.platform}")
     print(f"  Ziel (BASE_URL)  : {BASE_URL}")
 
+    # DNS-Test des Zielhosts — das ist die Ursache von 'getaddrinfo failed'.
+    split = urlsplit(BASE_URL)
+    host = split.hostname or "?"
+    port = split.port or (443 if split.scheme == "https" else 80)
+    print(f"\n{C.BOLD}DNS-Aufloesung von '{host}'{C.RESET}:")
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        ips = sorted({i[4][0] for i in infos})
+        print(f"  {C.GREEN}OK{C.RESET} -> {', '.join(ips)}")
+        dns_ok = True
+    except OSError as e:
+        print(f"  {C.RED}FEHLGESCHLAGEN{C.RESET}: {e}")
+        print(f"  {C.YELLOW}=> Dein Rechner kann den Host nicht aufloesen. Typisch, wenn der "
+              f"Zugang nur ueber einen Proxy geht, der die DNS-Aufloesung uebernimmt.{C.RESET}")
+        dns_ok = False
+
+    # Direkter TCP-Connect-Test (nur wenn DNS klappt).
+    if dns_ok:
+        print(f"\n{C.BOLD}TCP-Verbindung zu {host}:{port}{C.RESET}:")
+        try:
+            with socket.create_connection((host, port), timeout=8):
+                print(f"  {C.GREEN}OK{C.RESET} — Port erreichbar (direkter Zugang moeglich)")
+        except OSError as e:
+            print(f"  {C.RED}FEHLGESCHLAGEN{C.RESET}: {e}")
+            print(f"  {C.YELLOW}=> DNS klappt, aber kein direkter Zugang — Traffic muss durch "
+                  f"einen Proxy/Tunnel (Zscaler).{C.RESET}")
+
     print(f"\n{C.BOLD}Vom System gemeldete Proxies{C.RESET} (urllib.getproxies):")
     sysproxies = urllib.request.getproxies()
     if sysproxies:
@@ -251,21 +302,31 @@ def debug_net():
         print("  (keine gesetzt)")
 
     # Windows: PAC-Datei (AutoConfigURL) auslesen — die haeufigste Zscaler-Variante.
+    # Sowohl benutzer- (HKCU) als auch maschinenweit (HKLM) pruefen.
     if sys.platform == "win32":
         print(f"\n{C.BOLD}Windows Internet-Settings{C.RESET}:")
         try:
             import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-            for name in ("ProxyEnable", "ProxyServer", "AutoConfigURL"):
+            roots = [("HKCU", winreg.HKEY_CURRENT_USER),
+                     ("HKLM", winreg.HKEY_LOCAL_MACHINE)]
+            any_val = False
+            for label, root in roots:
                 try:
-                    val, _ = winreg.QueryValueEx(key, name)
-                    print(f"  {name} = {val}")
-                except FileNotFoundError:
-                    pass
-            print(f"  {C.YELLOW}Falls AutoConfigURL gesetzt ist: PAC-Datei oeffnen und nach "
-                  f"PROXY-Eintraegen fuer den Zielhost suchen.{C.RESET}")
+                    key = winreg.OpenKey(
+                        root, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+                except OSError:
+                    continue
+                for name in ("ProxyEnable", "ProxyServer", "AutoConfigURL"):
+                    try:
+                        val, _ = winreg.QueryValueEx(key, name)
+                        print(f"  {label}\\{name} = {val}")
+                        any_val = True
+                    except FileNotFoundError:
+                        pass
+            if not any_val:
+                print("  (kein ProxyServer / keine AutoConfigURL gesetzt)")
+            print(f"  {C.YELLOW}Tipp: 'netsh winhttp show proxy' zeigt zusaetzlich den "
+                  f"System-(WinHTTP-)Proxy.{C.RESET}")
         except Exception as e:
             print(f"  (Registry nicht lesbar: {e})")
 
