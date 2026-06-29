@@ -351,6 +351,7 @@ OpenRouter.
 |---|---|---:|:---:|---:|---|
 | **z-ai/glm-5.2** | ☁️ Cloud (OpenRouter) | **48 s** | 6/6 | $0.0174 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
 | **deepseek/deepseek-v4-pro** | ☁️ Cloud (OpenRouter) | 55 s | 6/6 | $0.0101 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
+| **google/gemma-4-26b-a4b-it** | ☁️ Cloud (OpenRouter) | 48 s | 6/6 | $0.0014 | ✅ vollständig — dasselbe Modell wie lokal `gemma4:26b-mlx`, nur ~5× schneller |
 | **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig (Sieger der lokalen) |
 | **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 261 s | 6/6 | – | ✅ vollständig, alle 4 Endpunkte, Frontend mit Edit/Delete |
 | gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
@@ -372,6 +373,10 @@ OpenRouter `usage.cost`.
   `deepseek-v4-pro` liefern die komplette App in **~50 s für 1–2 Cent** — rund
   **12× schneller** als das lokale `qwen3-coder:30b` (≈10 Min), das dafür
   kostenlos und offline ist.
+- **Gleiches Modell, lokal vs. Cloud:** `gemma4:26b` liefert beidseitig die volle
+  App — lokal in **261 s ($0)**, via OpenRouter (`google/gemma-4-26b-a4b-it`) in
+  **48 s für $0.0014**. Der Cloud-Aufpreis ist minimal, der Tempogewinn ~5×; lokal
+  punktet dafür mit Offline-Betrieb und Datenschutz.
 - **Coding-Spezialist gewinnt lokal — aber nicht allein:** `qwen3-coder:30b` und
   `gemma4:26b-mlx` ziehen die Multi-File-Aufgabe sauber durch; gemma4 ist dabei
   mit 261 s sogar gut 2× schneller. Die kleineren Gemmas (4b/12b) scheitern.
