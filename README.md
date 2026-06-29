@@ -310,6 +310,33 @@ Weiterarbeiten, nicht als fertiges Produkt.
 > 24 GB aber noch. Die Antwortzeit pro Schritt liegt dadurch bei einigen
 > Sekunden bis ~1–2 Minuten je nach Dateimenge.
 
+### Modell-Challenge: dieselbe CRUD-App von 4 Modellen
+
+Gleiche Aufgabe an mehrere Modelle (sequenziell, je `--yes --max-steps 30`,
+10-Min-Timeout): eine **Personenverwaltung** mit Flask + SQLite Backend
+(CRUD-API für name/adresse/telefon) und React-Frontend (Tabelle + Anlegen/
+Bearbeiten/Löschen). Server wie oben (Mac mini M4 Pro, 24 GB, `num_ctx` 128k).
+
+| Platz | Modell | Zeit | Dateien | Ergebnis |
+|:---:|---|---:|:---:|---|
+| 🥇 | **qwen3-coder:30b** | **593 s** | 6/6 | **Vollständige, lauffähige App** — alle 4 Endpunkte, SQLite-Autocreate, Frontend mit Anlegen/Bearbeiten/Löschen |
+| 🥈 | gemma3:4b | 189 s | 2 | Nur DB-Stub (kein `@app.route`), kein Frontend; „testet" dann ein nicht existierendes Backend |
+| 🥉 | gemma3:12b | 186 s | 0 | Code inhaltlich ok, aber `write_files`-JSON zweimal ungültig (doppelter `files`-Key, kaputte Escapes) → nichts geschrieben |
+| 4 | gpt-oss:20b | 1 s | 0 | Leere Antwort — Reasoning-Modell, über die `/v1`-Schicht hier nicht nutzbar |
+
+**Erkenntnisse:**
+
+- **Der Coding-Spezialist gewinnt klar** — `qwen3-coder:30b` ist das einzige
+  Modell, das die Multi-File-Aufgabe sauber durchzieht (FE↔BE konsistent,
+  Syntax-/JSON-Checks bestanden).
+- **Protokoll-Disziplin ≈ Code-Qualität.** `gemma3:12b` *könnte* es, scheitert
+  aber am validen JSON für `write_files`. Das ist ein Tool-Schwachpunkt: ein
+  toleranterer Parser oder kleinere Action-Blöcke würden solche Modelle retten.
+- **Reasoning-Modelle** wie `gpt-oss:20b` brauchen ihren Reasoning-Channel —
+  über die OpenAI-`/v1`-Schicht kommt hier nichts an.
+- **128k Kontext ist teuer:** macht den 30B-Sieger langsam (knapp 10 Min);
+  kleine Modelle sind ~3× schneller, liefern hier aber nichts Brauchbares.
+
 ## Verfügbare Modelle
 
 Vom jeweiligen Endpoint abfragbar:
@@ -326,7 +353,7 @@ z. B. `qwen3-coder:30b`.
 
 - **Bestätigung** vor jedem Schreibvorgang und jedem Shell-Kommando
   (außer mit `--yes`).
-- Schrittlimit von **25 Schritten** pro Aufgabe.
+- Schrittlimit pro Aufgabe (Default **40**, via `--max-steps` / `MC_MAX_STEPS`).
 - **120 s** Timeout pro Shell-Kommando.
 - Tool-Ausgaben an das Modell werden auf **8000 Zeichen** gekürzt.
 
