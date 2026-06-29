@@ -461,6 +461,26 @@ Strom**, der Cloud-Lauf über OpenRouter nur **~0,13 ct** ($0.0014) — und ist 
 - **128k Kontext ist auf 24 GB teuer:** bremst das lokale 30B stark; in der Cloud
   spielt das keine Rolle.
 
+### Live-Verifikation: generierte App starten & erweitern
+
+Die von `qwopus3.6` generierte CRUD-App wurde nicht nur statisch geprüft, sondern
+**wirklich gestartet**: Flask-Backend (SQLite) hochgefahren, drei Kontakte per API
+angelegt, und das React-Frontend im Browser geladen. Ergebnis: funktionsfähige
+Oberfläche — Liste aus der DB, Anlegen/**Bearbeiten** (Formular füllt sich,
+„Speichern"/„Abbrechen")/Löschen, sauberes CSS.
+
+Anschließend wurde `mc` auf **dieselbe, bestehende App** angesetzt:
+
+> „Füge einen Footer `(c) qwopus 2026` hinzu und eine Unterseite, die die App
+> erklärt — ohne zusätzliche Bibliotheken, CRUD beibehalten."
+
+`mc` (qwopus3.6) hat dafür `App.jsx` zuerst **gelesen**, dann gezielt erweitert:
+eine Tab-Navigation (Personenverwaltung / „Über diese App") über einen
+`useState`-Umschalter (kein react-router), eine Erklärseite und den Footer — und
+das Styling in `index.html` ergänzt. Die bestehende CRUD-Funktion blieb intakt.
+Das zeigt, dass `mc` nicht nur grüne Wiese kann, sondern **bestehenden Code findet,
+liest und chirurgisch erweitert**.
+
 ## Verfügbare Modelle
 
 Vom jeweiligen Endpoint abfragbar:
