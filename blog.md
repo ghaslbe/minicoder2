@@ -360,6 +360,16 @@ schlummerte — zwei System-Messages, von jedem anderen Modell verziehen, von ei
 strengeren Chat-Template gnadenlos bestraft. Hätte ich nie gefunden, ohne ein Modell
 zu testen, das genau dort empfindlich ist.
 
+Nachgelegt: Die von Ornith gebaute App war beim Nachprüfen **funktional fehlerfrei**
+— der volle CRUD-Zyklus lief per UI und API, und das Backend hatte als einziges
+*sowohl* Eingabe-Validierung (400) *als auch* 404-Handling, das qwopus' „schönere"
+App fehlte. Anschließend bekam Ornith denselben Erweiterungsauftrag wie qwopus
+(Hilfeseite mit eigener URL via Hash-Routing): in einem Durchlauf umgesetzt
+(`window.location.hash` + `hashchange`, Nav, ausführliche Hilfe, CRUD erhalten) —
+auch hier griff der System-Message-Fix. Fazit zu Ornith: schnell, protokolltreu,
+funktional sauber; beim Styling minimal (Inline-Styles statt CSS-Datei), aber
+keineswegs nackt.
+
 ---
 
 ## 7. Stromkosten-Rechnung (Mac mini M4 Pro)
