@@ -53,7 +53,7 @@ CA_BUNDLE = os.environ.get("MC_CA_BUNDLE", "")       # Pfad zur Zscaler-CA (.pem
 INSECURE = False                                     # TLS-Pruefung abschalten (Notnagel)
 VERBOSE = os.environ.get("MC_VERBOSE", "") not in ("", "0", "false")  # passive Logausgaben
 
-MAX_STEPS = 25          # Sicherheitslimit pro Aufgabe
+MAX_STEPS = int(os.environ.get("MC_MAX_STEPS", "40"))  # Sicherheitslimit pro Aufgabe
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 
 
@@ -402,6 +402,38 @@ def do_write_file(args):
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
 
+def do_write_files(args):
+    """Schreibt mehrere Dateien in EINEM Schritt — fuer Projekt-Gerueste mit
+    vielen Dateien in vielen Verzeichnissen."""
+    files = args.get("files")
+    if not isinstance(files, list) or not files:
+        return False, "FEHLER: 'files' muss eine nicht-leere Liste von {path,content} sein."
+    print(f"{C.YELLOW}» write_files{C.RESET} {C.BOLD}{len(files)}{C.RESET} Datei(en):")
+    for f in files:
+        print(f"   {f.get('path','?')} ({len(f.get('content',''))} Zeichen)")
+    if not confirm(f"{len(files)} Datei(en) schreiben?"):
+        return False, "Abgelehnt durch den Benutzer."
+    written, errors = [], []
+    for f in files:
+        path, content = f.get("path", ""), f.get("content", "")
+        if not path:
+            errors.append("(Eintrag ohne 'path' uebersprungen)")
+            continue
+        try:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            written.append(path)
+        except Exception as e:
+            errors.append(f"{path}: {e}")
+    msg = f"{len(written)} Datei(en) geschrieben:\n" + "\n".join(written)
+    if errors:
+        msg += "\nFEHLER:\n" + "\n".join(errors)
+    return (not errors), msg
+
+
 def do_list_dir(args):
     path = args.get("path", ".")
     try:
@@ -484,6 +516,7 @@ def do_run(args):
 DISPATCH = {
     "read_file": do_read_file,
     "write_file": do_write_file,
+    "write_files": do_write_files,
     "list_dir": do_list_dir,
     "find": do_find,
     "run": do_run,
@@ -500,6 +533,7 @@ das Ergebnis und faehrst fort.
 Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}
   write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
+  write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
   run         -> {"action":"run","command":"<shell-kommando>"}
@@ -514,6 +548,11 @@ Regeln:
   ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
   find ignoriert Gross-/Kleinschreibung und Leer-/Sonderzeichen.
 - Erst wenn find/list_dir nichts Passendes liefern, frage nach oder lege neu an.
+- Fuer Projekte mit VIELEN Dateien: schreibe sie gebuendelt mit write_files
+  (mehrere auf einmal) statt einzeln — das spart Schritte.
+- Fuer ein NEUES Projektgeruest nutze, wenn moeglich, offizielle Generatoren via
+  run (z.B. 'npm create vite@latest frontend -- --template react') und passe
+  danach gezielt einzelne Dateien an, statt jede Datei von Hand zu erzeugen.
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -568,7 +607,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -585,9 +624,12 @@ def main():
                     help="TLS-Pruefung abschalten (nur als Notnagel)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="Passive Statuszeilen ausgeben (Verbindung, Anfrage, Antwort)")
+    ap.add_argument("--max-steps", type=int, default=MAX_STEPS,
+                    help=f"Max. Agenten-Schritte pro Aufgabe (default {MAX_STEPS})")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
+    MAX_STEPS = args.max_steps
     BASE_URL = args.base_url.rstrip("/")
     PROXY = args.proxy
     CA_BUNDLE = args.ca_bundle

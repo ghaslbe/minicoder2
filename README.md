@@ -94,6 +94,7 @@ und zeigt alle IDs (kombinierbar mit `--base-url`).
 | `--model M`      | Modell wählen (Default `qwen3-coder:30b`)              |
 | `--base-url URL` | Server-Basis-URL (Default `http://localhost:11434/v1`)|
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
+| `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
@@ -204,17 +205,19 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `MC_PROXY`      | *(leer)*                    | HTTP(S)-Proxy (Zscaler/Firmennetz)     |
 | `MC_CA_BUNDLE`  | *(leer)*                    | Pfad zu eigenem CA-Zertifikat          |
 | `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
+| `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
 
 ## Aktionen des Agenten
 
 | Aktion       | JSON                                                            | Rückfrage |
 |--------------|----------------------------------------------------------------|-----------|
-| `read_file`  | `{"action":"read_file","path":"..."}`                          | nein      |
-| `write_file` | `{"action":"write_file","path":"...","content":"..."}`         | **ja**    |
-| `list_dir`   | `{"action":"list_dir","path":"..."}`                           | nein      |
-| `find`       | `{"action":"find","pattern":"..."}`                            | nein      |
-| `run`        | `{"action":"run","command":"..."}`                             | **ja**    |
-| `finish`     | `{"action":"finish","summary":"..."}`                          | —         |
+| `read_file`   | `{"action":"read_file","path":"..."}`                         | nein      |
+| `write_file`  | `{"action":"write_file","path":"...","content":"..."}`        | **ja**    |
+| `write_files` | `{"action":"write_files","files":[{"path":"...","content":"..."}, ...]}` | **ja** |
+| `list_dir`    | `{"action":"list_dir","path":"..."}`                          | nein      |
+| `find`        | `{"action":"find","pattern":"..."}`                           | nein      |
+| `run`         | `{"action":"run","command":"..."}`                            | **ja**    |
+| `finish`      | `{"action":"finish","summary":"..."}`                         | —         |
 
 ### Projektkontext & Datei-Erkennung
 
@@ -229,6 +232,28 @@ Damit der Agent nicht ins Leere rät, bekommt er:
   bearbeiten, statt blind eine neue anzulegen.
 
 (Ordner wie `.git`, `__pycache__`, `node_modules`, `venv` werden dabei übersprungen.)
+
+### Größere Projekte (viele Dateien / Verzeichnisse)
+
+Für Projekte wie ein React-Frontend mit Flask-Backend:
+
+- **`write_files`** legt mehrere Dateien (über mehrere Verzeichnisse) in **einem**
+  Schritt an — verschachtelte Pfade werden automatisch erstellt.
+- **`--max-steps N`** (Default 40) anheben, falls viele Schritte nötig sind.
+- Der Agent wird angewiesen, für **neue Gerüste** offizielle Generatoren via `run`
+  zu nutzen (z. B. `npm create vite@latest frontend -- --template react`) und
+  danach gezielt einzelne Dateien anzupassen.
+
+Beispiel:
+
+```bash
+python3 mc.py --base-url https://server/v1 --max-steps 60 \
+  "Erstelle ein Flask-Backend (backend/) mit /api/hello und ein React-Frontend (frontend/). Nutze write_files."
+```
+
+Hinweis: Realistisch wird das erst mit ausreichend großem **Kontextfenster** des
+Servers (`num_ctx`, siehe oben) — bei kleinem Default „vergisst" das Modell bei
+vielen Dateien früh Angelegtes.
 
 ## Verfügbare Modelle
 
