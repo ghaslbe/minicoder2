@@ -1,0 +1,5 @@
+# mc – Mini Coding Tool
+# Keine externen Abhängigkeiten: das Tool nutzt ausschließlich die
+# Python-Standardbibliothek (argparse, json, os, re, subprocess, sys, urllib).
+#
+# Voraussetzung: Python 3.7 oder neuer.
