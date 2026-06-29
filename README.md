@@ -255,6 +255,35 @@ Hinweis: Realistisch wird das erst mit ausreichend großem **Kontextfenster** de
 Servers (`num_ctx`, siehe oben) — bei kleinem Default „vergisst" das Modell bei
 vielen Dateien früh Angelegtes.
 
+#### Praxistest: Todo-App (Flask + React)
+
+Getestet mit `qwen3-coder:30b` und `num_ctx = 128k`. Auftrag: *„Erstelle eine
+kleine Todo-App: Flask-Backend mit REST-API (GET/POST/DELETE /api/todos) in
+backend/ inkl. requirements.txt, und ein React-Frontend in frontend/ … nutze
+write_files."*
+
+Ergebnis: **6 Dateien in nur 3 Schritten** (zwei `write_files`-Bündel + `finish`):
+
+```
+backend/app.py            Flask + Flask-CORS, In-Memory-Todos, GET/POST/DELETE
+backend/requirements.txt  Flask==2.3.3, Flask-CORS==4.0.0
+frontend/package.json     React 18, react-scripts
+frontend/src/index.js     ReactDOM-Einstiegspunkt
+frontend/src/App.jsx      Todos anzeigen/hinzufügen/löschen, fetch -> :5000
+frontend/public/index.html
+```
+
+Der Code war in sich stimmig und syntaktisch gültig (Python-`ast`- und
+JSON-Check bestanden); Frontend und Backend passten zusammen (Port 5000, CORS
+aktiv). Für ein kleines Projekt also durchaus brauchbar — als Gerüst zum
+Weiterarbeiten, nicht als fertiges Produkt.
+
+> Server-Setup beim Test: Ollama auf einem **Mac mini M4 Pro (24 GB RAM)**.
+> `qwen3-coder:30b` (≈18 GB im Q4-Quant) passt damit in den Unified Memory;
+> ein großes `num_ctx` (128k) kostet zusätzlich KV-Cache-Speicher, läuft auf
+> 24 GB aber noch. Die Antwortzeit pro Schritt liegt dadurch bei einigen
+> Sekunden bis ~1–2 Minuten je nach Dateimenge.
+
 ## Verfügbare Modelle
 
 Vom jeweiligen Endpoint abfragbar:
