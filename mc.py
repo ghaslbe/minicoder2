@@ -49,6 +49,7 @@ API_KEY = os.environ.get("MC_API_KEY", "")
 PROXY = os.environ.get("MC_PROXY", "")              # z.B. http://proxy:8080
 CA_BUNDLE = os.environ.get("MC_CA_BUNDLE", "")       # Pfad zur Zscaler-CA (.pem)
 INSECURE = False                                     # TLS-Pruefung abschalten (Notnagel)
+VERBOSE = os.environ.get("MC_VERBOSE", "") not in ("", "0", "false")  # passive Logausgaben
 
 MAX_STEPS = 25          # Sicherheitslimit pro Aufgabe
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
@@ -85,6 +86,12 @@ def banner(msg):
     print(f"{C.CYAN}{C.BOLD}{msg}{C.RESET}")
 
 
+def log(msg):
+    """Passive Statuszeile, nur im Verbose-Modus (z.B. fuers Proxy-Debugging)."""
+    if VERBOSE:
+        print(f"{C.DIM}· {msg}{C.RESET}")
+
+
 # --------------------------- HTTP / API-Aufruf -----------------------------
 
 def build_opener():
@@ -97,6 +104,9 @@ def build_opener():
     handlers = []
 
     if PROXY:
+        # Passwort im Log maskieren.
+        shown = re.sub(r"//[^@/]*@", "//***@", PROXY)
+        log(f"nutze Proxy {shown}")
         handlers.append(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
     # ohne explizite Angabe nutzt urllib automatisch HTTP_PROXY/HTTPS_PROXY aus env.
 
@@ -160,8 +170,11 @@ def chat_stream(messages, model):
 
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
+    first = True
     try:
+        log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
+            log(f"verbunden (HTTP {resp.status}), frage Modell '{model}', warte auf Antwort …")
             for raw in resp:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line or not line.startswith("data:"):
@@ -176,9 +189,13 @@ def chat_stream(messages, model):
                 delta = obj.get("choices", [{}])[0].get("delta", {})
                 token = delta.get("content")
                 if token:
+                    if first:
+                        log("Antwort beginnt …")
+                        first = False
                     parts.append(token)
                     sys.stdout.write(f"{C.DIM}{token}{C.RESET}")
                     sys.stdout.flush()
+        log(f"Antwort vollstaendig ({len(''.join(parts))} Zeichen).")
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body}")
@@ -196,7 +213,9 @@ def list_models():
         headers["Authorization"] = f"Bearer {API_KEY}"
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
+        log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=30) as resp:
+            log(f"verbunden (HTTP {resp.status}), lese Modell-Liste …")
             obj = json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         raise SystemExit(f"{C.RED}HTTP {e.code} beim Abruf der Modelle.{C.RESET}")
@@ -382,7 +401,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -395,6 +414,8 @@ def main():
                     help="Pfad zu eigenem CA-Zertifikat (z.B. Zscaler-Root .pem)")
     ap.add_argument("--insecure", action="store_true",
                     help="TLS-Pruefung abschalten (nur als Notnagel)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Passive Statuszeilen ausgeben (Verbindung, Anfrage, Antwort)")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
@@ -402,6 +423,7 @@ def main():
     PROXY = args.proxy
     CA_BUNDLE = args.ca_bundle
     INSECURE = args.insecure
+    VERBOSE = VERBOSE or args.verbose
 
     if args.list_models:
         print(f"{C.CYAN}Modelle @ {BASE_URL}:{C.RESET}")

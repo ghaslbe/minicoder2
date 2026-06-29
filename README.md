@@ -97,8 +97,28 @@ und zeigt alle IDs (kombinierbar mit `--base-url`).
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
+| `-v`, `--verbose`| Passive Statuszeilen (Verbindung, Anfrage, Antwort)   |
 | `--yes`          | Alle Schreib-/Run-Aktionen ohne Rückfrage ausführen   |
 | `-h`, `--help`   | Hilfe anzeigen                                         |
+
+### Verbose-Modus
+
+Mit `-v` / `--verbose` (oder `MC_VERBOSE=1`) gibt `mc` passive Statuszeilen aus —
+praktisch zum Nachvollziehen, wo es z. B. hinter einem Proxy hängt:
+
+```text
+$ python3 mc.py -v --list-models
+· verbinde mit https://server/v1/models …
+· verbunden (HTTP 200), lese Modell-Liste …
+
+$ python3 mc.py -v "..."
+· verbinde mit https://server/v1/chat/completions …
+· verbunden (HTTP 200), frage Modell 'qwen3-coder:30b', warte auf Antwort …
+· Antwort beginnt …
+· Antwort vollständig (53 Zeichen).
+```
+
+Ein gesetzter Proxy wird ebenfalls geloggt (Passwort wird maskiert).
 
 ### Firmennetz / Zscaler
 
@@ -146,6 +166,7 @@ solchen Fehlern direkt einen passenden Hinweis aus.
 | `MC_API_KEY`    | *(leer)*                    | Optionaler Bearer-Token, falls nötig   |
 | `MC_PROXY`      | *(leer)*                    | HTTP(S)-Proxy (Zscaler/Firmennetz)     |
 | `MC_CA_BUNDLE`  | *(leer)*                    | Pfad zu eigenem CA-Zertifikat          |
+| `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
 
 ## Aktionen des Agenten
 
