@@ -612,6 +612,11 @@ Regeln:
 - Erst wenn find/list_dir nichts Passendes liefern, frage nach oder lege neu an.
 - Fuer Projekte mit VIELEN Dateien: schreibe sie gebuendelt mit write_files
   (mehrere auf einmal) statt einzeln — das spart Schritte.
+- ABER: packe nicht ein ganzes Projekt in EINEN riesigen write_files-Block.
+  Halte jeden Block kompakt (Faustregel: hoechstens 2-3 Dateien bzw. ca. 200
+  Zeilen pro Block) und verteile groessere Projekte auf MEHRERE write_files-
+  Schritte (z.B. erst Backend, dann Frontend). Sehr lange Antworten koennen
+  abgeschnitten werden, wodurch das JSON unvollstaendig bleibt.
 - Fuer ein NEUES Projektgeruest nutze, wenn moeglich, offizielle Generatoren via
   run (z.B. 'npm create vite@latest frontend -- --template react') und passe
   danach gezielt einzelne Dateien an, statt jede Datei von Hand zu erzeugen.

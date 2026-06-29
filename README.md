@@ -356,7 +356,7 @@ OpenRouter.
 | **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 261 s | 6/6 | – | ✅ vollständig, alle 4 Endpunkte, Frontend mit Edit/Delete |
 | gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
 | gemma3:12b | 💻 Lokal (Mac mini) | 186 s | 0 | – | ❌ Code ok, aber `write_files`-JSON ungültig → nichts geschrieben |
-| qwopus3.6:27b (Q4_K_M) | 💻 Lokal (Mac mini) | 339 s | 0 | – | ❌ **bester Code aller Modelle** (inkl. CSS), aber im Action-JSON fehlte das letzte `}` → vom strikten Parser abgelehnt |
+| **qwopus3.6:27b (Q4_K_M)** | 💻 Lokal (Mac mini) | 338 s | 6/6 | – | ✅ vollständig (inkl. CSS-Styling & Bearbeiten) — **erst nach Prompt-Fix**: 1. Versuch scheiterte an abgeschnittenem JSON (fehlendes letztes `}`) |
 | gemma-4-12B-coder-fable5 (Q4_K_M) | 💻 Lokal (Mac mini) | 464 s | 0 | – | ❌ Coder-Finetune, aber JSON dauerhaft kaputt (`\\n`, single-quotes) → nichts geschrieben |
 | coe-gemma4-coding (14B) | 💻 Lokal (Mac mini) | abgebr. | 0 | – | ❌ produzierte nur einen kaputten „thought"-Stream (endlose Punkte), unbrauchbar |
 | gpt-oss:20b | 💻 Lokal (Mac mini) | 1 s | 0 | – | ❌ leere Antwort (Reasoning-Modell, `/v1`-inkompatibel) |
@@ -412,14 +412,19 @@ Strom**, der Cloud-Lauf über OpenRouter nur **~0,13 ct** ($0.0014) — und ist 
   der Modellliste auf, lieferten aber serverseitig **HTTP 500** — also (noch)
   nicht lauffähig (Download/MLX-Konvertierung oder fehlende Ollama-Unterstützung).
   Ein Listen-Eintrag heißt nicht automatisch „einsatzbereit".
-- **Protokoll-Disziplin schlägt Code-Qualität — der größte Tool-Schwachpunkt.**
-  Gleich **drei** Modelle scheiterten *nur* am JSON-Mantel, nicht am Code:
-  `gemma3:12b` (doppelter `files`-Key/Escapes), die `fable`-Coder-Finetunes
+- **Protokoll-Disziplin schlägt Code-Qualität — und die Lösung ist Aufteilung,
+  nicht Nachsicht.** Mehrere Modelle scheiterten *nur* am JSON-Mantel, nicht am
+  Code: `gemma3:12b` (doppelter `files`-Key/Escapes), die `fable`-Coder-Finetunes
   (`\\n`/single-quotes) und besonders **`qwopus3.6:27b`, das den besten Code aller
-  Modelle lieferte** (sauberes Backend + gestyltes Frontend), aber am fehlenden
-  letzten `}` scheiterte. Ein **toleranterer Parser** (fehlende schließende
-  Klammern ergänzen, lockere Escapes) würde all diese Modelle retten — klarer
-  nächster Verbesserungsschritt am Tool.
+  Modelle lieferte** (Backend + gestyltes Frontend), aber im 1. Versuch an einem
+  fehlenden `}` scheiterte — die Antwort war hinter einem einzigen Mega-Block
+  abgeschnitten. **Die saubere Behebung** war nicht, den Parser kaputtes JSON
+  flicken zu lassen, sondern den Agenten anzuweisen, `write_files` in **kleinere
+  Batches** zu splitten (kompakte, garantiert vollständige Blöcke). Damit lief
+  qwopus3.6 im 2. Versuch vollständig durch (6/6 Dateien). Lektion: Bei
+  Text-Protokoll-Agenten ist die maximale *Einzel*-Antwort das Risiko — viele
+  kleine vollständige Schritte schlagen einen großen, der an der letzten Klammer
+  zerbricht.
 - **Reasoning-Modelle** wie `gpt-oss:20b` brauchen ihren Reasoning-Channel —
   über die OpenAI-`/v1`-Schicht kommt hier nichts an.
 - **128k Kontext ist auf 24 GB teuer:** bremst das lokale 30B stark; in der Cloud
