@@ -415,6 +415,54 @@ def do_list_dir(args):
         return False, f"FEHLER beim Auflisten von {path}: {e}"
 
 
+# Verzeichnisse, die beim Durchsuchen/Ueberblick ignoriert werden.
+IGNORE_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
+               ".mypy_cache", ".pytest_cache", ".idea", ".vscode", "dist", "build"}
+
+
+def _norm(s):
+    """Auf Kleinbuchstaben + nur alphanumerisch reduzieren — fuer unscharfen
+    Vergleich, z.B. 'hello world' == 'helloworld'."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def do_find(args):
+    """Sucht Dateien, deren Name das Muster enthaelt — auch unscharf
+    (Leerzeichen/Sonderzeichen werden ignoriert)."""
+    pattern = args.get("pattern") or args.get("name") or ""
+    root = args.get("path", ".")
+    if not pattern:
+        return False, "FEHLER: 'pattern' fehlt."
+    npat = _norm(pattern)
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        for fn in sorted(filenames):
+            if pattern.lower() in fn.lower() or (npat and npat in _norm(fn)):
+                matches.append(os.path.normpath(os.path.join(dirpath, fn)))
+            if len(matches) >= 100:
+                break
+    if not matches:
+        return True, (f"Keine Datei gefunden, deren Name '{pattern}' enthaelt. "
+                      f"Pruefe mit list_dir, was vorhanden ist.")
+    return True, "Gefundene Dateien:\n" + "\n".join(matches)
+
+
+def project_overview(root=".", max_entries=200):
+    """Kompakter rekursiver Dateiueberblick fuer den Startkontext des Agenten."""
+    paths = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in IGNORE_DIRS and not d.startswith("."))
+        rel = os.path.relpath(dirpath, root)
+        for fn in sorted(filenames):
+            paths.append(fn if rel == "." else os.path.join(rel, fn))
+            if len(paths) >= max_entries:
+                paths.append(f"... (>{max_entries} Dateien, gekuerzt)")
+                return paths
+    return paths
+
+
 def do_run(args):
     cmd = args.get("command", "")
     print(f"{C.YELLOW}» run{C.RESET} {C.BOLD}{cmd}{C.RESET}")
@@ -437,6 +485,7 @@ DISPATCH = {
     "read_file": do_read_file,
     "write_file": do_write_file,
     "list_dir": do_list_dir,
+    "find": do_find,
     "run": do_run,
 }
 
@@ -452,6 +501,7 @@ Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}
   write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
+  find        -> {"action":"find","pattern":"<namensteil>"}
   run         -> {"action":"run","command":"<shell-kommando>"}
   finish      -> {"action":"finish","summary":"<kurze zusammenfassung>"}
 
@@ -459,6 +509,11 @@ Regeln:
 - Pro Antwort GENAU EIN action-Block. Davor darfst du kurz dein Vorgehen erklaeren.
 - JSON muss valide sein. Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.
 - Arbeite in kleinen Schritten. Lies bestehende Dateien bevor du sie aenderst.
+- WICHTIG: Wenn der Nutzer eine bestehende Datei AENDERN will, lege NIEMALS einfach
+  eine neue an. Suche sie zuerst mit find/list_dir. Nutzer benennen Dateien oft
+  ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
+  find ignoriert Gross-/Kleinschreibung und Leer-/Sonderzeichen.
+- Erst wenn find/list_dir nichts Passendes liefern, frage nach oder lege neu an.
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -554,7 +609,17 @@ def main():
         print(f"{C.RED}Achtung: --yes aktiv, Aktionen werden ohne Rueckfrage ausgefuehrt.{C.RESET}")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Projektueberblick als Kontext: damit der Agent vorhandene Dateien kennt und
+    # bei ungenauer Benennung die richtige trifft, statt eine neue anzulegen.
+    overview = project_overview()
+    listing = "\n".join(overview) if overview else "(keine Dateien)"
+    context_msg = (
+        f"Arbeitsverzeichnis: {os.getcwd()}\n"
+        f"Vorhandene Dateien (rekursiv):\n{listing}\n\n"
+        f"Wenn der Nutzer eine Datei ungenau benennt, ordne sie einer dieser Dateien "
+        f"zu (find hilft beim unscharfen Suchen), statt blind eine neue anzulegen.")
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": context_msg}]
 
     # Einmal-Modus
     if args.task:

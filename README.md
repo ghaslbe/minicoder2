@@ -212,8 +212,23 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `read_file`  | `{"action":"read_file","path":"..."}`                          | nein      |
 | `write_file` | `{"action":"write_file","path":"...","content":"..."}`         | **ja**    |
 | `list_dir`   | `{"action":"list_dir","path":"..."}`                           | nein      |
+| `find`       | `{"action":"find","pattern":"..."}`                            | nein      |
 | `run`        | `{"action":"run","command":"..."}`                             | **ja**    |
 | `finish`     | `{"action":"finish","summary":"..."}`                          | —         |
+
+### Projektkontext & Datei-Erkennung
+
+Damit der Agent nicht ins Leere rät, bekommt er:
+
+- **beim Start einen rekursiven Dateiüberblick** des Arbeitsverzeichnisses (so
+  „sieht" er, was existiert);
+- die **`find`-Aktion** mit **unscharfer** Suche — Groß-/Kleinschreibung sowie
+  Leer- und Sonderzeichen werden ignoriert, d. h. „hello world" findet
+  `helloworld.py` oder `HelloWorld.js`;
+- die Regel, eine bestehende Datei beim „Ändern" erst zu **suchen** und zu
+  bearbeiten, statt blind eine neue anzulegen.
+
+(Ordner wie `.git`, `__pycache__`, `node_modules`, `venv` werden dabei übersprungen.)
 
 ## Verfügbare Modelle
 
