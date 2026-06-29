@@ -398,7 +398,8 @@ OpenRouter.
 | **z-ai/glm-5.2** | ☁️ Cloud (OpenRouter) | **48 s** | 6/6 | $0.0174 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
 | **deepseek/deepseek-v4-pro** | ☁️ Cloud (OpenRouter) | 55 s | 6/6 | $0.0101 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
 | **google/gemma-4-26b-a4b-it** | ☁️ Cloud (OpenRouter) | 48 s | 6/6 | $0.0014 | ✅ vollständig — dasselbe Modell wie lokal `gemma4:26b-mlx`, nur ~5× schneller |
-| **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig (Sieger der lokalen) |
+| **Ornith-1.0-35B (Q3_K_L)** | 💻 Lokal (Mac mini) | **168 s** | 6/6 | – | ✅ vollständig, alle 4 Endpunkte, Edit/Delete — **schnellster lokaler Volllauf**; agentisch trainiert, traf das Protokoll diszipliniert (nach System-Message-Fix, s. u.) |
+| **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig |
 | **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 261 s | 6/6 | – | ✅ vollständig, alle 4 Endpunkte, Frontend mit Edit/Delete |
 | gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
 | gemma3:12b | 💻 Lokal (Mac mini) | 186 s | 0 | – | ❌ Code ok, aber `write_files`-JSON ungültig → nichts geschrieben |
@@ -418,6 +419,17 @@ OpenRouter `usage.cost`.
 
 **Erkenntnisse:**
 
+- **Agentisch trainierte Modelle treffen das Protokoll am besten.** `Ornith-1.0-35B`
+  (speziell für agentisches Coding trainiert) lieferte die volle App in **168 s** —
+  der **schnellste lokale Volllauf** überhaupt, schneller als qwen3-coder (593 s),
+  gemma4:26b (261 s) und qwopus (338 s). Es traf die Action-Blöcke diszipliniert,
+  obwohl es ein Reasoning-Modell ist (viel internes „Denken", sauberer finaler
+  Output). Allerdings deckte es auch einen **latenten Tool-Bug** auf (siehe unten).
+- **Ein neues Modell findet alte Tool-Bugs.** Ornith brach zunächst *sofort leer*
+  ab (`data: [DONE]` ohne Inhalt). Ursache war nicht das Modell, sondern dass `mc`
+  **zwei aufeinanderfolgende `system`-Messages** schickte (Prompt + Projekt-
+  überblick) — Orniths Chat-Template verträgt das nicht. Die anderen Modelle
+  tolerierten es stillschweigend. Fix: beide zu **einer** System-Message gebündelt.
 - **Cloud schlägt lokal deutlich bei Tempo/Aufwand:** `glm-5.2` und
   `deepseek-v4-pro` liefern die komplette App in **~50 s für 1–2 Cent** — rund
   **12× schneller** als das lokale `qwen3-coder:30b` (≈10 Min), das dafür

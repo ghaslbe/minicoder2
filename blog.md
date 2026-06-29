@@ -108,7 +108,8 @@ valider Code, FE↔BE konsistent.
 | **z-ai/glm-5.2** | ☁️ Cloud | 48 s | 6/6 | $0.0174 | ✅ vollständig |
 | **deepseek/deepseek-v4-pro** | ☁️ Cloud | 55 s | 6/6 | $0.0101 | ✅ vollständig |
 | **google/gemma-4-26b-a4b-it** | ☁️ Cloud | 48 s | 6/6 | $0.0014 | ✅ vollständig |
-| **qwen3-coder:30b** | 💻 Lokal | 593 s | 6/6 | – | ✅ vollständig (lokaler Sieger) |
+| **Ornith-1.0-35B** (Q3_K_L) | 💻 Lokal | 168 s | 6/6 | – | ✅ vollständig — **schnellster lokaler Volllauf**; agentisch trainiert (nach System-Message-Fix, s. 6.7) |
+| **qwen3-coder:30b** | 💻 Lokal | 593 s | 6/6 | – | ✅ vollständig |
 | **gemma4:26b-mlx** | 💻 Lokal | 261 s | 6/6 | – | ✅ vollständig, 2× schneller als qwen |
 | gemma3:4b | 💻 Lokal | 189 s | 2 | – | ⚠️ nur DB-Stub, kein `@app.route`, kein Frontend |
 | gemma3:12b | 💻 Lokal | 186 s | 0 | – | ❌ JSON ungültig (doppelter `files`-Key/Escapes) |
@@ -328,6 +329,36 @@ Modells. Lektion: `edit_file` löst das *Mechanik*-Problem (Tokens, Truncation)
 zuverlässig; ob die Änderung inhaltlich *klug* platziert ist, bleibt am Modell.
 Beides zusammen — gezieltes Werkzeug **und** ein Modell, das den Bestand versteht —
 macht erst einen guten Editier-Agenten.
+
+### 6.7 Ornith-1.0: das agentische Modell — und der Bug, den es aufdeckte
+
+Spät kam ein besonders passender Kandidat dazu: **Ornith-1.0-35B**, ein Modell, das
+*speziell für agentisches Coding* trainiert wurde („Self-Scaffolding" — es lernt im
+RL, sein eigenes Orchestrierungs-Gerüst mitzuerzeugen). Genau die Sorte Modell, die
+ein Action-Protokoll diszipliniert treffen sollte.
+
+Der erste Lauf: **0 Sekunden, 0 Dateien, leere Antwort.** Sieht aus wie ein
+Totalausfall — war aber keiner. Im direkten Test generierte das Modell sauberen Code
+(non-streaming *und* streaming). Der Unterschied lag in `mc`s Request. Systematisch
+isoliert ergab sich: eine `system`-Message → das Modell generiert; **zwei
+aufeinanderfolgende `system`-Messages** → es sendet sofort `data: [DONE]` ohne einen
+einzigen Token. `mc` schickte aber genau zwei (den Action-Prompt und den
+Projektüberblick als separate System-Nachrichten). Orniths Chat-Template verträgt
+das nicht; alle bisherigen Modelle hatten es stillschweigend toleriert. Fix: beide
+zu **einer** System-Message bündeln — universell verträglicher.
+
+Mit dem Fix lief Ornith dann glänzend: **168 s, 6/6 Dateien, vollständige App** mit
+allen vier Endpunkten und Edit-Funktion — der **schnellste lokale Volllauf des
+ganzen Benchmarks**, schneller als qwen3-coder (593 s), gemma4 (261 s) und qwopus
+(338 s). Und das, obwohl es ein Reasoning-Modell ist, das viel „denkt" (für ein
+schlichtes „PONG" verbrauchte es ~250 Tokens). Die agentische Spezialisierung zeigt
+sich: Es traf die Action-Blöcke sauber, ohne sie im Reasoning zu vergraben.
+
+Die Lektion ist die schönste des ganzen Projekts: **Ein neues Modell ist der beste
+Test für das eigene Werkzeug.** Ornith deckte einen Bug auf, der seit dem ersten Tag
+schlummerte — zwei System-Messages, von jedem anderen Modell verziehen, von einem
+strengeren Chat-Template gnadenlos bestraft. Hätte ich nie gefunden, ohne ein Modell
+zu testen, das genau dort empfindlich ist.
 
 ---
 
