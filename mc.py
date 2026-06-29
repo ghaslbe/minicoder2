@@ -35,6 +35,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import http.client
 import socket
 import ssl
@@ -214,6 +216,47 @@ def print_usage_summary():
 MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
 
 
+class Spinner:
+    """Kleiner animierter Warte-Indikator in einem Hintergrund-Thread. Zeigt, dass
+    das Modell arbeitet, waehrend der Hauptthread auf die Netzwerk-Antwort wartet.
+    Nur aktiv im interaktiven Terminal (TTY); bei Pipe/Redirect passiv."""
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, label="denke"):
+        self.label = label
+        self._stop = threading.Event()
+        self._thread = None
+        self.active = sys.stdout.isatty()
+
+    def _run(self):
+        i = 0
+        start = time.time()
+        while not self._stop.is_set():
+            frame = self.FRAMES[i % len(self.FRAMES)]
+            sys.stdout.write(f"\r{C.CYAN}{frame}{C.RESET} {C.DIM}{self.label} "
+                             f"({time.time()-start:.0f}s)…{C.RESET}")
+            sys.stdout.flush()
+            i += 1
+            self._stop.wait(0.1)
+
+    def __enter__(self):
+        if self.active:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self._stop.is_set():
+            return  # idempotent: zweiter Aufruf (finally) macht nichts
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        if self.active:
+            # Spinner-Zeile loeschen, damit die Antwort sauber beginnt.
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+
+
 def _chat_once(messages, model):
     """Ein einzelner /chat/completions-Streaming-Aufruf. Gibt (text, finish_reason)
     zurueck und streamt live mit."""
@@ -233,6 +276,8 @@ def _chat_once(messages, model):
     first = True
     usage = None
     finish_reason = None
+    spin = Spinner("Modell denkt")
+    spin.__enter__()  # Warte-Spinner bis zum ersten Token
     try:
         log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
@@ -256,6 +301,7 @@ def _chat_once(messages, model):
                     token = choices[0].get("delta", {}).get("content")
                     if token:
                         if first:
+                            spin.__exit__()  # Spinner weg, sobald die Antwort beginnt
                             log("Antwort beginnt …")
                             first = False
                         parts.append(token)
@@ -270,6 +316,8 @@ def _chat_once(messages, model):
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body}")
     except NET_ERRORS as e:
         raise SystemExit(net_error(getattr(e, "reason", e)))
+    finally:
+        spin.__exit__()  # Spinner-Thread immer beenden (auch bei Fehler)
     return "".join(parts), finish_reason
 
 
