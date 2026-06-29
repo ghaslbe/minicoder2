@@ -481,6 +481,14 @@ das Styling in `index.html` ergänzt. Die bestehende CRUD-Funktion blieb intakt.
 Das zeigt, dass `mc` nicht nur grüne Wiese kann, sondern **bestehenden Code findet,
 liest und chirurgisch erweitert**.
 
+In einer zweiten Iteration wurde das Frontend **refaktoriert**: die Logik in
+eigene Komponenten aufgeteilt (`PersonenView.jsx`, `HilfeView.jsx`), echtes
+**Hash-Routing** ohne Library eingebaut (`window.location.hash` + `hashchange`),
+sodass die Hilfe eine **eigene URL** (`#/hilfe`) hat, und die Hilfeseite zu einer
+ausführlichen Schritt-für-Schritt-Anleitung ausgebaut. Auch das live im Browser
+verifiziert (beide URLs, korrekte Ansichten, Footer durchgehend). `mc` bewältigt
+also auch strukturelle Umbauten, nicht nur additive Ergänzungen.
+
 ## Verfügbare Modelle
 
 Vom jeweiligen Endpoint abfragbar:
