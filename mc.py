@@ -495,6 +495,24 @@ def project_overview(root=".", max_entries=200):
     return paths
 
 
+def do_ask(args):
+    """Stellt dem Nutzer eine Frage (z.B. um einen Plan bestaetigen zu lassen)
+    und gibt dessen Antwort an den Agenten zurueck."""
+    question = (args.get("question") or "").strip() or "(keine Frage angegeben)"
+    print(f"{C.CYAN}{C.BOLD}» Rueckfrage:{C.RESET} {question}")
+    if AUTO_YES:
+        print(f"{C.DIM}(--yes aktiv: ohne Rueckfrage fortfahren){C.RESET}")
+        return True, "Auto-Modus (--yes): triff sinnvolle Annahmen und fahre ohne Rueckfrage fort."
+    try:
+        ans = input(f"{C.GREEN}{C.BOLD}deine Antwort> {C.RESET}").strip()
+    except EOFError:
+        return True, ("Keine Eingabe moeglich (nicht-interaktiv): triff sinnvolle "
+                      "Annahmen und fahre fort.")
+    if not ans:
+        return True, "(keine Antwort) Triff eine sinnvolle Annahme und fahre fort."
+    return True, f"Antwort des Nutzers: {ans}"
+
+
 def do_run(args):
     cmd = args.get("command", "")
     print(f"{C.YELLOW}» run{C.RESET} {C.BOLD}{cmd}{C.RESET}")
@@ -519,6 +537,7 @@ DISPATCH = {
     "write_files": do_write_files,
     "list_dir": do_list_dir,
     "find": do_find,
+    "ask": do_ask,
     "run": do_run,
 }
 
@@ -536,10 +555,13 @@ Verfuegbare Aktionen (Feld "action"):
   write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
+  ask         -> {"action":"ask","question":"<frage an den nutzer>"}
   run         -> {"action":"run","command":"<shell-kommando>"}
   finish      -> {"action":"finish","summary":"<kurze zusammenfassung>"}
 
 Regeln:
+- Wenn eine Anforderung WIRKLICH unklar ist, nutze die ask-Aktion zum Nachfragen,
+  statt zu raten. Bei eindeutigen Aufgaben arbeite direkt los.
 - Pro Antwort GENAU EIN action-Block. Davor darfst du kurz dein Vorgehen erklaeren.
 - JSON muss valide sein. Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.
 - Arbeite in kleinen Schritten. Lies bestehende Dateien bevor du sie aenderst.
@@ -564,6 +586,36 @@ Ich lege die Datei an.
 
 
 # ------------------------------ Agenten-Loop -------------------------------
+
+def plan_phase(messages, model):
+    """Deterministische Plan-Phase: holt zuerst einen Plan vom Modell, zeigt ihn
+    und laesst den Nutzer bestaetigen/anpassen — BEVOR Dateien geaendert werden.
+    Gibt False zurueck, wenn der Nutzer abbricht."""
+    messages.append({"role": "user", "content":
+        "Bevor du handelst: Erstelle einen KNAPPEN, nummerierten Plan fuer diese "
+        "Aufgabe — geplante Dateien/Verzeichnisse, Schritte und wichtige Annahmen. "
+        "Gib NUR den Plan als Text aus, KEINEN action-Block."})
+    print(f"\n{C.CYAN}{C.BOLD}── Plan ─────────────────────────────────{C.RESET}")
+    plan = chat_stream(messages, model)
+    messages.append({"role": "assistant", "content": plan})
+    try:
+        fb = input(f"\n{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
+                   f"n=abbrechen> {C.RESET}").strip()
+    except EOFError:
+        fb = ""
+    if fb.lower() in ("n", "nein", "no", "q", "abbrechen"):
+        print(f"{C.DIM}Abgebrochen.{C.RESET}")
+        messages.append({"role": "user", "content": "(Nutzer hat den Plan abgelehnt/abgebrochen.)"})
+        return False
+    if fb:
+        messages.append({"role": "user", "content":
+            f"Aenderungswunsch zum Plan: {fb}\nBeruecksichtige das und setze den "
+            f"angepassten Plan jetzt mit Aktionen um."})
+    else:
+        messages.append({"role": "user", "content":
+            "Plan ist bestaetigt. Setze ihn jetzt Schritt fuer Schritt mit Aktionen um."})
+    return True
+
 
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
@@ -626,10 +678,14 @@ def main():
                     help="Passive Statuszeilen ausgeben (Verbindung, Anfrage, Antwort)")
     ap.add_argument("--max-steps", type=int, default=MAX_STEPS,
                     help=f"Max. Agenten-Schritte pro Aufgabe (default {MAX_STEPS})")
+    ap.add_argument("--plan", action="store_true",
+                    help="Erst einen Plan zeigen und bestaetigen lassen, dann umsetzen")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
     MAX_STEPS = args.max_steps
+    # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
+    plan_mode = args.plan and not AUTO_YES
     BASE_URL = args.base_url.rstrip("/")
     PROXY = args.proxy
     CA_BUNDLE = args.ca_bundle
@@ -666,11 +722,15 @@ def main():
     # Einmal-Modus
     if args.task:
         messages.append({"role": "user", "content": " ".join(args.task)})
+        if plan_mode and not plan_phase(messages, args.model):
+            return
         run_task(messages, args.model)
         return
 
     # Interaktiver Modus
     info("Interaktiv. Gib eine Aufgabe ein (oder 'exit' / Ctrl-D zum Beenden).")
+    if plan_mode:
+        info("Plan-Modus aktiv (--plan): erst Plan + Bestaetigung, dann Umsetzung.")
     while True:
         try:
             user = input(f"\n{C.GREEN}{C.BOLD}du> {C.RESET}").strip()
@@ -682,6 +742,8 @@ def main():
         if user.lower() in ("exit", "quit", "q"):
             break
         messages.append({"role": "user", "content": user})
+        if plan_mode and not plan_phase(messages, args.model):
+            continue
         run_task(messages, args.model)
 
 

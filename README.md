@@ -95,12 +95,37 @@ und zeigt alle IDs (kombinierbar mit `--base-url`).
 | `--base-url URL` | Server-Basis-URL (Default `http://localhost:11434/v1`)|
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
 | `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
+| `--plan`         | Erst Plan zeigen + bestätigen lassen, dann umsetzen   |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
 | `-v`, `--verbose`| Passive Statuszeilen (Verbindung, Anfrage, Antwort)   |
 | `--yes`          | Alle Schreib-/Run-Aktionen ohne Rückfrage ausführen   |
 | `-h`, `--help`   | Hilfe anzeigen                                         |
+
+### Plan-Modus (`--plan`)
+
+Mit `--plan` legt der Agent nicht sofort los, sondern **erstellt zuerst einen
+Plan** (geplante Dateien, Schritte, Annahmen), zeigt ihn und **fragt nach**, bevor
+er etwas ändert:
+
+```text
+── Plan ──
+1. Projektstruktur: einkaufsliste/ mit main.py, shopping_list.py, cli.py …
+2. Funktionen: anzeigen, hinzufügen, entfernen, speichern/laden …
+...
+Plan ok? [Enter]=ja · Text=Änderungswunsch · n=abbrechen>
+```
+
+- **Enter** → Plan wird umgesetzt.
+- **Text eingeben** → fließt als Änderungswunsch in den Plan ein.
+- **`n`** → abbrechen, nichts wird geändert.
+
+Die Plan-Phase ist **deterministisch im Tool** umgesetzt (nicht dem Modell
+überlassen) und damit zuverlässig — gut für größere/mehrdeutige Aufgaben. Ohne
+`--plan` arbeitet `mc` direkt los. (Mit `--yes` ist die Plan-Phase aus, da dort
+nichts bestätigt wird.) Unabhängig davon kann der Agent über die `ask`-Aktion
+jederzeit selbst nachfragen, wenn etwas unklar ist.
 
 ### Verbose-Modus
 
@@ -216,6 +241,7 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `write_files` | `{"action":"write_files","files":[{"path":"...","content":"..."}, ...]}` | **ja** |
 | `list_dir`    | `{"action":"list_dir","path":"..."}`                          | nein      |
 | `find`        | `{"action":"find","pattern":"..."}`                           | nein      |
+| `ask`         | `{"action":"ask","question":"..."}`                           | fragt     |
 | `run`         | `{"action":"run","command":"..."}`                            | **ja**    |
 | `finish`      | `{"action":"finish","summary":"..."}`                         | —         |
 
