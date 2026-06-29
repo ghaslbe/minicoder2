@@ -56,6 +56,10 @@ VERBOSE = os.environ.get("MC_VERBOSE", "") not in ("", "0", "false")  # passive 
 MAX_STEPS = int(os.environ.get("MC_MAX_STEPS", "40"))  # Sicherheitslimit pro Aufgabe
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 
+# Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
+# liefert, z.B. OpenRouter via usage.cost).
+USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
+
 
 # ----------------------------- Farben / UI ---------------------------------
 
@@ -182,11 +186,40 @@ def net_error(reason):
 NET_ERRORS = (urllib.error.URLError, http.client.HTTPException, OSError)
 
 
+def account_usage(u):
+    """Summiert Tokens und (falls vorhanden) Kosten eines Requests auf."""
+    USAGE["prompt"] += u.get("prompt_tokens", 0) or 0
+    USAGE["completion"] += u.get("completion_tokens", 0) or 0
+    USAGE["cost"] += u.get("cost", 0.0) or 0.0
+    USAGE["reqs"] += 1
+    if VERBOSE:
+        msg = f"Tokens: +{u.get('prompt_tokens',0)}/{u.get('completion_tokens',0)}"
+        if u.get("cost"):
+            msg += f" · +${u['cost']:.5f}"
+        log(msg)
+
+
+def print_usage_summary():
+    """Gibt Token-/Kostensumme der Sitzung aus (am Ende einer Aufgabe)."""
+    if USAGE["reqs"] == 0:
+        return
+    total = USAGE["prompt"] + USAGE["completion"]
+    line = (f"Σ {USAGE['reqs']} Requests · {total} Tokens "
+            f"(prompt {USAGE['prompt']} + completion {USAGE['completion']})")
+    if USAGE["cost"] > 0:
+        line += f" · Kosten: ${USAGE['cost']:.4f}"
+    print(f"{C.CYAN}{line}{C.RESET}")
+
+
 def chat_stream(messages, model):
     """Ruft /chat/completions im Streaming-Modus auf und gibt den vollen Text
     zurueck (waehrend des Empfangs wird live ausgegeben)."""
     url = f"{BASE_URL}/chat/completions"
-    payload = {"model": model, "messages": messages, "stream": True}
+    payload = {"model": model, "messages": messages, "stream": True,
+               # Token-/Kostenabrechnung anfordern (OpenAI-Standard + OpenRouter).
+               # Endpoints, die das nicht kennen (z.B. Ollama), ignorieren es.
+               "stream_options": {"include_usage": True},
+               "usage": {"include": True}}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -195,6 +228,7 @@ def chat_stream(messages, model):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
     first = True
+    usage = None
     try:
         log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
@@ -210,15 +244,21 @@ def chat_stream(messages, model):
                     obj = json.loads(chunk)
                 except json.JSONDecodeError:
                     continue
-                delta = obj.get("choices", [{}])[0].get("delta", {})
-                token = delta.get("content")
-                if token:
-                    if first:
-                        log("Antwort beginnt …")
-                        first = False
-                    parts.append(token)
-                    sys.stdout.write(f"{C.DIM}{token}{C.RESET}")
-                    sys.stdout.flush()
+                # Der Usage-Chunk hat oft leere/keine choices -> sicher zugreifen.
+                choices = obj.get("choices") or []
+                if choices:
+                    token = choices[0].get("delta", {}).get("content")
+                    if token:
+                        if first:
+                            log("Antwort beginnt …")
+                            first = False
+                        parts.append(token)
+                        sys.stdout.write(f"{C.DIM}{token}{C.RESET}")
+                        sys.stdout.flush()
+                if obj.get("usage"):
+                    usage = obj["usage"]
+        if usage:
+            account_usage(usage)
         log(f"Antwort vollstaendig ({len(''.join(parts))} Zeichen).")
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
@@ -725,6 +765,7 @@ def main():
         if plan_mode and not plan_phase(messages, args.model):
             return
         run_task(messages, args.model)
+        print_usage_summary()
         return
 
     # Interaktiver Modus
@@ -745,6 +786,7 @@ def main():
         if plan_mode and not plan_phase(messages, args.model):
             continue
         run_task(messages, args.model)
+        print_usage_summary()
 
 
 if __name__ == "__main__":

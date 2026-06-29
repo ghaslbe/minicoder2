@@ -45,6 +45,35 @@ MC_MODEL=qwen3-coder:30b \
 > eigenes Text-Action-Protokoll und funktioniert deshalb auch mit Ollama-
 > Servern und Modellen, die kein Function-Calling unterstützen.
 
+### Cloud-Endpoints (OpenRouter & Co.)
+
+Da `mc` nur die OpenAI-kompatible API spricht, läuft es auch gegen Cloud-Anbieter
+wie **OpenRouter**. Dafür braucht es nur die Basis-URL und einen **API-Key**:
+
+```bash
+# Key setzen (NICHT ins Repo committen!)
+export MC_API_KEY="sk-or-v1-…"           # OpenRouter-Key
+
+python3 mc.py \
+  --base-url https://openrouter.ai/api/v1 \
+  --model "z-ai/glm-5.2" \
+  "schreib hello.py"
+```
+
+Der Key wird als `Authorization: Bearer …` gesendet. Alternativ zum Env-Var
+`MC_API_KEY` geht das nicht per Flag (bewusst, damit der Key nicht in der
+Shell-History / Prozessliste landet).
+
+**Token- & Kostenanzeige:** `mc` fordert pro Request `usage` an und summiert am
+Ende einer Aufgabe Tokens und — falls der Endpoint sie liefert (OpenRouter via
+`usage.cost`) — die **Kosten in USD**:
+
+```text
+Σ 7 Requests · 24130 Tokens (prompt 18044 + completion 6086) · Kosten: $0.0123
+```
+
+Bei lokalem Ollama gibt es keine Kosten (nur Tokens, falls der Server sie meldet).
+
 ## Voraussetzungen
 
 - Python 3.7+
@@ -310,32 +339,45 @@ Weiterarbeiten, nicht als fertiges Produkt.
 > 24 GB aber noch. Die Antwortzeit pro Schritt liegt dadurch bei einigen
 > Sekunden bis ~1–2 Minuten je nach Dateimenge.
 
-### Modell-Challenge: dieselbe CRUD-App von 4 Modellen
+### Modell-Challenge: dieselbe CRUD-App von 6 Modellen
 
-Gleiche Aufgabe an mehrere Modelle (sequenziell, je `--yes --max-steps 30`,
-10-Min-Timeout): eine **Personenverwaltung** mit Flask + SQLite Backend
-(CRUD-API für name/adresse/telefon) und React-Frontend (Tabelle + Anlegen/
-Bearbeiten/Löschen). Server wie oben (Mac mini M4 Pro, 24 GB, `num_ctx` 128k).
+Gleiche Aufgabe an mehrere Modelle (je `--yes --max-steps 30`, 10-Min-Timeout):
+eine **Personenverwaltung** mit Flask + SQLite Backend (CRUD-API für
+name/adresse/telefon) und React-Frontend (Tabelle + Anlegen/Bearbeiten/Löschen).
+Lokale Modelle auf dem Mac mini M4 Pro (24 GB, `num_ctx` 128k); Cloud-Modelle via
+OpenRouter.
 
-| Platz | Modell | Zeit | Dateien | Ergebnis |
-|:---:|---|---:|:---:|---|
-| 🥇 | **qwen3-coder:30b** | **593 s** | 6/6 | **Vollständige, lauffähige App** — alle 4 Endpunkte, SQLite-Autocreate, Frontend mit Anlegen/Bearbeiten/Löschen |
-| 🥈 | gemma3:4b | 189 s | 2 | Nur DB-Stub (kein `@app.route`), kein Frontend; „testet" dann ein nicht existierendes Backend |
-| 🥉 | gemma3:12b | 186 s | 0 | Code inhaltlich ok, aber `write_files`-JSON zweimal ungültig (doppelter `files`-Key, kaputte Escapes) → nichts geschrieben |
-| 4 | gpt-oss:20b | 1 s | 0 | Leere Antwort — Reasoning-Modell, über die `/v1`-Schicht hier nicht nutzbar |
+| Modell | Wo | Zeit | Dateien | Kosten | Ergebnis |
+|---|---|---:|:---:|---:|---|
+| **z-ai/glm-5.2** | ☁️ Cloud (OpenRouter) | **48 s** | 6/6 | $0.0174 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
+| **deepseek/deepseek-v4-pro** | ☁️ Cloud (OpenRouter) | 55 s | 6/6 | $0.0101 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
+| **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig (Sieger der lokalen) |
+| gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
+| gemma3:12b | 💻 Lokal (Mac mini) | 186 s | 0 | – | ❌ Code ok, aber `write_files`-JSON ungültig → nichts geschrieben |
+| gpt-oss:20b | 💻 Lokal (Mac mini) | 1 s | 0 | – | ❌ leere Antwort (Reasoning-Modell, `/v1`-inkompatibel) |
+
+> **Lokal** = Ollama auf dem Mac mini M4 Pro (24 GB, `num_ctx` 128k), kostenlos
+> aber langsam. **Cloud** = OpenRouter (bezahlt pro Token, dafür sehr schnell).
+
+Alle ✅-Apps bestanden Python-`ast`- und JSON-Checks und sind FE↔BE konsistent
+(Felder, Port 5000, Endpunkte). Kosten = Summe aller Requests der Aufgabe laut
+OpenRouter `usage.cost`.
 
 **Erkenntnisse:**
 
-- **Der Coding-Spezialist gewinnt klar** — `qwen3-coder:30b` ist das einzige
-  Modell, das die Multi-File-Aufgabe sauber durchzieht (FE↔BE konsistent,
-  Syntax-/JSON-Checks bestanden).
+- **Cloud schlägt lokal deutlich bei Tempo/Aufwand:** `glm-5.2` und
+  `deepseek-v4-pro` liefern die komplette App in **~50 s für 1–2 Cent** — rund
+  **12× schneller** als das lokale `qwen3-coder:30b` (≈10 Min), das dafür
+  kostenlos und offline ist.
+- **Coding-Spezialist gewinnt lokal:** `qwen3-coder:30b` ist das einzige lokale
+  Modell, das die Multi-File-Aufgabe sauber durchzieht.
 - **Protokoll-Disziplin ≈ Code-Qualität.** `gemma3:12b` *könnte* es, scheitert
-  aber am validen JSON für `write_files`. Das ist ein Tool-Schwachpunkt: ein
-  toleranterer Parser oder kleinere Action-Blöcke würden solche Modelle retten.
+  aber am validen JSON für `write_files` (doppelter `files`-Key, kaputte
+  Escapes). Tool-Schwachpunkt: ein toleranterer Parser würde solche Modelle retten.
 - **Reasoning-Modelle** wie `gpt-oss:20b` brauchen ihren Reasoning-Channel —
   über die OpenAI-`/v1`-Schicht kommt hier nichts an.
-- **128k Kontext ist teuer:** macht den 30B-Sieger langsam (knapp 10 Min);
-  kleine Modelle sind ~3× schneller, liefern hier aber nichts Brauchbares.
+- **128k Kontext ist auf 24 GB teuer:** bremst das lokale 30B stark; in der Cloud
+  spielt das keine Rolle.
 
 ## Verfügbare Modelle
 
