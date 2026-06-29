@@ -526,6 +526,49 @@ def do_write_files(args):
     return (not errors), msg
 
 
+def do_edit_file(args):
+    """Ersetzt in einer bestehenden Datei einen exakten Textausschnitt durch einen
+    neuen — es wandert nur die Aenderung ueber die Leitung, nicht die ganze Datei.
+    'old' muss EINDEUTIG vorkommen (sonst Fehler), ausser replace_all=true."""
+    path = args.get("path", "")
+    old = args.get("old", "")
+    new = args.get("new", "")
+    replace_all = bool(args.get("replace_all", False))
+    if not path or old == "":
+        return False, "FEHLER: 'path' und 'old' sind erforderlich."
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return False, f"FEHLER beim Lesen von {path}: {e}"
+
+    count = content.count(old)
+    if count == 0:
+        return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht gefunden. "
+                       f"Gib 'old' exakt wie im Datei-Inhalt an (Whitespace zaehlt). "
+                       f"Lies die Datei ggf. erneut mit read_file.")
+    if count > 1 and not replace_all:
+        return False, (f"FEHLER: 'old' kommt {count}x in {path} vor — nicht eindeutig. "
+                       f"Mache den Ausschnitt groesser/eindeutiger oder setze "
+                       f"replace_all=true.")
+
+    print(f"{C.YELLOW}» edit_file{C.RESET} {C.BOLD}{path}{C.RESET} "
+          f"({count}x ersetzen)" if replace_all else
+          f"{C.YELLOW}» edit_file{C.RESET} {C.BOLD}{path}{C.RESET}")
+    print(f"{C.RED}- {old[:200]}{C.RESET}")
+    print(f"{C.GREEN}+ {new[:200]}{C.RESET}")
+    if not confirm(f"Aenderung in '{path}' anwenden?"):
+        return False, "Abgelehnt durch den Benutzer."
+    try:
+        updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return True, (f"OK, {count if replace_all else 1} Stelle(n) in {path} ersetzt "
+                      f"(Datei jetzt {len(updated)} Zeichen).")
+    except Exception as e:
+        return False, f"FEHLER beim Schreiben von {path}: {e}"
+
+
 def do_list_dir(args):
     path = args.get("path", ".")
     try:
@@ -627,6 +670,7 @@ DISPATCH = {
     "read_file": do_read_file,
     "write_file": do_write_file,
     "write_files": do_write_files,
+    "edit_file": do_edit_file,
     "list_dir": do_list_dir,
     "find": do_find,
     "ask": do_ask,
@@ -645,6 +689,7 @@ Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}
   write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
   write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}
+  edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
   ask         -> {"action":"ask","question":"<frage an den nutzer>"}
@@ -657,6 +702,12 @@ Regeln:
 - Pro Antwort GENAU EIN action-Block. Davor darfst du kurz dein Vorgehen erklaeren.
 - JSON muss valide sein. Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.
 - Arbeite in kleinen Schritten. Lies bestehende Dateien bevor du sie aenderst.
+- KLEINE Aenderungen an bestehenden Dateien IMMER mit edit_file (gezieltes
+  Ersetzen) statt die ganze Datei mit write_file neu zu schreiben — das spart
+  Tokens und vermeidet abgeschnittene Antworten. "old" muss EXAKT und EINDEUTIG
+  dem aktuellen Dateiinhalt entsprechen (inkl. Whitespace/Einrueckung); waehle
+  genug Kontext, damit der Ausschnitt nur einmal vorkommt. write_file nur fuer
+  NEUE Dateien oder komplette Neufassungen.
 - WICHTIG: Wenn der Nutzer eine bestehende Datei AENDERN will, lege NIEMALS einfach
   eine neue an. Suche sie zuerst mit find/list_dir. Nutzer benennen Dateien oft
   ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
