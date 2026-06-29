@@ -299,6 +299,35 @@ Für Projekte wie ein React-Frontend mit Flask-Backend:
   zu nutzen (z. B. `npm create vite@latest frontend -- --template react`) und
   danach gezielt einzelne Dateien anzupassen.
 
+#### Auto-Continuation bei abgeschnittenen Antworten
+
+Lange Antworten (große Multi-File-Blöcke) können **abgeschnitten** werden — sei es
+durch ein Ausgabe-Token-Limit oder einen **Proxy/Verbindungsabbruch** mitten im
+Stream. Dann fehlt das schließende `}` / der ```` ``` ````-Fence, und der
+Action-Block wäre ungültig. `mc` erkennt das an **zwei** Signalen und fordert das
+Modell automatisch zur **Fortsetzung** auf (bis zu 4×), bevor geparst wird:
+
+- `finish_reason == "length"` (offizielles Token-Limit-Signal), **und**
+- ein **Strukturcheck**: offener ```` ```action ````-Block ohne schließenden Fence
+  — dieser fängt auch **Proxy-Abbrüche** ab, bei denen gar kein `finish_reason`
+  ankommt.
+
+Die abgeschnittenen Teile werden zusammengefügt, sodass am Ende ein vollständiger,
+gültiger Block entsteht. Das ist die robuste Wurzel-Lösung — größen- und
+modellunabhängig, **ohne** kaputtes JSON im Parser zu flicken.
+
+`mc` zeigt bei jeder Fortsetzung **immer** (auch ohne `-v`) die erkannte Ursache,
+damit man Gegenmaßnahmen treffen kann:
+
+```text
+⚠ Antwort abgeschnitten: Token-Limit (Ausgabe gekappt). Fordere Fortsetzung 1/4 …
+⚠ Antwort abgeschnitten: Verbindung/Proxy hat den Stream abgebrochen — ggf. Proxy-/Netzwerk-Timeout erhoehen. Fordere Fortsetzung 1/4 …
+```
+
+So sieht man, ob ein **Token-Limit** (Modell/Server-Seite) oder ein
+**Proxy-/Verbindungsabbruch** vorlag — im zweiten Fall hilft es, den Proxy- bzw.
+Netzwerk-Timeout zu erhöhen.
+
 Beispiel:
 
 ```bash
@@ -419,12 +448,14 @@ Strom**, der Cloud-Lauf über OpenRouter nur **~0,13 ct** ($0.0014) — und ist 
   Modelle lieferte** (Backend + gestyltes Frontend), aber im 1. Versuch an einem
   fehlenden `}` scheiterte — die Antwort war hinter einem einzigen Mega-Block
   abgeschnitten. **Die saubere Behebung** war nicht, den Parser kaputtes JSON
-  flicken zu lassen, sondern den Agenten anzuweisen, `write_files` in **kleinere
-  Batches** zu splitten (kompakte, garantiert vollständige Blöcke). Damit lief
-  qwopus3.6 im 2. Versuch vollständig durch (6/6 Dateien). Lektion: Bei
-  Text-Protokoll-Agenten ist die maximale *Einzel*-Antwort das Risiko — viele
-  kleine vollständige Schritte schlagen einen großen, der an der letzten Klammer
-  zerbricht.
+  flicken zu lassen, sondern die Abschneidung selbst zu behandeln:
+  **Auto-Continuation** (siehe oben) erkennt abgeschnittene Antworten — per
+  `finish_reason` *und* Strukturcheck (fängt auch Proxy-Abbrüche) — und fordert
+  automatisch die Fortsetzung an, bis der Block vollständig ist. Damit ist das
+  Problem größen- und modellunabhängig gelöst, statt sich auf Modell-Disziplin
+  (kleine Blöcke) zu verlassen. Lektion: Bei Text-Protokoll-Agenten ist die
+  maximale *Einzel*-Antwort das Risiko — robust wird es erst, wenn das Tool
+  abgeschnittene Antworten erkennt und zusammensetzt.
 - **Reasoning-Modelle** wie `gpt-oss:20b` brauchen ihren Reasoning-Channel —
   über die OpenAI-`/v1`-Schicht kommt hier nichts an.
 - **128k Kontext ist auf 24 GB teuer:** bremst das lokale 30B stark; in der Cloud

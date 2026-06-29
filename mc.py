@@ -211,9 +211,12 @@ def print_usage_summary():
     print(f"{C.CYAN}{line}{C.RESET}")
 
 
-def chat_stream(messages, model):
-    """Ruft /chat/completions im Streaming-Modus auf und gibt den vollen Text
-    zurueck (waehrend des Empfangs wird live ausgegeben)."""
+MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
+
+
+def _chat_once(messages, model):
+    """Ein einzelner /chat/completions-Streaming-Aufruf. Gibt (text, finish_reason)
+    zurueck und streamt live mit."""
     url = f"{BASE_URL}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": True,
                # Token-/Kostenabrechnung anfordern (OpenAI-Standard + OpenRouter).
@@ -229,6 +232,7 @@ def chat_stream(messages, model):
     parts = []
     first = True
     usage = None
+    finish_reason = None
     try:
         log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
@@ -247,6 +251,8 @@ def chat_stream(messages, model):
                 # Der Usage-Chunk hat oft leere/keine choices -> sicher zugreifen.
                 choices = obj.get("choices") or []
                 if choices:
+                    if choices[0].get("finish_reason"):
+                        finish_reason = choices[0]["finish_reason"]
                     token = choices[0].get("delta", {}).get("content")
                     if token:
                         if first:
@@ -259,14 +265,60 @@ def chat_stream(messages, model):
                     usage = obj["usage"]
         if usage:
             account_usage(usage)
-        log(f"Antwort vollstaendig ({len(''.join(parts))} Zeichen).")
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body}")
     except NET_ERRORS as e:
         raise SystemExit(net_error(getattr(e, "reason", e)))
+    return "".join(parts), finish_reason
+
+
+def _looks_truncated(text, finish_reason):
+    """Heuristik: wurde die Antwort abgeschnitten? Zwei unabhaengige Signale —
+    das offizielle finish_reason und ein Strukturcheck auf einen nicht
+    geschlossenen ```action```-Block."""
+    if finish_reason == "length":
+        return True
+    # Strukturcheck: oeffnender ```action-Fence ohne schliessenden ```.
+    open_fence = re.search(r"```action", text)
+    if open_fence and "```" not in text[open_fence.end():]:
+        return True
+    return False
+
+
+def chat_stream(messages, model):
+    """Wie _chat_once, aber faengt abgeschnittene Antworten ab: bei Truncation
+    wird das Modell automatisch um Fortsetzung gebeten und der Text zusammengefuegt
+    — modell- und groessenunabhaengig, ohne kaputtes JSON zu flicken."""
+    text, fr = _chat_once(messages, model)
+    cont = 0
+    while _looks_truncated(text, fr) and cont < MAX_CONTINUATIONS:
+        cont += 1
+        print()
+        # Ursache klassifizieren und IMMER anzeigen (nicht nur verbose), damit man
+        # erkennt, ob ein Token-Limit oder ein Verbindungs-/Proxy-Abbruch vorliegt.
+        if fr == "length":
+            grund = "Token-Limit (Ausgabe gekappt)"
+        elif fr is None:
+            grund = ("Verbindung/Proxy hat den Stream abgebrochen — ggf. "
+                     "Proxy-/Netzwerk-Timeout erhoehen")
+        else:
+            grund = f"finish_reason={fr}"
+        print(f"{C.YELLOW}⚠ Antwort abgeschnitten: {grund}. "
+              f"Fordere Fortsetzung {cont}/{MAX_CONTINUATIONS} …{C.RESET}")
+        cont_msgs = messages + [
+            {"role": "assistant", "content": text},
+            {"role": "user", "content":
+                "Deine vorige Antwort wurde abgeschnitten. Fahre EXAKT an der "
+                "abgebrochenen Stelle fort — gib NUR die Fortsetzung aus, ohne "
+                "Wiederholung, ohne Einleitung, ohne den bereits gesendeten Teil "
+                "zu erneut zu schreiben."}]
+        more, fr = _chat_once(cont_msgs, model)
+        text += more
     print()
-    return "".join(parts)
+    log(f"Antwort vollstaendig ({len(text)} Zeichen"
+        + (f", {cont} Fortsetzung(en)" if cont else "") + ").")
+    return text
 
 
 def list_models():
