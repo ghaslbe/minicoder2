@@ -489,6 +489,13 @@ ausführlichen Schritt-für-Schritt-Anleitung ausgebaut. Auch das live im Browse
 verifiziert (beide URLs, korrekte Ansichten, Footer durchgehend). `mc` bewältigt
 also auch strukturelle Umbauten, nicht nur additive Ergänzungen.
 
+Für **punktuelle** Änderungen an großen Dateien nutzt `mc` die
+[`edit_file`-Aktion](#aktionen-des-agenten) (gezieltes Ersetzen statt die ganze
+Datei neu zu schreiben). In der Praxis bestätigt: Die fehlerhafte DELETE-Route
+(404-Fix) und das Einfügen von Datenbank-/API-Abschnitten in die Hilfe liefen
+jeweils mit **1× read_file + 1× edit_file** — ohne die komplette Datei zu senden,
+was Tokens spart und das Truncation-Risiko vermeidet.
+
 ## Verfügbare Modelle
 
 Vom jeweiligen Endpoint abfragbar:
