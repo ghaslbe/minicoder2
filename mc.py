@@ -1013,6 +1013,9 @@ def main():
                     help=f"Max. Agenten-Schritte pro Aufgabe (default {MAX_STEPS})")
     ap.add_argument("--plan", action="store_true",
                     help="Erst einen Plan zeigen und bestaetigen lassen, dann umsetzen")
+    ap.add_argument("--dir", "-C", metavar="PFAD",
+                    help="Zielverzeichnis, in dem gearbeitet wird (statt des aktuellen). "
+                         "So kann mc.py getrennt vom bearbeiteten Projekt liegen.")
     ap.add_argument("--file", action="append", default=[], metavar="PFAD",
                     help="Datei(en) gleich in den Kontext laden (mehrfach angebbar), "
                          "z.B. --file=index.html — der Agent 'sieht' sie dann sofort")
@@ -1030,6 +1033,18 @@ def main():
     CA_BUNDLE = args.ca_bundle
     INSECURE = args.insecure
     VERBOSE = VERBOSE or args.verbose
+
+    # Ins Zielverzeichnis wechseln, damit mc.py raeumlich getrennt vom Projekt
+    # liegen kann. Alles Weitere (Projektueberblick, find, Schreiben, Git) bezieht
+    # sich dann auf dieses Verzeichnis. --file-Pfade werden VOR dem Wechsel relativ
+    # zum Aufrufort aufgeloest, damit auch eine Datei von ausserhalb mitgegeben
+    # werden kann.
+    args.file = [os.path.abspath(f) for f in args.file]
+    if args.dir:
+        try:
+            os.chdir(args.dir)
+        except OSError as e:
+            raise SystemExit(f"{C.RED}--dir: {args.dir} nicht nutzbar: {e}{C.RESET}")
 
     if args.debug_net:
         debug_net()

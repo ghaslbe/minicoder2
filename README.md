@@ -130,6 +130,51 @@ Mehrfach angebbar (`--file=a.py --file=b.json`); Windows-Pfade wie
 `--file=C:/projekt/seite.html` funktionieren. Praktisch für „schau dir die an
 und …".
 
+### `mc` getrennt vom Projekt betreiben (empfohlen)
+
+Damit sich `mc.py` **nicht** mit dem bearbeiteten Projekt vermischt, sollte das
+Tool **außerhalb** des Projektverzeichnisses liegen. Wichtig: `mc` arbeitet immer
+auf dem **Arbeitsverzeichnis** (nicht dort, wo `mc.py` liegt) — die Trennung ist
+also problemlos.
+
+**Empfohlenes Setup:** `mc.py` einmal an einen festen Ort legen, z. B.
+`~/tools/mc.py` (oder `C:\tools\mc.py`), und von dort aus jedes beliebige Projekt
+bearbeiten:
+
+```bash
+# Variante A — Zielverzeichnis explizit angeben (kein cd nötig):
+python3 ~/tools/mc.py --dir /pfad/zu/meinprojekt "modernisiere das Layout"
+
+# Variante B — ins Projekt wechseln und mc von außerhalb aufrufen:
+cd /pfad/zu/meinprojekt
+python3 ~/tools/mc.py "modernisiere das Layout"
+```
+
+In **beiden** Fällen bleibt `mc.py` in `~/tools`, bearbeitet wird nur
+`/pfad/zu/meinprojekt`. Es landet **keine** Tool-Datei im Projekt, und der
+Projektüberblick/`find`/`git`/Schreibvorgänge beziehen sich ausschließlich auf das
+Zielverzeichnis.
+
+Komfort-Tipp — einen kurzen Alias/Wrapper anlegen, dann ruft man nur noch `mc`:
+
+```bash
+# in ~/.zshrc bzw. ~/.bashrc:
+alias mc='python3 ~/tools/mc.py'
+# danach z.B.:  mc --dir ~/code/website "füge eine Kontaktseite hinzu"
+```
+
+**Externe Vorlage einbeziehen:** `--file`-Pfade werden **vor** dem Wechsel ins
+Zielverzeichnis aufgelöst — du kannst also eine Datei von *außerhalb* des Projekts
+als Vorlage mitgeben:
+
+```bash
+mc --dir ~/code/website --file ~/Desktop/entwurf.html \
+   "bau die Startseite nach dieser Vorlage um"
+```
+
+So bleibt das Werkzeug sauber getrennt: `mc.py` an einem Ort, das Projekt woanders,
+eine Vorlage ggf. von einem dritten Ort.
+
 **Prompt mitgeben:** alles nach den Optionen wird als Aufgabe genommen
 (`python3 mc.py "deine aufgabe"`). Ohne Prompt startet der interaktive Modus —
 dort beendet `exit`, `quit` oder `Ctrl-D` die Sitzung.
@@ -148,6 +193,7 @@ und zeigt alle IDs (kombinierbar mit `--base-url`).
 | `--base-url URL` | Server-Basis-URL (Default `http://localhost:11434/v1`)|
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
 | `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
+| `--dir`, `-C PFAD` | Zielverzeichnis, in dem gearbeitet wird (statt cwd) |
 | `--file PFAD`    | Datei(en) gleich in den Kontext laden (mehrfach möglich) |
 | `--plan`         | Erst Plan zeigen + bestätigen lassen, dann umsetzen   |
 | `--no-validate`  | Validierung geschriebener Dateien abschalten          |
