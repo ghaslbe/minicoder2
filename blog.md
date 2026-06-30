@@ -354,6 +354,17 @@ ganzen Benchmarks**, schneller als qwen3-coder (593 s), gemma4 (261 s) und qwopu
 schlichtes „PONG" verbrauchte es ~250 Tokens). Die agentische Spezialisierung zeigt
 sich: Es traf die Action-Blöcke sauber, ohne sie im Reasoning zu vergraben.
 
+**Aber: ein Gegentest zog die Euphorie gerade.** Derselbe Q3_K_L ein zweites Mal —
+und das Ergebnis war nur **4/6** in 182 s: ein `write_files`-Block hatte ungültiges
+JSON (`Expecting ':'`), wurde abgelehnt, und das Modell lieferte die fehlenden
+Dateien (u. a. die React-Hauptkomponente `App.jsx`) **nie nach**, sondern erklärte
+sich in Prosa für fertig — ganz ohne `finish`-Aktion. Hier griff auch keine
+Auto-Continuation, weil das JSON nicht *abgeschnitten*, sondern inhaltlich *kaputt*
+war. Die Lehre: Der makellose erste Lauf war zum Teil Glück. Lauf-zu-Lauf gibt es
+**spürbare Varianz** — einmal perfekt, einmal an einem fehlenden `:` gescheitert.
+Single-Run-Benchmarks zeichnen ein zu sauberes Bild; erst der Wiederholungslauf
+zeigt, wie wackelig Protokoll-Disziplin selbst bei einem guten Modell sein kann.
+
 Die Lektion ist die schönste des ganzen Projekts: **Ein neues Modell ist der beste
 Test für das eigene Werkzeug.** Ornith deckte einen Bug auf, der seit dem ersten Tag
 schlummerte — zwei System-Messages, von jedem anderen Modell verziehen, von einem
