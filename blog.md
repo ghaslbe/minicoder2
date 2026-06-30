@@ -429,6 +429,29 @@ agentische Aufgaben lieber einen Hauch weniger Kompression**, denn das Erste, wa
 unter aggressivem Quant leidet, ist nicht die Sprache, sondern die *Genauigkeit*
 beim Einhalten des Formats.
 
+### 6.8 Der Gegenpol: Cloud = Zuverlässigkeit
+
+Nach der lokalen Achterbahn der Kontrast: dieselbe CRUD-Aufgabe **fünfmal** mit
+`google/gemma-4-26b-a4b-it` über OpenRouter. Ergebnis: **5 von 5 vollständig**
+(6/6 Dateien), jedes Mal valides Backend mit allen vier Endpunkten (3 von 5 sogar
+mit 404-Handling), **null** Validierungsfehler, in 26–189 s für je ~0,1–0,4 Cent.
+Wo das lokale 35B zwischen 0/6 und 7 schwankte, lieferte das Cloud-Modell stur ab.
+
+Und dieselbe Erweiterung wie bei den anderen — Hash-Routing mit eigener `#/hilfe`-
+URL, Navigation, ausführliche Hilfe, Footer, CRUD erhalten — lief in einem
+sauberen `read_file → write_file → finish` durch, ohne Auto-Continuation, ohne
+Validierungsfehler, für 0,19 Cent. Im Browser verifiziert: beide Routen schalten
+korrekt, Daten kommen live aus SQLite.
+
+Das ist der ehrliche Schlusspunkt des Modellteils: **Lokal ist faszinierend,
+lehrreich und manchmal blitzschnell — aber unzuverlässig.** Ein gutes Cloud-Modell
+kostet Bruchteile eines Cent und macht dafür einfach, was es soll, reproduzierbar.
+Die ganze Robustheits-Mechanik in `mc` (Auto-Continuation, Validierung, Rollback)
+ist vor allem ein *Lokal*-Phänomen — sie federt genau die Varianz ab, die
+Cloud-Modelle gar nicht erst zeigen. Wer Verlässlichkeit braucht, nimmt die Cloud;
+wer offline/datensparsam/umsonst arbeiten will, nimmt lokal — und ist froh, dass
+das Tool die Patzer auffängt.
+
 ---
 
 ## 7. Stromkosten-Rechnung (Mac mini M4 Pro)
