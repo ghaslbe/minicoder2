@@ -462,9 +462,22 @@ abgeschnittene Antwort ab (das Modell merkte selbst an, es schreibe „nun in
 kleineren Blöcken"). Ohne diese Netze wären drei der fünf Läufe unvollständig
 gewesen — *mit* ihnen waren alle fünf komplett.
 
+Noch ein Datenpunkt, der die These stützt: die **MoE-Variante**
+`qwen3-coder-30B-A3B` (nur 3B aktive Parameter, UD-Q4-Quant). Die Hoffnung war
+„wenig aktive Parameter = schnell". Realität auf 24 GB: **kein** Tempovorteil
+(248–845 s, im Schnitt eher langsamer als das dichte 30B mit 593 s — der
+Flaschenhals ist die Bandbreite/das Laden der vollen Gewichte, nicht die aktiven
+Parameter) und über fünf Läufe nur **2/5 vollständig**, mit zwei *Totalausfällen*
+(0 Dateien: JSON-Fehler, dann Prosa-„fertig" ohne `finish`). Bezeichnend: gegen so
+einen kompletten Abbruch hilft auch die Robustheits-Mechanik nicht — es gab nichts
+zu validieren und nichts fortzusetzen. Architektur-Tricks (MoE) ändern weder am
+Tempo noch an der Verlässlichkeit etwas; beides bleibt eine Frage des konkreten
+Modells.
+
 Das ist der ehrliche Schlusspunkt des Modellteils: **Verlässlichkeit ist eine
 Modell-Eigenschaft** — manche Modelle (Gemma) treffen das Protokoll stur, andere
-(Ornith) schwanken stark, unabhängig von Cloud oder lokal. Die Cloud gewinnt vor
+(Ornith, qwen3-coder-A3B) schwanken stark, unabhängig von Cloud, lokal oder
+MoE-Architektur. Die Cloud gewinnt vor
 allem beim *Tempo* (Sekunden statt Minuten) und Komfort, für Centbruchteile; lokal
 punktet mit offline/umsonst/Datenschutz. Und genau für die wackligen Modelle ist
 die Tool-Mechanik (Auto-Continuation, Validierung+Retry, Rollback) das, was aus

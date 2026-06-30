@@ -455,7 +455,8 @@ OpenRouter.
 | **google/gemma-4-26b-a4b-it** | ☁️ Cloud (OpenRouter) | 26–189 s | 6/6 | ~$0.002 | ✅ **5/5 Läufe vollständig** — zuverlässigster Kandidat; dasselbe Modell wie lokal `gemma4:26b-mlx`, nur viel schneller |
 | **Ornith-1.0-35B (Q3_K_L)** | 💻 Lokal (Mac mini) | 97–1007 s | 0–7 / 6 | – | ⚠️ **hohe Varianz über 6 Läufe:** Dateien 0/4/5/6/6/7, nur ~½ vollständig; bester Lauf 168 s/6-6 war das obere Ende, nicht typisch. Schnell wenn's klappt, aber unzuverlässig (JSON-Fehler/leere Antworten); nach System-Message-Fix, s. u. |
 | Ornith-1.0-35B (IQ3_XS) | 💻 Lokal (Mac mini) | 234 s | 5/6 | – | ⚠️ stärker quantisiert: langsamer, `package.json` fehlte, **3× Auto-Continuation** nötig (Antworten rissen ab), Backend ohne 404 — Quant-Verlust ggü. Q3_K_L sichtbar |
-| **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig |
+| **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig (1 Lauf) |
+| qwen3-coder-30B-**A3B** (UD-Q4_K_XL) | 💻 Lokal (Mac mini) | 248–845 s | 0–7 / 6 | – | ⚠️ über 5 Läufe nur **2/5 vollständig** (~40 %); 2 Totalausfälle (0 Dateien, JSON-Fehler + Prosa-„fertig"). Trotz MoE/3B-aktiv **kein** Tempovorteil — Bandbreite limitiert |
 | **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 285–492 s | 6/6 | – | ✅ **5/5 Läufe vollständig** (langsamer als Cloud, aber genauso zuverlässig); 3 Läufe wurden von Validierung/Auto-Continuation gerettet |
 | gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
 | gemma3:12b | 💻 Lokal (Mac mini) | 186 s | 0 | – | ❌ Code ok, aber `write_files`-JSON ungültig → nichts geschrieben |
@@ -504,7 +505,15 @@ OpenRouter `usage.cost`.
   **3 von 5** vom Tool gerettet: 2× schlug die **Validierung** an (ungültige Datei →
   Modell korrigierte sich → final valide), 1× fing die **Auto-Continuation** eine
   abgeschnittene Antwort ab. Ohne diese Netze wären 3 Läufe unvollständig gewesen,
-  mit ihnen waren alle 5 komplett.
+  mit ihnen waren alle 5 komplett. (Aber: gegen einen *kompletten* Abbruch — JSON-
+  Fehler **und** Prosa-„fertig" ohne geschriebene Datei — hilft auch das nicht; das
+  zeigten die A3B-Totalausfälle, wo es nichts zu validieren/fortzusetzen gab.)
+- **Mehr aktive Parameter ≠ Tempo, MoE ≠ Verlässlichkeit.** Die MoE-Variante
+  `qwen3-coder-30B-A3B` (nur 3B aktiv) war auf dem Mini **nicht schneller**
+  (248–845 s vs. 593 s beim dichten 30B) und über 5 Läufe nur **2/5 vollständig**.
+  Auf 24 GB limitiert die Speicherbandbreite/das Laden der vollen Gewichte, nicht
+  die aktiven Parameter — und die Zuverlässigkeit bleibt eine Frage des konkreten
+  Modells, nicht der Architektur.
 
 #### Was kostet „lokal" wirklich? (Strom)
 
