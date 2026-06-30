@@ -443,14 +443,33 @@ sauberen `read_file → write_file → finish` durch, ohne Auto-Continuation, oh
 Validierungsfehler, für 0,19 Cent. Im Browser verifiziert: beide Routen schalten
 korrekt, Daten kommen live aus SQLite.
 
-Das ist der ehrliche Schlusspunkt des Modellteils: **Lokal ist faszinierend,
-lehrreich und manchmal blitzschnell — aber unzuverlässig.** Ein gutes Cloud-Modell
-kostet Bruchteile eines Cent und macht dafür einfach, was es soll, reproduzierbar.
-Die ganze Robustheits-Mechanik in `mc` (Auto-Continuation, Validierung, Rollback)
-ist vor allem ein *Lokal*-Phänomen — sie federt genau die Varianz ab, die
-Cloud-Modelle gar nicht erst zeigen. Wer Verlässlichkeit braucht, nimmt die Cloud;
-wer offline/datensparsam/umsonst arbeiten will, nimmt lokal — und ist froh, dass
-das Tool die Patzer auffängt.
+**Doch dann die Gegenprobe — dasselbe Gemma *lokal*:** `gemma4:26b-mlx` fünfmal
+über den Mac mini. Ergebnis: ebenfalls **5 von 5 vollständig** (6/6), nur
+langsamer — **285–492 s** (Faktor ~1,7 Zeit-Varianz) statt der Sekunden in der
+Cloud. Wichtig: Die *Zeit* schwankt überall (Inferenz ist nie exakt gleich, hängt
+an Last/KV-Cache), aber die *Vollständigkeit* war bei Gemma beidseits stabil 6/6 —
+anders als bei Ornith, wo auch das Ergebnis selbst zwischen 0 und 7 Dateien
+sprang. Damit fällt die einfache „Cloud = zuverlässig, lokal = wackelig"-These:
+**Verlässlichkeit hängt am Modell, nicht am Ort.** Gemma liefert lokal *und* in der Cloud stur ab; Ornith schwankt lokal
+massiv. Die Achterbahn war ein *Ornith*-Problem, kein *Lokal*-Problem.
+
+Und hier zahlten sich die Robustheits-Mechaniken erstmals *sichtbar im Erfolg* aus:
+Von den fünf lokalen Gemma-Läufen wurden **drei vom Tool gerettet** — bei zweien
+schlug die **Validierung** an (eine geschriebene Datei war ungültig), das Modell
+korrigierte sie nach der Rückmeldung, und der Lauf endete trotzdem mit sechs
+*validen* Dateien; bei einem dritten fing die **Auto-Continuation** eine
+abgeschnittene Antwort ab (das Modell merkte selbst an, es schreibe „nun in
+kleineren Blöcken"). Ohne diese Netze wären drei der fünf Läufe unvollständig
+gewesen — *mit* ihnen waren alle fünf komplett.
+
+Das ist der ehrliche Schlusspunkt des Modellteils: **Verlässlichkeit ist eine
+Modell-Eigenschaft** — manche Modelle (Gemma) treffen das Protokoll stur, andere
+(Ornith) schwanken stark, unabhängig von Cloud oder lokal. Die Cloud gewinnt vor
+allem beim *Tempo* (Sekunden statt Minuten) und Komfort, für Centbruchteile; lokal
+punktet mit offline/umsonst/Datenschutz. Und genau für die wackligen Modelle ist
+die Tool-Mechanik (Auto-Continuation, Validierung+Retry, Rollback) das, was aus
+„mal klappt's, mal nicht" ein verlässliches Ergebnis macht — wie die geretteten
+drei Gemma-Läufe zeigen.
 
 ---
 
