@@ -397,11 +397,11 @@ OpenRouter.
 |---|---|---:|:---:|---:|---|
 | **z-ai/glm-5.2** | ☁️ Cloud (OpenRouter) | **48 s** | 6/6 | $0.0174 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
 | **deepseek/deepseek-v4-pro** | ☁️ Cloud (OpenRouter) | 55 s | 6/6 | $0.0101 | ✅ vollständig, alle 4 Endpunkte, sauberes CRUD-Frontend |
-| **google/gemma-4-26b-a4b-it** | ☁️ Cloud (OpenRouter) | 48 s | 6/6 | $0.0014 | ✅ vollständig — dasselbe Modell wie lokal `gemma4:26b-mlx`, nur ~5× schneller |
+| **google/gemma-4-26b-a4b-it** | ☁️ Cloud (OpenRouter) | 26–189 s | 6/6 | ~$0.002 | ✅ **5/5 Läufe vollständig** — zuverlässigster Kandidat; dasselbe Modell wie lokal `gemma4:26b-mlx`, nur viel schneller |
 | **Ornith-1.0-35B (Q3_K_L)** | 💻 Lokal (Mac mini) | 97–1007 s | 0–7 / 6 | – | ⚠️ **hohe Varianz über 6 Läufe:** Dateien 0/4/5/6/6/7, nur ~½ vollständig; bester Lauf 168 s/6-6 war das obere Ende, nicht typisch. Schnell wenn's klappt, aber unzuverlässig (JSON-Fehler/leere Antworten); nach System-Message-Fix, s. u. |
 | Ornith-1.0-35B (IQ3_XS) | 💻 Lokal (Mac mini) | 234 s | 5/6 | – | ⚠️ stärker quantisiert: langsamer, `package.json` fehlte, **3× Auto-Continuation** nötig (Antworten rissen ab), Backend ohne 404 — Quant-Verlust ggü. Q3_K_L sichtbar |
 | **qwen3-coder:30b** | 💻 Lokal (Mac mini) | 593 s | 6/6 | – | ✅ vollständig |
-| **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 261 s | 6/6 | – | ✅ vollständig, alle 4 Endpunkte, Frontend mit Edit/Delete |
+| **gemma4:26b-mlx** | 💻 Lokal (Mac mini) | 285–492 s | 6/6 | – | ✅ **5/5 Läufe vollständig** (langsamer als Cloud, aber genauso zuverlässig); 3 Läufe wurden von Validierung/Auto-Continuation gerettet |
 | gemma3:4b | 💻 Lokal (Mac mini) | 189 s | 2 | – | ⚠️ nur DB-Stub (kein `@app.route`), kein Frontend |
 | gemma3:12b | 💻 Lokal (Mac mini) | 186 s | 0 | – | ❌ Code ok, aber `write_files`-JSON ungültig → nichts geschrieben |
 | **qwopus3.6:27b (Q4_K_M)** | 💻 Lokal (Mac mini) | 338 s | 6/6 | – | ✅ vollständig (inkl. CSS-Styling & Bearbeiten) — **erst nach Prompt-Fix**: 1. Versuch scheiterte an abgeschnittenem JSON (fehlendes letztes `}`) |
@@ -436,9 +436,20 @@ OpenRouter `usage.cost`.
   **12× schneller** als das lokale `qwen3-coder:30b` (≈10 Min), das dafür
   kostenlos und offline ist.
 - **Gleiches Modell, lokal vs. Cloud:** `gemma4:26b` liefert beidseitig die volle
-  App — lokal in **261 s**, via OpenRouter (`google/gemma-4-26b-a4b-it`) in
-  **48 s für $0.0014**. Der Tempogewinn ist ~5×; lokal punktet mit Offline-Betrieb
-  und Datenschutz.
+  App — lokal in **285–492 s**, via OpenRouter (`google/gemma-4-26b-a4b-it`) in
+  **26–189 s** für ~$0.002. Der Tempogewinn ist groß; lokal punktet mit
+  Offline-Betrieb und Datenschutz.
+- **Verlässlichkeit ist eine Modell-Eigenschaft, nicht „Cloud vs. lokal".** Über je
+  5 Läufe war Gemma **beidseits 5/5 vollständig** (Cloud *und* lokal), während
+  `Ornith-1.0-35B` lokal nur **~50 %** schaffte (Dateien 0–7, JSON-Fehler, leere
+  Antworten). Ein Single-Run-Benchmark täuscht also — der erste makellose
+  Ornith-Lauf (168 s/6-6) war das obere Ende, nicht typisch. Manche Modelle treffen
+  das Protokoll stur, andere schwanken stark, **egal wo sie laufen**.
+- **Die Robustheits-Mechanik greift messbar.** Bei den lokalen Gemma-Läufen wurden
+  **3 von 5** vom Tool gerettet: 2× schlug die **Validierung** an (ungültige Datei →
+  Modell korrigierte sich → final valide), 1× fing die **Auto-Continuation** eine
+  abgeschnittene Antwort ab. Ohne diese Netze wären 3 Läufe unvollständig gewesen,
+  mit ihnen waren alle 5 komplett.
 
 #### Was kostet „lokal" wirklich? (Strom)
 
