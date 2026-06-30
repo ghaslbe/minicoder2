@@ -120,8 +120,15 @@ python3 mc.py "schreib fizzbuzz.py und führ es aus"   # Prompt direkt mitgeben
 python3 mc.py --model gpt-oss:20b "..."         # anderes Modell
 python3 mc.py --base-url http://server:11434/v1 "..."  # anderer Server
 python3 mc.py --list-models                      # Modelle des Servers auflisten
+python3 mc.py --file=index.html "modernisiere das Layout"  # Datei in den Kontext
 python3 mc.py --yes "..."                        # ohne Rückfragen (Vorsicht!)
 ```
+
+**Datei mitgeben:** `--file=PFAD` liest die Datei und legt ihren Inhalt direkt in
+den Kontext — der Agent „sieht" sie sofort, ohne erst `read_file` aufzurufen.
+Mehrfach angebbar (`--file=a.py --file=b.json`); Windows-Pfade wie
+`--file=C:/projekt/seite.html` funktionieren. Praktisch für „schau dir die an
+und …".
 
 **Prompt mitgeben:** alles nach den Optionen wird als Aufgabe genommen
 (`python3 mc.py "deine aufgabe"`). Ohne Prompt startet der interaktive Modus —
@@ -141,7 +148,9 @@ und zeigt alle IDs (kombinierbar mit `--base-url`).
 | `--base-url URL` | Server-Basis-URL (Default `http://localhost:11434/v1`)|
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
 | `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
+| `--file PFAD`    | Datei(en) gleich in den Kontext laden (mehrfach möglich) |
 | `--plan`         | Erst Plan zeigen + bestätigen lassen, dann umsetzen   |
+| `--no-validate`  | Validierung geschriebener Dateien abschalten          |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |

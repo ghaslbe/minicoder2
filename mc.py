@@ -1013,6 +1013,9 @@ def main():
                     help=f"Max. Agenten-Schritte pro Aufgabe (default {MAX_STEPS})")
     ap.add_argument("--plan", action="store_true",
                     help="Erst einen Plan zeigen und bestaetigen lassen, dann umsetzen")
+    ap.add_argument("--file", action="append", default=[], metavar="PFAD",
+                    help="Datei(en) gleich in den Kontext laden (mehrfach angebbar), "
+                         "z.B. --file=index.html — der Agent 'sieht' sie dann sofort")
     ap.add_argument("--no-validate", action="store_true",
                     help="Validierung geschriebener Dateien (py/json/yaml/php) abschalten")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
@@ -1063,6 +1066,18 @@ def main():
         f"Vorhandene Dateien (rekursiv):\n{listing}\n\n"
         f"Wenn der Nutzer eine Datei ungenau benennt, ordne sie einer dieser Dateien "
         f"zu (find hilft beim unscharfen Suchen), statt blind eine neue anzulegen.")
+
+    # Mit --file uebergebene Dateien direkt in den Kontext legen (der Agent 'sieht'
+    # sie sofort, ohne erst read_file aufrufen zu muessen).
+    for fp in args.file:
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                fcontent = fh.read()
+            info(f"Datei in Kontext geladen: {fp} ({len(fcontent)} Zeichen)")
+            context_msg += (f"\n\n--- Mitgelieferte Datei: {fp} "
+                            f"({len(fcontent)} Zeichen) ---\n{truncate(fcontent)}")
+        except Exception as e:
+            print(f"{C.RED}--file: {fp} konnte nicht gelesen werden: {e}{C.RESET}")
     # System-Prompt und Projektueberblick in EINER system-Message buendeln.
     # Manche Chat-Templates (z.B. Ornith-GGUF) brechen bei zwei aufeinander-
     # folgenden system-Rollen sofort leer ab — eine kombinierte ist universell
