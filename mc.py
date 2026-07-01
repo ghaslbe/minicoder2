@@ -47,6 +47,9 @@ from urllib.parse import urlsplit
 BASE_URL = os.environ.get("MC_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 DEFAULT_MODEL = os.environ.get("MC_MODEL", "qwen3-coder:30b")
 API_KEY = os.environ.get("MC_API_KEY", "")
+# Zusaetzliche HTTP-Header pro Request, z.B. MC_HEADERS="X-Foo: bar; X-Baz: qux"
+# (mehrere durch ';' oder Zeilenumbruch getrennt, je 'Name: Wert').
+EXTRA_HEADERS_RAW = os.environ.get("MC_HEADERS", "")
 
 # Netzwerk: in Firmenumgebungen (z.B. Zscaler) muss der Traffic durch einen Proxy,
 # und das TLS wird oft mit einem eigenen CA-Zertifikat aufgebrochen.
@@ -219,6 +222,21 @@ def print_usage_summary():
     print(f"{C.CYAN}{line}{C.RESET}")
 
 
+def extra_headers():
+    """Parst MC_HEADERS ('Name: Wert' je Eintrag, getrennt durch ';' oder Zeilen-
+    umbruch) in ein Dict, das jedem Request beigefuegt wird."""
+    out = {}
+    for part in re.split(r"[;\n]", EXTRA_HEADERS_RAW):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        name, val = part.split(":", 1)
+        name = name.strip()
+        if name:
+            out[name] = val.strip()
+    return out
+
+
 MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
 
 
@@ -276,6 +294,7 @@ def _chat_once(messages, model):
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
+    headers.update(extra_headers())
 
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
@@ -383,6 +402,7 @@ def list_models():
     headers = {}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
+    headers.update(extra_headers())
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         log(f"verbinde mit {url} …")

@@ -332,10 +332,19 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `MC_BASE_URL`   | `http://localhost:11434/v1` | Basis-URL der Schnittstelle            |
 | `MC_MODEL`      | `qwen3-coder:30b`           | Default-Modell                         |
 | `MC_API_KEY`    | *(leer)*                    | Optionaler Bearer-Token, falls nötig   |
+| `MC_HEADERS`    | *(leer)*                    | Zusätzliche HTTP-Header pro Request     |
 | `MC_PROXY`      | *(leer)*                    | HTTP(S)-Proxy (Zscaler/Firmennetz)     |
 | `MC_CA_BUNDLE`  | *(leer)*                    | Pfad zu eigenem CA-Zertifikat          |
 | `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
 | `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
+
+**Eigene HTTP-Header:** `MC_HEADERS` sendet zusätzliche Header bei jedem Request
+mit (Chat *und* `--list-models`). Mehrere durch `;` oder Zeilenumbruch trennen,
+je `Name: Wert`:
+
+```bash
+export MC_HEADERS="X-Trace-Id: abc123; X-App: minicoder"
+```
 
 ## Aktionen des Agenten
 
