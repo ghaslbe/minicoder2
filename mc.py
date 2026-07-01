@@ -376,7 +376,9 @@ def chat_stream(messages, model):
 
 
 def list_models():
-    """Holt /models vom Endpoint und gibt die IDs als Liste zurueck."""
+    """Holt /models vom Endpoint und gibt je Modell (id, preis-info) zurueck.
+    'preis-info' ist ein String wie 'gratis', '$0.95/$3.00 pro Mio Tok' oder ''
+    (wenn der Endpoint keine Preise liefert, z.B. lokales Ollama)."""
     url = f"{BASE_URL}/models"
     headers = {}
     if API_KEY:
@@ -391,7 +393,24 @@ def list_models():
         raise SystemExit(f"{C.RED}HTTP {e.code} beim Abruf der Modelle.{C.RESET}")
     except NET_ERRORS as e:
         raise SystemExit(net_error(getattr(e, "reason", e)))
-    return sorted(m.get("id", "?") for m in obj.get("data", []))
+
+    out = []
+    for m in obj.get("data", []):
+        mid = m.get("id", "?")
+        pr = m.get("pricing") or {}
+        info = ""
+        try:
+            p = float(pr.get("prompt", "") or "nan")
+            c = float(pr.get("completion", "") or "nan")
+            if p == 0 and c == 0:
+                info = "gratis"
+            elif p == p and c == c:  # nicht NaN
+                # OpenRouter-Preise sind pro Token -> auf pro Mio Token skalieren
+                info = f"${p*1e6:.2f}/${c*1e6:.2f} pro Mio Tok"
+        except (ValueError, TypeError):
+            info = ""
+        out.append((mid, info))
+    return sorted(out, key=lambda x: x[0])
 
 
 def debug_net():
@@ -1051,9 +1070,20 @@ def main():
         return
 
     if args.list_models:
+        models = list_models()
         print(f"{C.CYAN}Modelle @ {BASE_URL}:{C.RESET}")
-        for mid in list_models():
-            print(f"  {mid}")
+        width = min(max((len(mid) for mid, _ in models), default=0), 60)
+        for mid, info in models:
+            if info == "gratis":
+                tag = f"  {C.GREEN}gratis{C.RESET}"
+            elif info:
+                tag = f"  {C.DIM}{info}{C.RESET}"
+            else:
+                tag = ""
+            print(f"  {mid:<{width}}{tag}")
+        free = sum(1 for _, i in models if i == "gratis")
+        if free:
+            print(f"{C.DIM}({free} davon gratis){C.RESET}")
         return
 
     banner(f"mc · Mini Coding Tool  ({args.model} @ {BASE_URL})")

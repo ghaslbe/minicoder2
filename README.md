@@ -183,7 +183,11 @@ dort beendet `exit`, `quit` oder `Ctrl-D` die Sitzung.
 Env-Variable (`MC_BASE_URL`, `MC_MODEL`); das Flag hat Vorrang.
 
 **Modelle auflisten:** `python3 mc.py --list-models` fragt `/models` am Server ab
-und zeigt alle IDs (kombinierbar mit `--base-url`).
+und zeigt alle IDs (kombinierbar mit `--base-url`). Liefert der Endpoint Preise
+(z. B. **OpenRouter**), steht dahinter **`gratis`** bzw. der Preis
+(`$Prompt/$Completion pro Mio Tok`), plus eine Zeile „(N davon gratis)". Kostenlose
+OpenRouter-Modelle erkennt man zusätzlich am `:free`-Suffix in der ID. Bei lokalem
+Ollama gibt es keine Preise → nur die IDs.
 
 ### Optionen
 
