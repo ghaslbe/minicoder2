@@ -67,6 +67,23 @@ GIT_ROLLBACK = False       # nur True, wenn git installiert + sauberes Repo (in 
 TOUCHED = []               # von mc geschriebene/geaenderte Pfade (fuer Rollback)
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
 
+# Robustheit (aus dem GPU-Benchmark gelernt):
+# - Grosse write_files-Bloecke sind das Haupt-Truncation-Risiko -> Limit wird
+#   vom TOOL erzwungen, nicht nur im Prompt erbeten.
+# - Modelle erklaeren sich nach einem verworfenen Schritt gern in Prosa fuer
+#   "fertig" -> finish wird gegen die in der Aufgabe genannten Dateien geprueft.
+MAX_WRITE_FILES_BATCH = 3  # max. Dateien pro write_files-Block
+MAX_FINISH_REJECTS = 2     # so oft wird ein verfruehtes finish zurueckgewiesen
+EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Check)
+
+# Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
+# Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
+# mitgeschickt wird. Auf lokalen Maschinen ist Prompt-Processing der
+# Flaschenhals -> aeltere Schritte werden auf Kurzfassungen reduziert; die
+# Dateien liegen ja auf der Platte und sind per read_file/grep erreichbar.
+KEEP_CONTEXT = int(os.environ.get("MC_KEEP_CONTEXT", "3"))  # letzte N Schritte bleiben voll
+PRUNE = True               # Kontext-Beschneidung an (--no-prune schaltet ab)
+
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
 USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
@@ -539,6 +556,73 @@ def extract_action(text):
         return {"_parse_error": str(e), "_raw": raw}, raw
 
 
+# ------------------------- Kontext-Beschneidung -----------------------------
+
+RESULT_RE = re.compile(r"^\[Ergebnis von (\w+)\]")
+
+
+def _shrink_result(content):
+    """Kuerzt eine aeltere Tool-Ausgabe auf die Kopfzeile(n) + Hinweis."""
+    head = "\n".join(content.splitlines()[:2])[:300]
+    return (head + "\n…[aeltere Tool-Ausgabe gekuerzt — die Dateien liegen auf "
+            "der Platte, bei Bedarf read_file/grep nutzen]")
+
+
+def _shrink_action(content):
+    """Ersetzt in einer aelteren Assistant-Antwort die grossen Datei-Inhalte
+    des action-Blocks durch eine kompakte Zusammenfassung (Pfad + Groesse)."""
+    m = ACTION_RE.search(content)
+    if not m:
+        return content if len(content) <= 500 else content[:500] + "…[gekuerzt]"
+    prose = content[:m.start()].strip()
+    raw = m.group(1).strip()
+    try:
+        obj = json.loads(raw)
+        name = obj.get("action", "?")
+        if name == "write_files":
+            parts = [f"{f.get('path','?')} ({len(f.get('content',''))} Z)"
+                     for f in obj.get("files", [])]
+            summary = f"(write_files ausgefuehrt: {', '.join(parts)} — Inhalte gekuerzt)"
+        elif name in ("write_file", "edit_file"):
+            n = len(obj.get("content", "") or obj.get("new", ""))
+            summary = f"({name} ausgefuehrt: {obj.get('path','?')} ({n} Z) — Inhalt gekuerzt)"
+        else:
+            if len(raw) <= 300:
+                return content  # kleine Aktionen (read/find/grep) unveraendert
+            summary = f"({name}-Aktion, gekuerzt)"
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        summary = "(ungueltiger action-Block, gekuerzt)"
+    return (prose[:200] + "\n" if prose else "") + summary
+
+
+def prune_messages(messages):
+    """Reduziert AELTERE Schritte auf Kurzfassungen; die letzten KEEP_CONTEXT
+    Schritte bleiben vollstaendig. System-Prompt und Aufgabentext werden nie
+    angetastet (matchen die Muster nicht). Idempotent: bereits gekuerzte
+    Nachrichten sind klein genug und werden uebersprungen."""
+    if not PRUNE:
+        return
+    idx = [i for i, msg in enumerate(messages)
+           if (msg["role"] == "assistant" and "```action" in msg.get("content", ""))
+           or (msg["role"] == "user" and RESULT_RE.match(msg.get("content", "")))]
+    cutoff = len(idx) - 2 * max(KEEP_CONTEXT, 0)  # 1 Schritt = assistant + ergebnis
+    saved = 0
+    for j, i in enumerate(idx):
+        if j >= cutoff:
+            break
+        msg = messages[i]
+        old_len = len(msg["content"])
+        if old_len <= 400:
+            continue  # klein genug, lohnt nicht
+        if msg["role"] == "assistant":
+            msg["content"] = _shrink_action(msg["content"])
+        else:
+            msg["content"] = _shrink_result(msg["content"])
+        saved += old_len - len(msg["content"])
+    if saved > 0:
+        log(f"Kontext beschnitten: {saved} Zeichen aus aelteren Schritten entfernt.")
+
+
 # --------------------------- Tool-Ausfuehrung ------------------------------
 
 def truncate(s):
@@ -593,6 +677,13 @@ def do_write_files(args):
     files = args.get("files")
     if not isinstance(files, list) or not files:
         return False, "FEHLER: 'files' muss eine nicht-leere Liste von {path,content} sein."
+    if len(files) > MAX_WRITE_FILES_BATCH:
+        # Hartes Limit statt Prompt-Bitte: grosse Einzelbloecke sind das
+        # Haupt-Risiko fuer abgeschnittene Antworten (kaputtes JSON).
+        return False, (f"FEHLER: {len(files)} Dateien in EINEM write_files-Block — "
+                       f"maximal {MAX_WRITE_FILES_BATCH} erlaubt (Schutz vor abgeschnittenen "
+                       f"Antworten). Teile auf MEHRERE write_files-Schritte auf "
+                       f"(z.B. erst backend/, dann frontend/) und fahre fort.")
     print(f"{C.YELLOW}» write_files{C.RESET} {C.BOLD}{len(files)}{C.RESET} Datei(en):")
     for f in files:
         print(f"   {f.get('path','?')} ({len(f.get('content',''))} Zeichen)")
@@ -708,6 +799,54 @@ def do_find(args):
     return True, "Gefundene Dateien:\n" + "\n".join(matches)
 
 
+GREP_SKIP_EXTS = {".db", ".sqlite", ".sqlite3", ".png", ".jpg", ".jpeg", ".gif",
+                  ".ico", ".pdf", ".zip", ".gz", ".tar", ".pyc", ".woff", ".woff2"}
+
+
+def do_grep(args):
+    """Sucht Text/Regex IN Dateiinhalten (nicht nur im Namen) und liefert
+    Datei:Zeile:Treffer — damit der Agent Stellen in bestehendem Code findet,
+    statt viele Dateien komplett zu lesen (spart Tokens und Schritte)."""
+    pattern = args.get("pattern", "")
+    root = args.get("path", ".")
+    if not pattern:
+        return False, "FEHLER: 'pattern' fehlt."
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        rx = None  # ungueltige Regex -> einfache Textsuche
+    matches, limit = [], 50
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            if os.path.splitext(fn)[1].lower() in GREP_SKIP_EXTS:
+                continue
+            try:
+                if os.path.getsize(full) > 2_000_000:
+                    continue
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    for no, line in enumerate(f, 1):
+                        hit = rx.search(line) if rx else (pattern.lower() in line.lower())
+                        if hit:
+                            matches.append(f"{os.path.normpath(full)}:{no}: {line.strip()[:160]}")
+                            if len(matches) >= limit:
+                                break
+            except OSError:
+                continue
+            if len(matches) >= limit:
+                break
+        if len(matches) >= limit:
+            break
+    if not matches:
+        return True, (f"Keine Treffer fuer '{pattern}' in Dateiinhalten. "
+                      f"Pruefe die Schreibweise oder nutze find fuer Dateinamen.")
+    out = "\n".join(matches)
+    if len(matches) >= limit:
+        out += f"\n...[auf {limit} Treffer gekuerzt]"
+    return True, f"Treffer (Datei:Zeile):\n{out}"
+
+
 def project_overview(root=".", max_entries=200):
     """Kompakter rekursiver Dateiueberblick fuer den Startkontext des Agenten."""
     paths = []
@@ -766,6 +905,7 @@ DISPATCH = {
     "edit_file": do_edit_file,
     "list_dir": do_list_dir,
     "find": do_find,
+    "grep": do_grep,
     "ask": do_ask,
     "run": do_run,
 }
@@ -785,6 +925,7 @@ Verfuegbare Aktionen (Feld "action"):
   edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
+  grep        -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
   ask         -> {"action":"ask","question":"<frage an den nutzer>"}
   run         -> {"action":"run","command":"<shell-kommando>"}
   finish      -> {"action":"finish","summary":"<kurze zusammenfassung>"}
@@ -809,10 +950,16 @@ Regeln:
 - Fuer Projekte mit VIELEN Dateien: schreibe sie gebuendelt mit write_files
   (mehrere auf einmal) statt einzeln — das spart Schritte.
 - ABER: packe nicht ein ganzes Projekt in EINEN riesigen write_files-Block.
-  Halte jeden Block kompakt (Faustregel: hoechstens 2-3 Dateien bzw. ca. 200
-  Zeilen pro Block) und verteile groessere Projekte auf MEHRERE write_files-
-  Schritte (z.B. erst Backend, dann Frontend). Sehr lange Antworten koennen
-  abgeschnitten werden, wodurch das JSON unvollstaendig bleibt.
+  Maximal 3 Dateien pro Block — MEHR WIRD VOM TOOL ABGELEHNT. Verteile
+  groessere Projekte auf MEHRERE write_files-Schritte (z.B. erst Backend,
+  dann Frontend). Sehr lange Antworten koennen abgeschnitten werden, wodurch
+  das JSON unvollstaendig bleibt.
+- Fuer Aenderungen an BESTEHENDEM Code: finde die Stelle zuerst mit grep
+  (Inhaltssuche, liefert Datei:Zeile), dann gezielt read_file + edit_file —
+  statt viele Dateien komplett zu lesen.
+- finish wird vom Tool GEPRUEFT: alle in der Aufgabe woertlich genannten
+  Dateien muessen existieren und valide sein, sonst wird finish abgelehnt.
+  Gib finish erst aus, wenn wirklich alles geschrieben ist.
 - Fuer ein NEUES Projektgeruest nutze, wenn moeglich, offizielle Generatoren via
   run (z.B. 'npm create vite@latest frontend -- --template react') und passe
   danach gezielt einzelne Dateien an, statt jede Datei von Hand zu erzeugen.
@@ -856,6 +1003,37 @@ def plan_phase(messages, model):
         messages.append({"role": "user", "content":
             "Plan ist bestaetigt. Setze ihn jetzt Schritt fuer Schritt mit Aktionen um."})
     return True
+
+
+# ------------------------- Finish-Verifikation -----------------------------
+
+# Endungen, die als "vom Agenten zu erstellende" Quelltext-/Konfig-Dateien
+# gelten. Laufzeit-Artefakte (.db, .log) bleiben bewusst aussen vor — die legt
+# die App selbst an, nicht der Agent.
+SRC_EXTS = {".py", ".txt", ".json", ".html", ".htm", ".js", ".jsx", ".ts",
+            ".tsx", ".css", ".md", ".yaml", ".yml", ".php", ".sh", ".sql",
+            ".xml", ".toml", ".ini", ".cfg", ".vue", ".svelte"}
+
+
+def expected_files_from_task(task):
+    """Extrahiert woertlich in der Aufgabe genannte Dateipfade (mit '/',
+    bekannte Quelltext-Endung). Grundlage fuer den deterministischen
+    Finish-Check: ein Modell kann sich dann nicht mehr in Prosa fuer 'fertig'
+    erklaeren, waehrend geforderte Dateien fehlen."""
+    task = task or ""
+    out = []
+    for m in re.finditer(r"[A-Za-z0-9_](?:[A-Za-z0-9_./-]*[A-Za-z0-9_])?\.[A-Za-z0-9]{1,6}",
+                         task):
+        p = m.group(0)
+        if "/" not in p or "//" in p:  # nur explizite Pfade
+            continue
+        # URLs ausschliessen: Match beginnt hinter '://' bzw. 'www.'
+        pre = task[max(0, m.start() - 4):m.start()]
+        if "//" in pre or pre.endswith(":") or p.lower().startswith("www."):
+            continue
+        if os.path.splitext(p)[1].lower() in SRC_EXTS and p not in out:
+            out.append(p)
+    return out
 
 
 # --------------------- Validierung & Git-Rollback --------------------------
@@ -976,7 +1154,9 @@ def git_rollback():
 
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
+    finish_rejects = 0
     for step in range(1, MAX_STEPS + 1):
+        prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         reply = chat_stream(messages, model)
         messages.append({"role": "assistant", "content": reply})
@@ -995,6 +1175,32 @@ def run_task(messages, model):
 
         name = action.get("action")
         if name == "finish":
+            # Deterministischer Finish-Check: in der Aufgabe genannte Dateien
+            # muessen existieren, geschriebene muessen valide sein. Sonst wird
+            # das finish zurueckgewiesen (max. MAX_FINISH_REJECTS mal), damit
+            # ein "Prosa-fertig" ohne geschriebene Dateien nicht durchrutscht.
+            missing = [p for p in EXPECTED_FILES if not os.path.isfile(p)]
+            still_bad = [p for p in sorted(set(TOUCHED))
+                         if os.path.isfile(p) and validate_path(p)[0] == "bad"]
+            if (missing or still_bad) and finish_rejects < MAX_FINISH_REJECTS:
+                finish_rejects += 1
+                parts = []
+                if missing:
+                    parts.append("diese in der Aufgabe genannten Dateien fehlen: "
+                                 + ", ".join(missing))
+                if still_bad:
+                    parts.append("diese geschriebenen Dateien sind ungueltig: "
+                                 + ", ".join(still_bad))
+                obs = ("FINISH ABGELEHNT — " + "; ".join(parts) +
+                       ". Erstelle/korrigiere NUR diese Datei(en) (write_files mit "
+                       f"max. {MAX_WRITE_FILES_BATCH} Dateien pro Block bzw. edit_file) "
+                       "und gib erst dann wieder finish aus.")
+                print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+            if missing or still_bad:
+                print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
+                      f"(fehlend: {len(missing)}, ungueltig: {len(still_bad)}).{C.RESET}")
             summary = action.get("summary", "Fertig.")
             print(f"\n{C.GREEN}{C.BOLD}✓ {summary}{C.RESET}")
             return summary
@@ -1031,7 +1237,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -1060,11 +1266,19 @@ def main():
                          "z.B. --file=index.html — der Agent 'sieht' sie dann sofort")
     ap.add_argument("--no-validate", action="store_true",
                     help="Validierung geschriebener Dateien (py/json/yaml/php) abschalten")
+    ap.add_argument("--keep-context", type=int, default=KEEP_CONTEXT, metavar="N",
+                    help=f"So viele letzte Schritte bleiben vollstaendig im Kontext "
+                         f"(default {KEEP_CONTEXT}); aeltere Tool-Ausgaben und "
+                         f"Schreib-Bloecke werden gekuerzt — spart Tokens und Zeit")
+    ap.add_argument("--no-prune", action="store_true",
+                    help="Kontext-Beschneidung abschalten (volle Historie senden)")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
     MAX_STEPS = args.max_steps
     VALIDATE = not args.no_validate
+    KEEP_CONTEXT = args.keep_context
+    PRUNE = not args.no_prune
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
     plan_mode = args.plan and not AUTO_YES
     BASE_URL = args.base_url.rstrip("/")
@@ -1121,6 +1335,9 @@ def main():
             info(f"Git-Rollback nicht verfuegbar ({why}) — Aenderungen sind dann endgueltig.")
     if VALIDATE:
         info("Validierung aktiv: py/json/yaml/php werden nach dem Schreiben geprueft.")
+    if PRUNE:
+        info(f"Kontext-Beschneidung aktiv: letzte {KEEP_CONTEXT} Schritte bleiben "
+             f"vollstaendig, aeltere werden gekuerzt (--no-prune schaltet ab).")
 
     # Projektueberblick als Kontext: damit der Agent vorhandene Dateien kennt und
     # bei ungenauer Benennung die richtige trifft, statt eine neue anzulegen.
@@ -1170,7 +1387,12 @@ def main():
 
     # Einmal-Modus
     if args.task:
-        messages.append({"role": "user", "content": " ".join(args.task)})
+        task_text = " ".join(args.task)
+        EXPECTED_FILES[:] = expected_files_from_task(task_text)
+        if EXPECTED_FILES:
+            info(f"Finish-Check aktiv: {len(EXPECTED_FILES)} in der Aufgabe "
+                 f"genannte Datei(en) werden am Ende geprueft.")
+        messages.append({"role": "user", "content": task_text})
         if plan_mode and not plan_phase(messages, args.model):
             return
         run_task(messages, args.model)
@@ -1191,6 +1413,7 @@ def main():
             continue
         if user.lower() in ("exit", "quit", "q"):
             break
+        EXPECTED_FILES[:] = expected_files_from_task(user)
         messages.append({"role": "user", "content": user})
         if plan_mode and not plan_phase(messages, args.model):
             continue

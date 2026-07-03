@@ -201,6 +201,8 @@ Ollama gibt es keine Preise → nur die IDs.
 | `--file PFAD`    | Datei(en) gleich in den Kontext laden (mehrfach möglich) |
 | `--plan`         | Erst Plan zeigen + bestätigen lassen, dann umsetzen   |
 | `--no-validate`  | Validierung geschriebener Dateien abschalten          |
+| `--keep-context N` | Letzte N Schritte bleiben voll im Kontext (Default 3) |
+| `--no-prune`     | Kontext-Beschneidung abschalten (volle Historie)      |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
@@ -337,6 +339,7 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `MC_CA_BUNDLE`  | *(leer)*                    | Pfad zu eigenem CA-Zertifikat          |
 | `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
 | `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
+| `MC_KEEP_CONTEXT` | `3`                       | Letzte N Schritte voll im Kontext (Beschneidung) |
 
 **Eigene HTTP-Header:** `MC_HEADERS` sendet zusätzliche Header bei jedem Request
 mit (Chat *und* `--list-models`). Mehrere durch `;` oder Zeilenumbruch trennen,
@@ -355,6 +358,7 @@ export MC_HEADERS="X-Trace-Id: abc123; X-App: minicoder"
 | `write_files` | `{"action":"write_files","files":[{"path":"...","content":"..."}, ...]}` | **ja** |
 | `list_dir`    | `{"action":"list_dir","path":"..."}`                          | nein      |
 | `find`        | `{"action":"find","pattern":"..."}`                           | nein      |
+| `grep`        | `{"action":"grep","pattern":"..."}`                           | nein      |
 | `ask`         | `{"action":"ask","question":"..."}`                           | fragt     |
 | `run`         | `{"action":"run","command":"..."}`                            | **ja**    |
 | `finish`      | `{"action":"finish","summary":"..."}`                         | —         |
@@ -368,6 +372,10 @@ Damit der Agent nicht ins Leere rät, bekommt er:
 - die **`find`-Aktion** mit **unscharfer** Suche — Groß-/Kleinschreibung sowie
   Leer- und Sonderzeichen werden ignoriert, d. h. „hello world" findet
   `helloworld.py` oder `HelloWorld.js`;
+- die **`grep`-Aktion** (Inhaltssuche): sucht Text/Regex **in** Dateiinhalten
+  und liefert `Datei:Zeile:Treffer` — für Änderungen an bestehendem Code der
+  schnellste Weg: erst `grep` („wo ist die DELETE-Route?"), dann gezielt
+  `read_file` + `edit_file`, statt viele Dateien komplett zu lesen;
 - die Regel, eine bestehende Datei beim „Ändern" erst zu **suchen** und zu
   bearbeiten, statt blind eine neue anzulegen.
 
@@ -378,11 +386,30 @@ Damit der Agent nicht ins Leere rät, bekommt er:
 Für Projekte wie ein React-Frontend mit Flask-Backend:
 
 - **`write_files`** legt mehrere Dateien (über mehrere Verzeichnisse) in **einem**
-  Schritt an — verschachtelte Pfade werden automatisch erstellt.
+  Schritt an — verschachtelte Pfade werden automatisch erstellt. **Maximal 3
+  Dateien pro Block** — größere Blöcke lehnt das Tool ab (mit Aufforderung zum
+  Aufteilen), weil große Einzelantworten das Haupt-Truncation-Risiko sind. Die
+  Regel wird damit **im Tool erzwungen**, nicht nur im Prompt erbeten.
 - **`--max-steps N`** (Default 40) anheben, falls viele Schritte nötig sind.
 - Der Agent wird angewiesen, für **neue Gerüste** offizielle Generatoren via `run`
   zu nutzen (z. B. `npm create vite@latest frontend -- --template react`) und
   danach gezielt einzelne Dateien anzupassen.
+
+#### Kontext-Beschneidung: ältere Schritte kürzen
+
+Die Message-Historie wächst pro Schritt kräftig, weil jede Tool-Ausgabe und
+jeder Schreib-Block (mit **komplettem Dateiinhalt**) dauerhaft mitgeschickt
+wird — der Inhalt steht sogar doppelt drin (im Action-Block *und* im
+Ergebnis). Auf lokalen Maschinen ist das Prompt-Processing der Flaschenhals:
+jeder Schritt wird langsamer und teurer.
+
+Deshalb kürzt `mc` **ältere** Schritte automatisch auf Kurzfassungen
+(`(write_files ausgeführt: backend/app.py (1968 Z), … — Inhalte gekürzt)`);
+die letzten **N** Schritte (Default 3, `--keep-context N`) bleiben
+vollständig. System-Prompt und Aufgabentext werden nie angetastet. Die
+Information geht nicht verloren — die Dateien liegen auf der Platte, und der
+Agent wird im Kurztext darauf hingewiesen, bei Bedarf `read_file`/`grep` zu
+nutzen. `--no-prune` schaltet das Verhalten ab.
 
 #### Auto-Continuation bei abgeschnittenen Antworten
 
@@ -631,6 +658,13 @@ z. B. `qwen3-coder:30b`.
 Weil Modelle unzuverlässig sind (mal 6/6, mal kaputtes JSON), prüft `mc`
 geschriebene Dateien und kann einen ganzen Lauf zurücknehmen:
 
+- **Finish-Verifikation**: Beim `finish` prüft `mc` deterministisch, ob alle
+  **in der Aufgabe wörtlich genannten Dateipfade** existieren und die
+  geschriebenen Dateien valide sind. Fehlt etwas, wird das `finish`
+  **zurückgewiesen** (max. 2×) und das Modell aufgefordert, **nur die
+  fehlenden Dateien** nachzuliefern — fängt den Fall ab, dass sich ein Modell
+  nach einem verworfenen Schritt in Prosa für „fertig" erklärt, obwohl Dateien
+  fehlen. (Laufzeit-Artefakte wie `.db` und URLs werden ignoriert.)
 - **Validierung nach dem Schreiben** (Default an, `--no-validate` schaltet ab):
   geänderte Dateien bekannter Typen werden geprüft — `.py` (Syntax via `ast`),
   `.json`, `.yaml`/`.yml` (wenn PyYAML da), `.php` (`php -l`, wenn installiert).
