@@ -84,6 +84,11 @@ EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Chec
 KEEP_CONTEXT = int(os.environ.get("MC_KEEP_CONTEXT", "3"))  # letzte N Schritte bleiben voll
 PRUNE = True               # Kontext-Beschneidung an (--no-prune schaltet ab)
 
+# Fence-Modus: Dateiinhalte als rohe ```content Bloecke statt als escapte
+# JSON-Strings (--fence / MC_FENCE=1). Betrifft nur, was der System-Prompt dem
+# Modell beibringt — der Parser versteht IMMER beide Formate.
+FENCE = os.environ.get("MC_FENCE", "") not in ("", "0", "false")
+
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
 USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
@@ -369,9 +374,12 @@ def _looks_truncated(text, finish_reason):
     geschlossenen ```action```-Block."""
     if finish_reason == "length":
         return True
-    # Strukturcheck: oeffnender ```action-Fence ohne schliessenden ```.
-    open_fence = re.search(r"```action", text)
-    if open_fence and "```" not in text[open_fence.end():]:
+    # Strukturcheck: LETZTER oeffnender ```action/```content-Fence ohne
+    # schliessendes ``` danach — faengt auch Proxy-Abbrueche mitten im Block.
+    last = None
+    for m in re.finditer(r"`{3,}(action|content)\b", text):
+        last = m
+    if last and "```" not in text[last.end():]:
         return True
     return False
 
@@ -544,16 +552,63 @@ def debug_net():
 ACTION_RE = re.compile(r"```action\s*(.*?)```", re.DOTALL)
 
 
+# Roher Dateiinhalt in einem ```content-Block nach dem action-Block. Laengere
+# Zaeune (````content) sind erlaubt, falls der Inhalt selbst ```-Zeilen hat;
+# der schliessende Zaun muss mindestens so lang sein wie der oeffnende
+# (CommonMark-Regel) — kuerzere Backtick-Zeilen im Inhalt schliessen nicht.
+CONTENT_FENCE_RE = re.compile(
+    r"^(`{3,})content[ \t]*\n(.*?)\n\1`*[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
+def _attach_fence_contents(action, tail):
+    """Ergaenzt write_file/write_files um Inhalte aus ```content Bloecken
+    hinter dem action-Block (Fence-Modus). Gibt eine Fehlermeldung zurueck,
+    wenn Bloecke fehlen oder die Anzahl nicht passt (sonst leerer String).
+    Explizite "content"-Felder im JSON haben Vorrang (Abwaertskompatibilitaet)."""
+    name = action.get("action")
+    if name not in ("write_file", "write_files"):
+        return ""
+    fences = [mm.group(2) + "\n" for mm in CONTENT_FENCE_RE.finditer(tail)]
+    if name == "write_file":
+        if "content" in action:
+            return ""
+        if not fences:
+            return ("write_file ohne Inhalt: es fehlt der ```content Block direkt "
+                    "nach dem action-Block (roher Dateiinhalt, kein JSON-String).")
+        action["content"] = fences[0]
+        return ""
+    files = action.get("files")
+    if not isinstance(files, list):
+        return ""  # wird im Handler gemeldet
+    missing = [f for f in files if isinstance(f, dict) and "content" not in f]
+    if not missing:
+        return ""
+    if len(fences) != len(missing):
+        return (f"write_files: {len(missing)} Datei(en) ohne 'content' deklariert, "
+                f"aber {len(fences)} ```content Block/Bloecke gefunden — je Datei "
+                f"genau EIN Block, in derselben Reihenfolge wie die Pfade.")
+    for f, c in zip(missing, fences):
+        f["content"] = c
+    return ""
+
+
 def extract_action(text):
-    """Findet den ersten ```action```-Block und parst das JSON daraus."""
+    """Findet den ersten ```action```-Block und parst das JSON daraus.
+    Fehlende Dateiinhalte werden aus ```content Bloecken NACH dem
+    action-Block ergaenzt (Fence-Modus) — beide Formate gehen immer."""
     m = ACTION_RE.search(text)
     if not m:
         return None, None
     raw = m.group(1).strip()
     try:
-        return json.loads(raw), raw
+        action = json.loads(raw)
     except json.JSONDecodeError as e:
         return {"_parse_error": str(e), "_raw": raw}, raw
+    if isinstance(action, dict):
+        err = _attach_fence_contents(action, text[m.end():])
+        if err:
+            action["_fence_error"] = err
+    return action, raw
 
 
 # ------------------------- Kontext-Beschneidung -----------------------------
@@ -580,7 +635,8 @@ def _shrink_action(content):
         obj = json.loads(raw)
         name = obj.get("action", "?")
         if name == "write_files":
-            parts = [f"{f.get('path','?')} ({len(f.get('content',''))} Z)"
+            parts = [str(f.get("path", "?")) +
+                     (f" ({len(f['content'])} Z)" if isinstance(f, dict) and "content" in f else "")
                      for f in obj.get("files", [])]
             summary = f"(write_files ausgefuehrt: {', '.join(parts)} — Inhalte gekuerzt)"
         elif name in ("write_file", "edit_file"):
@@ -913,15 +969,14 @@ DISPATCH = {
 
 # ------------------------------ System-Prompt ------------------------------
 
-SYSTEM_PROMPT = """Du bist ein praeziser Coding-Agent, der in einer Shell-Umgebung arbeitet.
+SYSTEM_PROMPT_TEMPLATE = """Du bist ein praeziser Coding-Agent, der in einer Shell-Umgebung arbeitet.
 Du kannst NICHT direkt auf Dateien zugreifen. Stattdessen forderst du EINE Aktion pro
 Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst. Du erhaeltst dann
 das Ergebnis und faehrst fort.
 
 Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}
-  write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
-  write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}
+@@WRITE_SPEC@@
   edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
@@ -934,7 +989,7 @@ Regeln:
 - Wenn eine Anforderung WIRKLICH unklar ist, nutze die ask-Aktion zum Nachfragen,
   statt zu raten. Bei eindeutigen Aufgaben arbeite direkt los.
 - Pro Antwort GENAU EIN action-Block. Davor darfst du kurz dein Vorgehen erklaeren.
-- JSON muss valide sein. Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.
+- JSON muss valide sein. @@CONTENT_RULE@@
 - Arbeite in kleinen Schritten. Lies bestehende Dateien bevor du sie aenderst.
 - KLEINE Aenderungen an bestehenden Dateien IMMER mit edit_file (gezieltes
   Ersetzen) statt die ganze Datei mit write_file neu zu schreiben — das spart
@@ -966,11 +1021,52 @@ Regeln:
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
-Beispiel-Antwort:
+@@EXAMPLE@@"""
+
+
+# Die @@…@@-Platzhalter werden je nach Modus (JSON-Strings vs. Fence-Bloecke
+# fuer Dateiinhalte) gefuellt. Fence-Modus (--fence / MC_FENCE=1) vermeidet die
+# haeufigste Fehlerklasse ueberhaupt: kaputtes Escaping grosser Dateiinhalte in
+# JSON-Strings (fehlende '}', ueberzaehlige ']', \\n-/Quote-Fehler). Der PARSER
+# versteht unabhaengig vom Modus immer beide Formate.
+
+WRITE_SPEC_JSON = """  write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
+  write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}"""
+
+WRITE_SPEC_FENCE = """  write_file  -> {"action":"write_file","path":"<pfad>"}  + danach EIN ```content Block mit dem ROHEN Dateiinhalt
+  write_files -> {"action":"write_files","files":[{"path":"a"},{"path":"b/c"}]}  + danach JE Datei ein ```content Block (gleiche Reihenfolge)"""
+
+CONTENT_RULE_JSON = 'Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.'
+
+CONTENT_RULE_FENCE = ("Dateiinhalte gehoeren NICHT als String ins JSON, sondern ROH "
+                      "(ohne jedes Escaping — echte Zeilenumbrueche, echte Quotes) in "
+                      "```content Bloecke DIREKT nach dem action-Block. Enthaelt ein "
+                      "Inhalt selbst ```-Zeilen (z.B. Markdown), nimm einen laengeren "
+                      "Zaun: ````content … ````.")
+
+EXAMPLE_JSON = """Beispiel-Antwort:
 Ich lege die Datei an.
 ```action
 {"action":"write_file","path":"hello.py","content":"print('hello')\\n"}
 ```"""
+
+EXAMPLE_FENCE = """Beispiel-Antwort:
+Ich lege die Datei an.
+```action
+{"action":"write_file","path":"hello.py"}
+```
+```content
+print('hello')
+```"""
+
+
+def system_prompt(fence):
+    """Baut den System-Prompt fuer den gewaehlten Modus zusammen."""
+    sp = SYSTEM_PROMPT_TEMPLATE
+    sp = sp.replace("@@WRITE_SPEC@@", WRITE_SPEC_FENCE if fence else WRITE_SPEC_JSON)
+    sp = sp.replace("@@CONTENT_RULE@@", CONTENT_RULE_FENCE if fence else CONTENT_RULE_JSON)
+    sp = sp.replace("@@EXAMPLE@@", EXAMPLE_FENCE if fence else EXAMPLE_JSON)
+    return sp
 
 
 # ------------------------------ Agenten-Loop -------------------------------
@@ -1173,6 +1269,12 @@ def run_task(messages, model):
             messages.append({"role": "user", "content": obs})
             continue
 
+        if "_fence_error" in action:
+            obs = f"FEHLER: {action.pop('_fence_error')} Sende die Aktion bitte erneut."
+            print(f"{C.RED}{obs}{C.RESET}")
+            messages.append({"role": "user", "content": obs})
+            continue
+
         name = action.get("action")
         if name == "finish":
             # Deterministischer Finish-Check: in der Aufgabe genannte Dateien
@@ -1237,7 +1339,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -1272,6 +1374,10 @@ def main():
                          f"Schreib-Bloecke werden gekuerzt — spart Tokens und Zeit")
     ap.add_argument("--no-prune", action="store_true",
                     help="Kontext-Beschneidung abschalten (volle Historie senden)")
+    ap.add_argument("--fence", action="store_true",
+                    help="Fence-Modus: Dateiinhalte als rohe ```content Bloecke statt "
+                         "als JSON-Strings (vermeidet Escaping-Fehler); der Parser "
+                         "versteht unabhaengig davon immer beide Formate")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
@@ -1279,6 +1385,7 @@ def main():
     VALIDATE = not args.no_validate
     KEEP_CONTEXT = args.keep_context
     PRUNE = not args.no_prune
+    FENCE = FENCE or args.fence
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
     plan_mode = args.plan and not AUTO_YES
     BASE_URL = args.base_url.rstrip("/")
@@ -1338,6 +1445,9 @@ def main():
     if PRUNE:
         info(f"Kontext-Beschneidung aktiv: letzte {KEEP_CONTEXT} Schritte bleiben "
              f"vollstaendig, aeltere werden gekuerzt (--no-prune schaltet ab).")
+    if FENCE:
+        info("Fence-Modus aktiv: Dateiinhalte als rohe ```content Bloecke "
+             "(kein JSON-Escaping).")
 
     # Projektueberblick als Kontext: damit der Agent vorhandene Dateien kennt und
     # bei ungenauer Benennung die richtige trifft, statt eine neue anzulegen.
@@ -1364,7 +1474,7 @@ def main():
     # Manche Chat-Templates (z.B. Ornith-GGUF) brechen bei zwei aufeinander-
     # folgenden system-Rollen sofort leer ab — eine kombinierte ist universell
     # vertraeglicher.
-    messages = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + context_msg}]
+    messages = [{"role": "system", "content": system_prompt(FENCE) + "\n\n" + context_msg}]
 
     def after_run():
         """Am Ende einer Aufgabe: noch ungueltige Dateien melden und (falls

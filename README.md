@@ -203,6 +203,7 @@ Ollama gibt es keine Preise → nur die IDs.
 | `--no-validate`  | Validierung geschriebener Dateien abschalten          |
 | `--keep-context N` | Letzte N Schritte bleiben voll im Kontext (Default 3) |
 | `--no-prune`     | Kontext-Beschneidung abschalten (volle Historie)      |
+| `--fence`        | Dateiinhalte als rohe ```content-Blöcke (kein Escaping) |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
@@ -340,6 +341,7 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
 | `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
 | `MC_KEEP_CONTEXT` | `3`                       | Letzte N Schritte voll im Kontext (Beschneidung) |
+| `MC_FENCE`      | *(leer)*                    | `1` = Fence-Modus für Dateiinhalte |
 
 **Eigene HTTP-Header:** `MC_HEADERS` sendet zusätzliche Header bei jedem Request
 mit (Chat *und* `--list-models`). Mehrere durch `;` oder Zeilenumbruch trennen,
@@ -394,6 +396,38 @@ Für Projekte wie ein React-Frontend mit Flask-Backend:
 - Der Agent wird angewiesen, für **neue Gerüste** offizielle Generatoren via `run`
   zu nutzen (z. B. `npm create vite@latest frontend -- --template react`) und
   danach gezielt einzelne Dateien anzupassen.
+
+#### Fence-Modus: Dateiinhalte ohne JSON-Escaping (`--fence`)
+
+Die häufigste Fehlerklasse im Benchmark waren **Escaping-Fehler**: Modelle
+müssen ganze Code-Dateien als JSON-Strings verpacken (jedes `"` und jeder
+Zeilenumbruch escaped) — daran zerbrachen qwopus (fehlendes `}`), gemma4
+(überzählige `]`) und die fable-Finetunes (`\\n`/single-quotes), obwohl der
+Code selbst gut war. Der Fence-Modus behebt das an der Wurzel: **Metadaten als
+JSON, Inhalte roh in ```content-Blöcken** — das Format, auf das Modelle am
+besten trainiert sind:
+
+    ```action
+    {"action":"write_file","path":"hello.py"}
+    ```
+    ```content
+    print('hello')
+    ```
+
+- `write_files`: je Datei ein Block, in derselben Reihenfolge wie die Pfade.
+- Enthält ein Inhalt selbst ```-Zeilen (z. B. Markdown): längerer Zaun
+  (````content), schließender Zaun muss mindestens so lang sein (CommonMark).
+- **Der Parser versteht immer beide Formate** — explizites `content` im JSON
+  hat Vorrang, Fences füllen nur Lücken. Das Flag (`--fence` / `MC_FENCE=1`)
+  ändert nur, was der System-Prompt dem Modell beibringt.
+- Fehlende Blöcke oder Anzahl-Mismatch werden als präziser Fehler
+  zurückgespeist; die Auto-Continuation erkennt auch abgerissene
+  ```content-Blöcke.
+
+Erster Praxislauf (gemma4:26b-mlx, CRUD-Aufgabe): Modell folgte dem Format
+vollständig (7 content-Blöcke, **0** JSON-content-Strings, **0**
+Parse-/Escaping-Fehler), 6/6 Dateien — wobei die Finish-Verifikation einmal
+eine vergessene Datei anmahnte, die das Modell dann nachlieferte.
 
 #### Kontext-Beschneidung: ältere Schritte kürzen
 
