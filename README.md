@@ -606,6 +606,50 @@ Strom**, der Cloud-Lauf über OpenRouter nur **~0,13 ct** ($0.0014) — und ist 
 - **128k Kontext ist auf 24 GB teuer:** bremst das lokale 30B stark; in der Cloud
   spielt das keine Rolle.
 
+### GPU-Vergleich: dieselbe Aufgabe auf gemieteten NVIDIA-GPUs (vast.ai)
+
+Dieselbe CRUD-Aufgabe, **dasselbe Modell** (`gemma4:26b`, je `--yes
+--max-steps 30`), aber quer über die Hardware: gemietete NVIDIA-GPUs auf
+vast.ai (frische Instanz, Ollama installiert, Modell gepullt, dann der Lauf)
+gegen lokales Apple Silicon (MLX-Build):
+
+| System | Wo | Build | CRUD-Zeit | Dateien | GPU-Preis |
+|---|---|---|---:|:---:|---:|
+| **RTX 5090** (guter Host) | ☁️ vast.ai | GGUF | **109 s** | 6/6 | ~$0.35/h |
+| **Mac mini M4 Pro** (16 GB) | 💻 lokal | MLX | 142 s | 6/6 | – |
+| MacBook **M1 Max** (32 GB) | 💻 lokal | MLX | 152 s | 6/6 | – |
+| **RTX 4090** | ☁️ vast.ai | GGUF | 169 s | 6/6 | $0.36/h |
+| **RTX 3090** | ☁️ vast.ai | GGUF | 240 s | 6/6 | $0.12/h |
+| RTX 5090 (anderer Host) | ☁️ vast.ai | GGUF | 314 s | 6/6 | $0.35/h |
+
+> M1 Max: 2 Läufe — der erste scheiterte am JSON-Mantel (2/6, überzählige
+> Klammer), der Re-Run lief 6/6. Alle anderen Werte sind Einzelläufe.
+
+**Erkenntnisse:**
+
+- **Das Generationen-Ranking stimmt (5090 > 4090 > 3090) — aber die
+  Host-Varianz auf Mietplattformen ist riesig.** Dieselbe RTX 5090 lieferte
+  auf einem Host **109 s**, auf einem anderen **314 s** (Faktor ~3!) — geteilte
+  Maschinen, unterschiedliche CPU/PCIe-Anbindung, Thermik. Ein
+  Single-Run-Benchmark auf Miet-GPUs lügt also doppelt: Modell-Varianz *und*
+  Host-Varianz.
+- **Apple Silicon mit MLX ist überraschend stark:** der kleine M4 Pro (16 GB)
+  schlägt die RTX 4090, die M1 Max liegt gleichauf. Caveat: MLX- vs.
+  GGUF-Build desselben Modells — nicht 100 % Äpfel-zu-Äpfel, aber die
+  Größenordnung steht. (Die Mac-Werte hier sind schneller als die 285–492 s
+  weiter oben, weil ohne serverseitigen 128k-Kontext gemessen — der KV-Cache
+  kostet massiv.)
+- **vast.ai ist eine Lotterie:** für 4 erfolgreiche Läufe wurden ~10 Instanzen
+  gemietet — kaputte GPU-Durchreichung (CDI-Fehler), Container ohne
+  erreichbares SSH, ein Host-Absturz mitten im Modell-Download. Robust wurde
+  es erst mit **Reliability-Filter** (≥ 0.98) und **SSH-Probe vor Nutzung**;
+  defekte Hosts werden verworfen und das nächste Angebot probiert.
+  Gesamtkosten aller Experimente inkl. aller Fehlversuche: **~$0.91**.
+- **Der Overhead übersteigt die Aufgabe:** Instanz-Boot plus 18-GB-Download
+  (je nach Host-Netz 101–575 s) kosten zusammen mehr Zeit als die eigentliche
+  Generierung. Für eine Einzelaufgabe lohnt das Mieten nicht — für Serien
+  (Benchmarks, Batch-Jobs) schon, weil der Overhead nur einmal anfällt.
+
 ### Live-Verifikation: generierte App starten & erweitern
 
 Die von `qwopus3.6` generierte CRUD-App wurde nicht nur statisch geprüft, sondern
