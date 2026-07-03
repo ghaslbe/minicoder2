@@ -291,8 +291,8 @@ oft fehl:
   u. a.) sind oft **SOCKS**-Proxies, kein reines HTTP. Erst Typ bestimmen:
 
   ```bash
-  curl.exe -v -k --proxy http://127.0.0.1:9001    https://chat.hcim.de/v1/models
-  curl.exe -v -k --proxy socks5h://127.0.0.1:9001 https://chat.hcim.de/v1/models
+  curl.exe -v -k --proxy http://127.0.0.1:9001    https://dein-server.example/v1/models
+  curl.exe -v -k --proxy socks5h://127.0.0.1:9001 https://dein-server.example/v1/models
   ```
 
   Die Variante, die JSON liefert, ist die richtige. Für SOCKS dann `mc` mit
