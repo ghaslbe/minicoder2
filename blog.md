@@ -1393,6 +1393,46 @@ die Code-Tiefenprüfung bestand als auch über drei Läufe hinweg praktisch
 keine Varianz zeigte. Genau diese Kombination aus Korrektheit und
 Reproduzierbarkeit fehlte bei jedem anderen Kandidaten des Tages.
 
+### 9.17 Der letzte Test: läuft der Gewinner auch auf der kleineren Maschine?
+
+Eine letzte, naheliegende Frage: Hält sich der Tagessieger auch auf der
+zweiten Maschine, dem Mac mini M4 Pro? Zwei Hürden mussten dafür erst aus
+dem Weg:
+
+**Erste Hürde — Ollama auf der M4 Pro war nur lokal erreichbar.** Ein
+Verbindungsversuch von der M1 Max aus schlug mit „Connection refused" fehl.
+`lsof` auf der M4 Pro bestätigte: Ollama lauschte nur auf `localhost:11434`,
+nicht auf der LAN-Schnittstelle — obwohl `launchctl setenv OLLAMA_HOST
+0.0.0.0` gesetzt war und die App per SSH neu gestartet wurde. Die
+Ollama.app ignorierte die Umgebungsvariable beim Neustart über `open -a`
+konsequent. **Lektion: Bei modernen Ollama-App-Versionen für macOS reicht
+die klassische `OLLAMA_HOST`-Umgebungsvariable oft nicht mehr — es gibt
+einen eigenen Schalter in den App-Einstellungen, der Vorrang hat und sich
+nicht per SSH/Kommandozeile umgehen lässt.** Diese Baustelle blieb ungelöst.
+
+**Zweite Hürde umgangen: LM Studio auf der M4 Pro.** Statt Ollama zu
+reparieren, wurde LM Studio direkt auf der M4 Pro gestartet und
+`mlx-community/gemma-4-26b-a4b-it` (4-bit) dort geladen — sofort über die
+LAN-Schnittstelle erreichbar, ganz ohne die Ollama-Bind-Problematik.
+
+**Das Ergebnis übertraf die Erwartungen:** Trotz der M4 Pro mit „nur"
+24 GB RAM (nicht 16 GB, wie zunächst angenommen) statt der 32 GB der M1
+Max lief derselbe Modelltyp **schneller** als auf der großen Maschine:
+
+| Maschine | Zeit | Ergebnis |
+|---|---:|---|
+| M1 Max, 32 GB (`lmstudio-community`-Build) | 125–141 s | ✅ 6/6, 0–1 Fehler |
+| **M4 Pro, 24 GB (`mlx-community`-Build)** | **84 s** | ✅ **6/6, 5 Schritte, 0 Fehler** |
+
+Der neuere M4-Chip gleicht den kleineren Speicherpuffer (24 GB minus ~15,6 GB
+Modell = rund 8,4 GB Luft, spürbar enger als die 16,4 GB auf der M1 Max)
+offenbar mit höherer Rohleistung mehr als aus. **Der Tagessieger
+`gemma-4-26b-a4b` in der 4-bit-MLX-Variante ist damit nicht nur korrekt und
+reproduzierbar, sondern auch über zwei komplett unterschiedliche
+Apple-Silicon-Generationen hinweg tragfähig** — der bestmögliche Abschluss
+für einen Tag, der mit derselben Modellfamilie (`gemma4:26b-mlx` via Ollama,
+Abschnitt 9.1) begonnen hatte.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
