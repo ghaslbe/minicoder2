@@ -1157,6 +1157,34 @@ davon ist aggressiv quantisiert (Cloud: kaum/keine Kompression; lokal:
 durchweg 4-bit oder besser, nie Q2/Q3) — genau die Lektion aus Abschnitt 9.7,
 hier ein letztes Mal über alle vier Systeme hinweg bestätigt.
 
+### 9.11 Nachschlag: sechs Qwopus3.6-27B-Konvertierungen im Vergleich
+
+Nach Redaktionsschluss noch eine letzte, besonders lehrreiche Runde:
+`Qwopus3.6-27B` war einer der Top-Kandidaten auf dem M4 Pro (Abschnitt-9.3-
+Marathon, 2/3, bester Code). Sechs verschiedene MLX-Konvertierungen desselben
+Basismodells, von sechs verschiedenen Community-Publishern, alle in etwa
+gleicher Größenklasse — ein sauberer natürlicher Vergleichstest für
+Konvertierungsqualität statt Modellqualität:
+
+| Publisher / Variante | Ergebnis |
+|---|---|
+| `Jackrong` — Standard 4-bit (`v2-mlx`) | ✅ **368 s, 6/6 — nur 3 Schritte, null Fehler** — bester Lauf der ganzen LM-Studio-Session |
+| `nom666` — MTP + „Speed" 4-bit | ⚠️ 1079 s, 6/6 — vollständig, aber trotz „Speed"-Namen fast 3× langsamer als die Standardversion, viele JSON-Fehler unterwegs |
+| `jedisct1` — MTP 4-bit (ohne „Speed") | ❌ generischer Ladefehler |
+| `zecanard` — 2-bit Mixed (2/6-Layer-Mix) | *(Download nicht abgeschlossen)* |
+| `mlx-community` — 35B-A3B-Coder-Variante | ⏸️ Systemspeicher reicht nicht |
+| `fritskarl` — 35B-A3B-Coder OQ4+MTP | ⏸️ Systemspeicher reicht nicht |
+
+**Die auffälligste Erkenntnis:** Bei identischem Basismodell und identischer
+Bit-Tiefe (4-bit) schwankt das Ergebnis zwischen „bester Lauf des Tages" und
+„fast eine Sekunde-Grenze verfehlt, 3× langsamer" — abhängig einzig von der
+**MTP-Zusatzoptimierung** (Multi-Token-Prediction, eigentlich für mehr
+Geschwindigkeit gedacht) und der Konvertierungssorgfalt des jeweiligen
+Publishers. Eine dritte MTP-Variante ließ sich gar nicht erst laden. Das
+ergänzt die Quantisierungs-Lektion des Tages um eine weitere Variable, die
+genauso wenig auf den ersten Blick sichtbar ist: **dieselbe Bit-Tiefe von
+zwei verschiedenen Publishern ist nicht dasselbe Modell.**
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
