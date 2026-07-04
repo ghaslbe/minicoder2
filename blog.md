@@ -949,15 +949,35 @@ für dasselbe Modell.** `Devstral-Small-2-24B` lief:
 
 Fast doppelt so schnell bei vergleichbarer Quantisierungsstufe — beide 6/6
 Dateien vollständig, `483 s` reißt die 400-Sekunden-Grenze aber immer noch.
-`qwen/qwen3.6-27b` (MLX, 4-bit) schaffte es dagegen **knapp darunter: 390 s,
-6/6** — im Gegensatz zur unruhigeren Ollama-MLX-Variante desselben Modells
-aus Abschnitt 9.3 (2/3, mit einer leeren Reasoning-Antwort unterwegs).
 
-**Vorläufiges Fazit:** Für dieselbe Modellklasse auf Apple Silicon ist die
-Serving-Software selbst eine messbare Variable — nicht nur Quantisierung
-und Modellwahl. MLX über LM Studio schlägt GGUF über Ollama beim Tempo
-spürbar, auch wenn die 400-Sekunden-Latte für 24B-Modelle auf diesem
-Rechner insgesamt hoch bleibt.
+**Die komplette MLX-Runde über LM Studio:**
+
+| Modell | Quant | Ergebnis | 400s-Urteil |
+|---|---|---|:---:|
+| `mistral-small-3.2-24b` | 6-bit | ❌ Ladeverweigerung — LM Studios eigener Sicherheitscheck lehnte ab, bevor Speicher überlaufen konnte | — |
+| `mistralai/devstral-small-2-2512` | 4-bit | ✅ 483 s, 6/6 | ❌ knapp drüber |
+| **`qwen/qwen3.6-27b`** | 4-bit | ✅ **390 s, 6/6** | ✅ **bestanden** |
+| `openai/gpt-oss-20b` | MXFP4 | ⚠️ 244 s, 2/6 — derselbe JSON-Fehler zweimal unkorrigiert wiederholt, dann ein vom Batch-Limit abgelehnter 6-Dateien-Block | unentschieden |
+
+**`qwen/qwen3.6-27b` ist der einzige klare Gewinner dieser Runde** — vollständig
+und unter der Grenze. Damit gesellt es sich zu `gemma4:26b-mlx`, `Qwopus3.6-27B`
+und `Ornith-1.0-35B` als vierter tatsächlich brauchbarer Kandidat des gesamten
+Tages, bemerkenswert stabiler als dieselbe Modellfamilie über Ollama (dort 2/3,
+mit einer leeren Reasoning-Antwort unterwegs, siehe 9.3).
+
+`gpt-oss-20b` bleibt über alle drei Serving-Wege hinweg das unklarste Bild des
+Tages: makellos über OpenRouter (41 s, 6/6), inkonsistent über Ollama (Teilerfolg
+plus leere Antworten), jetzt teilweise über LM Studio (2/6 mit wiederholten
+JSON-Fehlern). Kein sauberer Erfolg, aber auch kein reiner Totalausfall mehr wie
+ursprünglich im Abschnitt-5-Benchmark angenommen — eher ein Modell mit spürbar
+schwankender Formdisziplin, die je nach Serving-Weg unterschiedlich oft auffliegt.
+
+**Fazit:** Für dieselbe Modellklasse auf Apple Silicon ist die Serving-Software
+selbst eine messbare Variable — nicht nur Quantisierung und Modellwahl. MLX über
+LM Studio schlägt GGUF über Ollama beim Tempo spürbar (Devstral: 483 s vs. 859 s)
+und bei der Zuverlässigkeit (Qwen3.6-27B: 390 s/6-6 vs. 2/3 mit Aussetzer), auch
+wenn die 400-Sekunden-Latte für 24B-Modelle auf diesem Rechner insgesamt hoch
+bleibt.
 
 ---
 
