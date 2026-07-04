@@ -1280,6 +1280,87 @@ Auffällig: **vier der acht Modelle in beiden Tabellen sind Gemma-4-26B-A4B-
 Varianten** — dieselbe Architektur, die auch die beste Trefferquote der
 gesamten Session lieferte (Abschnitt 9.13).
 
+### 9.15 Tiefenprüfung: läuft der Code auch wirklich?
+
+Bisher zählte als „Erfolg", wenn `mc.py` 6/6 Dateien meldete, wenige
+`FEHLER`-Zeilen im Log auftauchten und die Zeit unter 400–450 s blieb. Das
+sagt nur, ob das Modell dem JSON-Aktionsprotokoll gefolgt ist — nicht, ob
+die erzeugte Anwendung tatsächlich funktioniert. Für alle acht „Gewinner"
+aus 9.14 folgte deshalb eine echte Prüfung: Code lesen, Backend mit den
+exakt gepinnten Requirements in einer frischen virtuellen Umgebung starten,
+Frontend mit `npm start` hochfahren, per Browser-Automatisierung Anlegen und
+Bearbeiten live durchklicken, dazu gezielt Edge Cases wie „PUT/DELETE auf
+eine nicht existierende ID" testen.
+
+**Drei Modelle bestanden ohne jede Einschränkung:**
+
+- **`qwen/qwen3.6-27b`** — sauberster Code der ganzen Session: korrekte
+  404-Behandlung bei PUT/DELETE, Eingabevalidierung, Flask-`g`-Objekt
+  lehrbuchmäßig verwendet.
+- **`qwopus3.6-27b-v2-mlx`** — ebenfalls korrekte 404-Behandlung, HTML5-
+  Pflichtfeld-Validierung im Frontend.
+- **`gemma-4-26b-a4b-it@4bit`** (`lmstudio-community`) — korrekte
+  404-Behandlung, sauberes Bearbeiten-Prefill, **und mit 132–141 s über
+  zwei Läufe die zweitschnellste Variante des ganzen Tages** — schnell UND
+  makellos, der eigentliche Gesamtsieger dieser Tiefenprüfung.
+
+**Zwei Modelle funktionierten, aber mit einer stillen Lücke:** sowohl
+`google/gemma-4-26b-a4b-qat` als auch `gemma-4-26b-a4b-it@mxfp4` geben bei
+PUT/DELETE auf eine nicht existierende ID fälschlich `200 OK` zurück, statt
+`404` — kein Absturz, aber falsches API-Verhalten. `mxfp4` hatte zusätzlich
+**zwei halluzinierte Konfigurationswerte** in `package.json`
+(`"not op_viewer"` als Browserslist-Query, `"react-app/cr-error"` als
+ESLint-Erweiterung — beides erfundene, nicht existierende Werte), die das
+Frontend ohne manuellen Fix gar nicht erst kompilieren ließen.
+
+**Ein Modell fiel bei der Tiefenprüfung deutlich durch:** `microsoft/phi-4`
+bestand die schnelle Metrik (347 s, 6/6, 1 Fehler) klaglos, hatte aber den
+mit Abstand kaputtesten Code der Session:
+- `requirements.txt` pinnt `Flask==2.1.0`, aber nicht Werkzeug — ein
+  blanker `pip install -r requirements.txt` installiert eine inkompatible
+  Werkzeug-Version und der Import schlägt sofort fehl.
+- GET auf eine nicht existierende ID crasht mit `500 Internal Server Error`
+  (`TypeError: 'NoneType' object is not iterable`) statt eines sauberen
+  404 — keine Null-Prüfung vor `dict(person)`.
+- PUT/DELETE auf eine nicht existierende ID geben fälschlich Erfolg zurück.
+- `package.json` pinnt React 17, aber `index.js` nutzt die React-18-
+  exklusive `createRoot`-API aus `react-dom/client` — das Frontend
+  kompiliert so gar nicht.
+- **Der schwerwiegendste Fund:** Der „Bearbeiten"-Button ruft direkt
+  `editPerson(id)` auf, ohne das Formular vorher mit den Daten der
+  Person zu befüllen. Ein Klick auf „Bearbeiten" sendet den aktuellen
+  (meist leeren) Formularinhalt als PUT-Body — **live im Browser bestätigt:
+  ein Klick hat eine komplette Personenzeile mit Leerstrings überschrieben.**
+  Kein Rendering-Fehler, keine Fehlermeldung — die Funktion sieht im Betrieb
+  aus wie sie funktioniert, zerstört aber im Hintergrund Daten.
+
+**Und zwei Modelle entpuppten sich als nicht deterministisch:** Ein zweiter,
+unabhängiger Testlauf mit identischem Prompt lieferte bei zwei der acht
+„Gewinner" ein komplett anderes Ergebnis als beim ersten Mal:
+
+- `mlx-qwopus3.5-9b-v3@8bit` lief zuerst sauber durch (289 s, 6/6). Im
+  zweiten Lauf verpackte dasselbe Modell alle drei Aktionsblöcke in
+  ` ```json ` statt ` ```action ` — der exakte Fence-Label-Bug aus
+  Abschnitt 9.3 — und `mc.py` ignorierte alles. Ergebnis: 0/6 Dateien,
+  obwohl das JSON selbst gültig war (das Backend hätte ohnehin gecrasht:
+  `CORS(app)` aufgerufen, aber nie importiert).
+- `fakerockert543/gemma-4-26b-a4b-it-mlx` lief zuerst tadellos durch
+  (175 s, 6/6). Im zweiten Lauf verfing sich das Modell in einer
+  Selbstzweifel-Schleife („Actually, let me use write_files… Wait, I'll
+  just do it now. Actually, let me…“) und schrieb nie einen vollständigen
+  Aktionsblock — dieselbe Wiederholungsschleife wie bei `liquid/lfm2-24b-a2b`
+  in Abschnitt 9.9. Manuell nach mehreren Minuten abgebrochen, 2/6 Dateien.
+
+**Fazit dieser Tiefenprüfung:** Das Tagesmaß „Dateien vollständig, Zeit
+unter 400 s, wenig `FEHLER`" ist eine notwendige, aber keine hinreichende
+Bedingung für brauchbaren Code — und noch nicht einmal eine zuverlässige
+Vorhersage für den nächsten Lauf desselben Modells. Von acht geprüften
+„Gewinnern" sind drei uneingeschränkt vertrauenswürdig, zwei brauchbar mit
+kleinen Lücken, einer mit ernsthaften, produktionsgefährlichen Bugs — und
+zwei zeigten bei einer bloßen Wiederholung ein komplett anderes Bild.
+**Ein einzelner erfolgreicher Lauf ist kein Qualitätsnachweis, egal wie
+schnell und sauber er aussah.**
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
