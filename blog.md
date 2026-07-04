@@ -1361,6 +1361,38 @@ zwei zeigten bei einer bloßen Wiederholung ein komplett anderes Bild.
 **Ein einzelner erfolgreicher Lauf ist kein Qualitätsnachweis, egal wie
 schnell und sauber er aussah.**
 
+### 9.16 Ein dritter Lauf für die Top 5: wie stabil ist stabil?
+
+Nach dem Nichtdeterminismus-Fund in 9.15 ein dritter, unabhängiger Testlauf
+für die fünf Modelle ohne ernsthafte Code-Probleme (die drei uneingeschränkt
+guten plus die zwei mit der kleinen 404-Lücke) — reine Zeit-/Erfolgsmessung,
+keine erneute Code-Tiefenprüfung:
+
+| Modell | Lauf 1 | Lauf 2 | Lauf 3 | Bild |
+|---|---:|---:|---:|---|
+| **`gemma-4-26b-a4b-it@4bit`** | 141 s | 132 s | 125 s | ✅ bemerkenswert konsistent — immer schnell, immer 6/6 |
+| **`gemma-4-26b-a4b-it@mxfp4`** | 140 s | 132 s | 133 s | ✅ ebenso konsistent |
+| `qwen/qwen3.6-27b` | 390 s | 291 s | 206 s | ✅ immer 6/6, 0 Fehler — wird sogar schneller |
+| `google/gemma-4-26b-a4b-qat` | 103 s | 229 s | 230 s | ⚠️ steigt an, pendelt sich bei ~230 s ein, bleibt unter 400 s |
+| `qwopus3.6-27b-v2-mlx` | 368 s | 296 s | **891 s** | ⚠️ dritter Lauf reißt die Grenze massiv, trotzdem 6/6 |
+
+**Die beiden Publisher-`lmstudio-community`-Varianten (4-bit und MXFP4)
+sind über drei unabhängige Läufe die mit Abstand konstantesten Ergebnisse
+des gesamten Tages** — Zeiten schwanken nur um wenige Sekunden, nie ein
+Totalausfall. `qwen3.6-27b` bleibt ebenfalls durchgehend zuverlässig, wenn
+auch mit größerer Zeitschwankung. `qwopus3.6-27b-v2-mlx` dagegen zeigt: Auch
+ein Modell, das zweimal sauber und schnell lief, kann beim dritten Versuch
+mehr als das Sechsfache der ursprünglichen Zeit brauchen — bei ansonsten
+identischem Setup, identischem Prompt, identischer Maschine.
+
+**Endgültiges Fazit nach 9.14–9.16:** Wer aus diesem Tag ein einzelnes
+Modell für den produktiven lokalen Einsatz mitnehmen möchte, sollte zu
+**`gemma-4-26b-a4b-it@4bit`** (oder der MXFP4-Schwester) greifen — nicht
+weil es am schnellsten *war*, sondern weil es als einziges Modell sowohl
+die Code-Tiefenprüfung bestand als auch über drei Läufe hinweg praktisch
+keine Varianz zeigte. Genau diese Kombination aus Korrektheit und
+Reproduzierbarkeit fehlte bei jedem anderen Kandidaten des Tages.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
