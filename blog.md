@@ -1027,7 +1027,7 @@ derselben Modellschwäche.
 | `ornith-1.0-9b` (3 Varianten) | ❌ Ladefehler bei allen getesteten — ungeklärt |
 | `ornith-1.0-35b-mlx` | ⏸️ nicht testbar — Systemspeicher reicht nicht, unabhängig vom Modell |
 | `liquid/lfm2-24b-a2b` | ❌ 234 s, 0/6 — Wiederholungsschleife, neuer Fehlertyp |
-| `zai-org/glm-4.6v-flash` | *(Test läuft/steht noch aus)* |
+| `zai-org/glm-4.6v-flash` | ❌ abgebrochen nach >20 Min, 0/6 — hing bei Schritt 7 in wiederholten, fast identischen JSON-Fehlern fest, keine Selbstkorrektur. Bereits im Vorab-Test auffällig: echote die Anweisung zurück statt „PONG" zu antworten |
 
 ---
 
