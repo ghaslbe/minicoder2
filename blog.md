@@ -979,6 +979,56 @@ und bei der Zuverlässigkeit (Qwen3.6-27B: 390 s/6-6 vs. 2/3 mit Aussetzer), auc
 wenn die 400-Sekunden-Latte für 24B-Modelle auf diesem Rechner insgesamt hoch
 bleibt.
 
+### 9.9 Zwei weitere Lektionen: Systemspeicher und neue Fehlerbilder
+
+Eine Nachladerunde mit neun weiteren LM-Studio-Modellen (Ornith in mehreren
+Größen/Quants, ein dediziertes Coder-Modell, eine komplett andere Architektur)
+brachte zwei zusätzliche Erkenntnisse — eine über Infrastruktur, eine über
+Modellverhalten.
+
+**Speicherdruck ist nicht nur „welches Modell ist geladen".** `ornith-1.0-35b-mlx`
+(20 GB) wurde von LM Studios eigenem Sicherheitscheck zweimal verweigert — auch
+nachdem das vorher getestete `gemma-4-e2b` per Idle-Timeout automatisch entladen
+worden war. `memory_pressure` zeigte die Ursache: nur ~627 MB echtes „Free" bei
+32 GB Gesamt-RAM, verursacht durch die Summe aller **gleichzeitig laufenden
+Anwendungen** — mehrere Chrome-Instanzen (inkl. Chrome Canary) mit etlichen
+Tabs/Renderer-Prozessen, LM Studios eigene Electron-Oberfläche, dazu die
+laufende Coding-Session selbst. Nach dem Schließen beider Chrome-Varianten
+stieg der freie Speicher spürbar, reichte aber immer noch nicht für die vollen
+20 GB. **Lektion:** Auf einem geteilten Consumer-Rechner ist der verfügbare
+LLM-Speicher nicht `RAM_total − Modellgröße`, sondern
+`RAM_total − Modellgröße − alles andere, was gerade offen ist` — Browser-Tabs
+zählen im Ernstfall mit.
+
+**Ein Rätsel blieb `ornith-1.0-9b`:** Drei verschiedene Quantisierungen von drei
+verschiedenen Publishern (4-bit, 6-bit, MXFP8) wurden geladen; die erste
+(`mlx-community`, 4-bit) scheiterte konsistent mit einer generischen
+Ladefehlermeldung — auffällig, weil LM Studio den Eintrag als `"type": "vlm"`
+(Vision-Language-Model) klassifizierte, obwohl Ornith ein reines Text-Coding-
+Modell ist. Ob Metadaten-Fehler in der Konvertierung oder echtes
+Kompatibilitätsproblem: ohne tieferen Dateizugriff nicht abschließend klärbar.
+
+**Ein neuer Fehlertyp: die Wiederholungsschleife.** `liquid/lfm2-24b-a2b` (andere
+Architektur, Liquid Foundation Models) scheiterte auf eine Art, die der ganze
+Tag noch nicht gezeigt hatte — kein JSON-Fehler, keine leere Antwort, sondern
+eine **degenerierte Wiederholungsschleife**: derselbe deutsche Satz
+(„Damit ist die komplette Einrichtung abgeschlossen…") am Stück, bis die
+Antwort abriss, nie ein einziger `action`-Block. Bereits der triviale
+Vorab-Test hatte das angedeutet — statt „PONG" bekam es eine ungefragte
+Erklärung, was Pong überhaupt ist. Schwache Instruktionsfolgetreue plus
+Wiederholungsanfälligkeit sind hier offensichtlich verwandte Symptome
+derselben Modellschwäche.
+
+**Zwischenstand der erweiterten Runde:**
+
+| Modell | Ergebnis |
+|---|---|
+| `google/gemma-4-e2b` | ✅ 677 s, 6/6 — aber 144.506 Tokens, 17 JSON-Fehler; bestätigt: zu klein fürs Protokoll, unabhängig vom Serving |
+| `ornith-1.0-9b` (3 Varianten) | ❌ Ladefehler bei allen getesteten — ungeklärt |
+| `ornith-1.0-35b-mlx` | ⏸️ nicht testbar — Systemspeicher reicht nicht, unabhängig vom Modell |
+| `liquid/lfm2-24b-a2b` | ❌ 234 s, 0/6 — Wiederholungsschleife, neuer Fehlertyp |
+| `zai-org/glm-4.6v-flash` | *(Test läuft/steht noch aus)* |
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
