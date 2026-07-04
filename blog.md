@@ -1185,6 +1185,35 @@ ergänzt die Quantisierungs-Lektion des Tages um eine weitere Variable, die
 genauso wenig auf den ersten Blick sichtbar ist: **dieselbe Bit-Tiefe von
 zwei verschiedenen Publishern ist nicht dasselbe Modell.**
 
+### 9.12 Der schönste Präzisionsbeweis des Tages: dasselbe 9B-Modell, 4-bit vs. 8-bit
+
+Eine letzte Runde, diesmal mit fünf neuen `Jackrong`-Konvertierungen (derselbe
+Publisher, der bereits den saubersten Lauf des Tages lieferte, Abschnitt 9.11):
+
+| Modell | Ergebnis |
+|---|---|
+| `Qwopus3.5-9B-v3` (4-bit) | ❌ 169 s, 0/6 — JSON-Fehler, dann gab das Modell auf und **erfand eine falsche Aktion** (`write_file` statt `write_files`) |
+| **`Qwopus3.5-9B-v3` (8-bit)** | ✅ **289 s, 6/6** — ein JSON-Fehler, aber selbst korrigiert |
+| `Qwopus3.5-27B-v3` (4-bit) | ⚠️ 1007 s, 6/6 — vollständig, aber weit über 400 s |
+| `Qwen3.5-9B „Claude-4.6-Opus-Reasoning-Distilled"` | ❌ 31 s, 0/6 — schien eine valide `write_files`-Aktion zu senden, doch es landete nichts auf der Platte, kein Fehler geloggt (ungeklärt, vermutlich Verbindungsabbruch) |
+| `Qwen3.5-9B „DeepSeek-V4-Flash-Distilled"` | ❌ 512 s, 0/6 — Antwort brach mitten im Code ab, nie ein valider `action`-Block erreicht |
+
+**Der Kernbefund dieser Runde — derselbe 9B-Modellkern, zwei Quant-Stufen,
+sonst nichts verändert:** Die 4-bit-Version scheitert nach zwei JSON-Fehlern
+komplett und beginnt, Aktionen zu erfinden, die `mc.py` gar nicht kennt. Die
+8-bit-Version desselben Modells löst genau dasselbe Problem einmal auf,
+korrigiert sich selbst und liefert alle sechs Dateien in unter fünf Minuten.
+Kein anderer Vergleich des Tages zeigt den Effekt der Quantisierung so
+sauber isoliert — gleicher Publisher, gleiche Konvertierung, gleiches
+Basismodell, nur die Bit-Tiefe unterscheidet sich.
+
+Die beiden „Distilled"-Varianten (angeblich aus Reasoning-Traces von Claude
+Opus bzw. DeepSeek V4 destilliert) enttäuschten beide auf unterschiedliche
+Art — einmal mit einem rätselhaften Datenverlust trotz scheinbar korrekter
+Aktion, einmal mit einer nie abgeschlossenen Antwort. Für dieses Format
+brachte die Destillation keinen sichtbaren Vorteil gegenüber den
+undestillierten Geschwistermodellen.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
