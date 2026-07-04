@@ -1214,6 +1214,43 @@ Aktion, einmal mit einer nie abgeschlossenen Antwort. Für dieses Format
 brachte die Destillation keinen sichtbaren Vorteil gegenüber den
 undestillierten Geschwistermodellen.
 
+### 9.13 Gemma 4 im großen Stil: die beste Trefferquote des Tages
+
+Ein letzter, besonders ergiebiger Nachschlag: zehn Gemma-4-Varianten (plus
+eine Gemma-3-12B zum Vergleich) über mehrere Größen, Publisher und
+Quantisierungsstufen. `gemma4:26b-mlx` war schon der Gesamtsieger des Tages
+via Ollama (Abschnitt 9.10) — hier die native LM-Studio/MLX-Gegenprobe:
+
+| Modell | Ergebnis |
+|---|---|
+| `google/gemma-4-e4b` | ❌ 1818 s (30 Min!), 5/6 — setzt die durchgehend schwache e4b-Bilanz über alle Serving-Wege fort |
+| **`gemma-4-12b-it-mlx` (4-bit)** | ✅ **311 s, 6/6** |
+| `gemma-4-12b-it-mlx` (8-bit) | ⚠️ 698 s, 6/6 — langsamer UND mehr Fehler als 4-bit (Gegenbeispiel zur Präzisions-These!) |
+| `google/gemma-3-12b` | ⚠️ 1011 s, 6/6 — vollständig, weit über 400 s |
+| `google/gemma-4-26b-a4b` (Standard) | ❌ 359 s, 5/6 — erfand wieder die falsche Aktion `write_file` bei der letzten Datei |
+| **`google/gemma-4-26b-a4b-qat`** | ✅ **103 s, 6/6 — 4 Schritte, null Fehler** — schnellster vollständiger Erfolg der ganzen LM-Studio-Session |
+| **`gemma-4-26b-a4b-it@4bit`** (`lmstudio-community`) | ✅ **141 s, 6/6** |
+| **`gemma-4-26b-a4b-it@mxfp4`** | ✅ **140 s, 6/6** |
+| `gemma-4-26b-a4b-it-oq3` (aggressiv 3-bit) | ⚠️ 491 s, 6/6 — vollständig, aber über 400 s |
+| **`fakerockert543/gemma-4-26b-a4b-it-mlx`** | ✅ **175 s, 6/6** |
+
+**Fünf von zehn Varianten sind klare Gewinner — die beste Trefferquote der
+gesamten LM-Studio-Session**, deutlich besser als bei Qwen3.6/Qwopus/Phi-4
+zusammen. Die Gemma-4-26B-A4B-Architektur (MoE) scheint über MLX auf Apple
+Silicon außergewöhnlich gut zu laufen, fast unabhängig von Publisher oder
+Quant-Stufe zwischen 4-bit und MXFP4 — nur die Standard-Google-Version
+(mit dem `write_file`-Bug) und die aggressive OQ3-Kompression fielen ab.
+
+**Der QAT-Befund verdient besondere Erwähnung:** `gemma-4-26b-a4b-qat`
+(Quantization-Aware Training — das Modell wurde von Google bereits *für*
+Quantisierung trainiert, nicht nachträglich komprimiert) lieferte mit
+**103 Sekunden den schnellsten vollständigen Erfolg der gesamten
+LM-Studio-Session**, bei nur vier Schritten und null Fehlern. Das ist
+genau die Hypothese, die den ganzen Tag im Raum stand: Wenn Quantisierung
+das Problem ist, sollte ein Modell, das für Quantisierung *trainiert* wurde,
+robuster sein als eines, das nachträglich komprimiert wurde. Der Beleg
+dafür ist so eindeutig, wie er heute nur einmal auftauchte.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
