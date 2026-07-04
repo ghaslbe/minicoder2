@@ -524,6 +524,443 @@ Werkzeug gemacht.
 
 ---
 
+## 9. Ein zweiter Marathon: Hardware-Vergleich und ~20 Modelle gegen eine harte Regel
+
+Die naheliegende Anschlussfrage nach dem ersten Benchmark: Wie sehr hängt das
+Ergebnis eigentlich von der *Hardware* ab, und wie viele der theoretisch
+verfügbaren Modelle halten einer echten Prüfung überhaupt stand, wenn man
+nicht nach einem, sondern nach mehreren Läufen urteilt? Ein zweiter
+Marathon-Tag mit zwei Mac-Rechnern (M1 Max 32 GB, Mac mini M4 Pro 16 GB im
+LAN), drei gemieteten GPUs und am Ende rund zwanzig getesteten Modellen gab
+darauf eine überraschend eindeutige Antwort.
+
+### 9.1 GPUs mieten: die vast.ai-Lotterie
+
+Dieselbe CRUD-Aufgabe auf gemieteten RTX 3090/4090/5090 laufen zu lassen
+klang nach einer Nachmittagsübung. Tatsächlich ging der größte Teil der Zeit
+in eine ganz andere Erkenntnis: **die Instanz-Lotterie schlägt die
+Modell-Lotterie.** Für vier erfolgreiche Läufe wurden rund zehn Instanzen
+gemietet — kaputte GPU-Durchreichung (`failed to inject CDI devices`),
+Container mit permanent verweigertem SSH, ein Host, der mitten im
+Modell-Download offline ging. Erst zwei Sicherungen machten den Prozess
+verlässlich:
+
+- **Reliability-Filter** (`reliability2 >= 0.98`) bei der Angebotssuche —
+  filtert die schlechtesten Vermieter-Hosts von vornherein raus.
+- **SSH-Probe vor der Nutzung**: eine Instanz gilt erst als „gesund", wenn sie
+  nicht nur `running` meldet, sondern auch binnen 2 Minuten wirklich per SSH
+  antwortet. Ein Host, der `running` sagt, aber nie eine SSH-Session zulässt,
+  ist ein Totalausfall — nur eben einer, der ohne die Probe erst nach dem
+  vollen Timeout auffliegt.
+
+Ergebnis, sobald ein Host wirklich lief (`gemma4:26b`, GGUF, dieselbe
+CRUD-Aufgabe):
+
+| System | Beste CRUD-Zeit | Notiz |
+|---|---:|---|
+| RTX 5090 (guter Host) | 109 s | zweiter Host derselben GPU: 314 s — Faktor 3 Varianz! |
+| Mac mini M4 Pro (16 GB, MLX) | 142 s | schlägt die eigene M1-Max-Schwester |
+| MacBook M1 Max (32 GB, MLX) | 152 s | |
+| RTX 4090 | 169 s | |
+| RTX 3090 | 240 s | |
+
+**Lektion:** Auf Mietplattformen ist die Host-zu-Host-Varianz bei *derselben*
+GPU (109 s vs. 314 s, Faktor 3) mindestens so groß wie die Varianz zwischen
+GPU-Generationen. Ein Einzellauf auf einer gemieteten Instanz sagt fast nichts
+— erst der beste von mehreren Läufen ist aussagekräftig. Und: Apple Silicon
+mit MLX-Builds ist für dieses Format überraschend konkurrenzfähig — der
+kleine M4 Pro (16 GB) schlägt eine waschechte RTX 4090.
+
+### 9.2 mc.py wird robuster: fünf neue Sicherheitsnetze
+
+Aus den Fehlerbildern des Tages entstanden fünf gezielte Erweiterungen —
+wieder nach der alten Regel: was zuverlässig passieren soll, gehört ins Tool,
+nicht in den Prompt.
+
+1. **`grep`-Aktion** — Inhaltssuche (`Datei:Zeile`) für Änderungen an
+   Bestandscode, statt viele Dateien komplett zu lesen.
+2. **`write_files`-Batch-Limit** (max. 3 Dateien pro Block) — **im Tool
+   erzwungen**, nicht nur erbeten. Verifiziert im ersten Testlauf danach:
+   ein Modell versuchte einen 4-Dateien-Block, bekam ihn abgelehnt, teilte
+   selbst auf — und der Lauf war am Ende sauber 6/6.
+3. **Finish-Verifikation** — beim `finish` prüft `mc` deterministisch, ob
+   alle in der Aufgabe genannten Dateien existieren und valide sind. Fängt
+   das „Prosa-fertig ohne geschriebene Dateien"-Muster ab, *sofern* das
+   Modell überhaupt einen `finish`-Action-Block sendet (siehe 9.3.4 für die
+   Lücke, die trotzdem noch offen blieb).
+4. **Kontext-Beschneidung** — ältere Schritte werden auf Kurzfassungen
+   reduziert (Dateiinhalte standen bis dahin doppelt in der Historie: einmal
+   im Action-Block, einmal im Tool-Ergebnis). Härtetest mit
+   `--keep-context 1`: Modell sah ab Schritt 3 nur noch Kurzfassungen seiner
+   eigenen Arbeit — lieferte trotzdem 6/6 mit korrekter FE↔BE-Konsistenz
+   (Feldnamen, Port), weil der Aufgabentext selbst nie gekürzt wird.
+5. **Fence-Modus** (`--fence`) — der große Wurf gegen die häufigste
+   Fehlerklasse des ersten Benchmarks: Escaping-Fehler beim Verpacken ganzer
+   Dateien in JSON-Strings. Im Fence-Modus enthält der Action-Block nur
+   Metadaten, der Dateiinhalt folgt roh in einem ` ```content `-Block danach
+   — das Format, auf das Modelle am besten trainiert sind. Erster
+   Praxislauf: 7 content-Blöcke, **0** JSON-Escaping-Fehler, 6/6 Dateien.
+   Bewusst **opt-in**, weil der Parser beide Formate ohnehin gleichzeitig
+   versteht und der Nutzen erst über mehrere Läufe hinweg belegt werden
+   sollte statt per Bauchgefühl zum Default zu werden.
+
+### 9.3 Der Modell-Marathon und die 400-Sekunden-Regel
+
+Der eigentliche Kern des Tages: rund zwanzig Modelle — von winzigen
+Gemma-Varianten (E2B/E4B) bis zu experimentellen HuggingFace-Community-
+Finetunes („heretic", diverse Custom-Quants) — gegen dieselbe CRUD-Aufgabe,
+mit einer vom Nutzer eingeführten, schonungslos einfachen Regel: **jeder
+Modell-Erfolg, der länger als 400 Sekunden braucht, gilt als Schrott und
+wird gelöscht — unabhängig von der sonstigen Erfolgsquote.**
+
+Das sortierte radikal aus. Übrig blieben am Ende nur drei bis vier
+Kandidaten von zwanzig:
+
+| Modell | Beste Zeit | Erfolgsquote | Urteil |
+|---|---:|:---:|---|
+| **gemma4:26b** (MLX/GGUF) | 138–286 s | 6/6 über beide Maschinen | ✅ einziges durchgehend zuverlässiges Modell |
+| **Qwopus3.6-27B** | 320–371 s | 2/3 | ✅ behalten |
+| **Ornith-1.0-35B** | 69–92 s | 1/3, aber extrem schnell | ⚠️ behalten als Tempo-Kandidat |
+| qwen3.6:27b-mlx | 379 s (bester Erfolg) | 2/3 | ⚠️ knapp bestanden, grenzwertig |
+
+Gelöscht wurden — aus ganz unterschiedlichen Gründen — u. a.:
+`gemma4:e2b`/`e4b` (riesiger Token-Overhead, 33–50 % Erfolg trotz kleinerer
+Modellgröße), `gemma4:12b-mlx` (JSON-Bug + Endlosschleife),
+`qwen3.6:35b-mlx` (Swap-Thrashing), `qwen3-coder:30b` und
+`Qwen3-Coder-30B-A3B` (funktionierten, aber 515–1200 s — nach der 400 s-Regel
+trotzdem raus), `DeepSeek-R1-Distill-14B` (0 von 3 Läufen vollständig),
+`Qwable-5-27B-Coder` und der `heretic`-Finetune, sowie `Qwen3.6-27B-MTP`
+(1/3, mit gleich zwei unterschiedlichen Fehlerarten).
+
+**Vier neue Fehlerklassen, die der erste Benchmark noch nicht kannte:**
+
+1. **Regel-Verletzung trotz expliziter Anweisung.** `gemma4:e2b` bekam den
+   Auftrag „KEINE npm- oder pip-Installation" — und führte trotzdem
+   `npm create vite@latest` und `npm install` aus. Ergebnis technisch
+   sogar vollständig (der Finish-Check hatte eine fehlende Datei
+   nachgefordert), aber mit 13 ungebetenen Vite-Gerüst-Dateien im Schlepptau.
+2. **Speicher-Kapazitätsgrenze, kein Modellfehler.** `qwen3.6:35b-mlx`
+   (21 GB) lud mit Ollamas 128k-Kontext-Default — auf einem 32-GB-Rechner
+   ergab das **23,4 von 24 GB belegten Swap**. Bestätigt per
+   `memory_pressure`/`vm.swapusage`, nicht geraten. Das Modell selbst war
+   nicht kaputt, die Kombination aus Modellgröße und Kontextfenster war es.
+3. **„Prosa-fertig" umgeht den neuen Finish-Check.** Ein Modell schrieb nur
+   eine von sechs Dateien echt, behauptete dann in reinem Fließtext (ohne
+   jeden Action-Block), alles sei fertig. Weil `mc.py` bei *fehlendem*
+   Action-Block sofort den Task beendet (`if action is None: return reply`),
+   griff die eigens gebaute Finish-Verifikation gar nicht — die prüft nur,
+   wenn das Modell tatsächlich ein `finish` sendet. Eine Lücke, die live im
+   Test auffiel und noch offen ist.
+4. **Falsches Fence-Label statt falscher Inhalt.** `Qwen3.6-27B-MTP` schrieb
+   einen inhaltlich einwandfreien, valide geparsten JSON-Action-Block — aber
+   in einen ` ```json `-Fence statt ` ```action `. Der Parser sucht per Regex
+   gezielt nach `action`, hat den Block also schlicht nicht gesehen. Anders
+   als das Escaping-Problem aus Abschnitt 6 ist hier nicht der *Inhalt*
+   kaputt, sondern nur das *Label* — eine dritte, komplett neue
+   Fehlerdimension.
+
+### 9.4 Eine externe Bestätigung: wir sind nicht allein
+
+Mitten im Marathon fiel die Frage: *Ist es nicht komisch, dass so wenige
+Modelle überhaupt funktionieren?* Ein unabhängiger Vergleich
+([glukhov.org, OpenCode-LLM-Vergleich](https://www.glukhov.org/ai-devtools/opencode/llms-comparison/))
+mit einem komplett anderen Agenten-Tool kam praktisch auf dieselbe Quote:
+6 von 25 Modellen (24 %) funktionierten gut — bei uns etwa 3–4 von 20
+(15–20 %). Auffälligster Parallel-Fund: **derselbe 27B-Kandidat lief mit
+einem Quant bei 100 % Fehlerquote, mit einem anderen Quant desselben
+Anbieters bei nur 5 %** — praktisch deckungsgleich mit unserem eigenen
+Ornith-Befund (Q3_K_L vs. IQ3_XS) aus Abschnitt 6.7. Zwei unabhängige Tools,
+zwei unabhängige Testreihen, derselbe Befund: **Quantisierung frisst zuerst
+Formatdisziplin, nicht Intelligenz** — und die meisten verfügbaren Modelle
+scheitern nicht an der Aufgabe, sondern am Protokoll drumherum.
+
+Ein Unterschied lohnt die Erwähnung: Der externe Vergleich schließt explizit
+„Tool-Calling-Qualität ist wichtiger als reine Geschwindigkeit" — fast das
+Gegenteil der 400-Sekunden-Regel dieses Tages, die auch *funktionierende*
+Modelle (`qwen3-coder:30b`, `Qwable` auf einem Host) allein wegen der Zeit
+aussortierte. Beide Haltungen sind legitim; welche zählt, hängt schlicht
+davon ab, ob einem Wartezeit oder Korrektheit wichtiger ist.
+
+### 9.5 Technische Fußnoten, die trotzdem Zeit kosteten
+
+Keine davon hat mit LLMs zu tun — trotzdem hat jede einzelne für handfeste
+Verzögerungen gesorgt:
+
+- **macOS liefert Bash 3.2 aus**, nicht 4+. `declare -A` (assoziative
+  Arrays) bricht mit „invalid option" ab, aber eben nicht laut genug, um
+  sofort aufzufallen — ein Batch-Skript lief minutenlang mit vertauschten
+  Modellnamen, bevor der Fehler auffiel. Fix: zwei parallele indizierte
+  Arrays statt einer Map. `bash -n script.sh` vor jedem Start prüfen.
+- **macOS hat kein GNU `timeout`.** Jeder Batch, der `timeout 1200 …`
+  nutzte, scheiterte sofort mit `command not found` — nicht offensichtlich,
+  weil die Fehlermeldung im Log unterging. Ersatz: ein Bash-Wrapper aus
+  Hintergrundprozess + `kill -TERM` nach Ablauf der Frist.
+- **PATH-Fallstricke in nicht-interaktiven Shells.** `ollama` und `python3`
+  „nicht gefunden" trotz funktionierendem interaktivem Terminal — nohup-
+  Hintergrundprozesse erben nicht automatisch den vollen PATH. Immer mit
+  absolutem Pfad (`/usr/local/bin/ollama`) statt bloßem Kommandonamen
+  arbeiten, sobald ein Skript nicht-interaktiv läuft.
+- **Sehr lange Hintergrund-Tool-Aufrufe können ohne Fehlermeldung enden.**
+  Ein Batch-Skript wurde nach einiger Laufzeit lautlos beendet (0-Byte-Log,
+  „was stopped"), obwohl nichts im Skript selbst dafür sprach. Robuste
+  Lösung: lange Läufe immer mit `nohup … & disown` **innerhalb** der
+  Shell starten, nicht nur auf die Hintergrund-Ausführung des Werkzeugs
+  selbst verlassen — dieselbe Lektion, die SSH-Batches auf der Miet-GPU von
+  Anfang an befolgten und die dort stundenlang stabil liefen.
+- **Ein hängender Download muss nicht am eigenen Netz liegen.** Ein
+  Modell-Pull blieb zweimal exakt an derselben Datei bei „context deadline
+  exceeded" stehen. Ein roher `curl -v` auf genau diese URL zeigte: TLS-
+  Verbindung steht, Anfrage wird gesendet, **0 Bytes Antwort nach 40
+  Sekunden** — ein serverseitiges Problem bei Huggingface, kein Client-
+  Fehler. Ohne den direkten `curl`-Test hätte man leicht am eigenen Setup
+  gesucht.
+
+### 9.6 Die Cloud-Gegenprobe: OpenRouter
+
+Nach dem eher mageren lokalen Ergebnis (3–4 von rund 20 Modellen brauchbar)
+lag die Gegenprobe nahe: Wie schneiden güns­tige Cloud-Modelle bei derselben
+Aufgabe ab, wenn die Hardware nicht mehr limitiert? Zwölf Modelle über
+OpenRouter, ausgewählt nach Rang auf den [OpenRouter-Rankings](https://openrouter.ai/rankings)
+plus ein paar gezielte Ergänzungen (u. a. Codestral als dediziertes
+Mistral-Coding-Modell), je ein Screening-Lauf:
+
+| Modell | Zeit | Kosten | Parameter |
+|---|---:|---:|---|
+| **z-ai/glm-5.2** | 12 s | $0.0265 | 115B |
+| **mistralai/codestral-2508** | 29 s | $0.0054 | dediziertes Coder-Modell |
+| **stepfun/step-3.7-flash** | 29 s | $0.0054 | – |
+| **minimax/minimax-m3** | 49 s | $0.0079 | 157B |
+| **deepseek/deepseek-v4-pro** | 50 s | $0.0172 | 91B |
+| mistralai/mixtral-8x22b-instruct | 51 s | $0.1224 ⚠️ | 8×22B |
+| **openai/gpt-oss-120b** | 64 s | $0.0015 | 120B |
+| **xiaomi/mimo-v2.5** | 88 s | $0.0027 | 109B |
+| **tencent/hy3-preview** | 151 s | $0.0040 | 130B |
+| **deepseek/deepseek-v4-flash** | 223 s | $0.0024 | 235B |
+| **qwen/qwen3-235b-a22b-2507** | 306 s | $0.0059 | 235B (22B aktiv) |
+| mistralai/mistral-small-24b | – | HTTP 429, unentschieden | 24B |
+
+**11 von 12 lieferten 6/6 Dateien — jedes einzelne davon deutlich unter der
+400-Sekunden-Grenze.** Der einzige Ausreißer (`mistral-small-24b`) scheiterte
+nicht am Modell, sondern zweimal in Folge an einem echten
+Infrastruktur-Rate-Limit beim Upstream-Provider — bestätigt durch die
+HTTP-429-Fehlermeldung im Log, kein Formatfehler.
+
+Das ist der schärfste Kontrast des ganzen Tages: **~15–20 % Erfolgsquote
+lokal gegen ~92 % in der Cloud**, bei Kosten von großteils unter einem Cent
+pro Lauf. Zwei Dinge lohnen die Einordnung, damit daraus keine falsche
+Schlussfolgerung wird:
+
+- **Es ist kein fairer Vergleich derselben Modelle.** Die Cloud-Kandidaten
+  sind überwiegend große, gut betreute Flaggschiff-Deployments ohne
+  aggressive Consumer-Quantisierung — genau die Kombination, von der
+  Abschnitt 9.3 und der externe Vergleich zeigen, dass sie Formatdisziplin
+  kostet. Der faire Vergleich ist nicht „Cloud schlägt lokal", sondern
+  „unquantisierte/kaum quantisierte Modelle schlagen aggressiv quantisierte
+  Consumer-Varianten" — Cloud ist nur der bequemste Weg, an Erstere zu
+  kommen.
+- **Der lokale gpt-oss-Fall kippt in der Cloud komplett.** `gpt-oss:20b`
+  scheiterte lokal (Abschnitt 5, Blog-Ersttest) mit einer komplett leeren
+  Antwort — Reasoning-Modelle geben ihren Denk-Kanal über Ollamas lokale
+  `/v1`-Schicht oft nicht im sichtbaren `content`-Feld aus. Dieselbe
+  Modellfamilie (`openai/gpt-oss-120b`) lief über OpenRouter in 64 Sekunden
+  sauber durch — der Cloud-Provider surfaced den Content offenbar korrekt.
+  Ein Modell, zwei Zugangswege, zwei völlig unterschiedliche Ergebnisse.
+- **Der Ausreißer bei den Kosten kam nicht vom Modell allein.** `mixtral-8x22b`
+  brauchte mit 124.297 Prompt-Tokens rund das Zehnfache aller anderen
+  Kandidaten (10–35k) — ein `write_files`-Block mit 4 Dateien wurde vom
+  Batch-Limit abgelehnt, der nötige Korrekturschritt plus ein für diese
+  Textmenge ungewöhnlich ineffizienter Tokenizer trieben die Rechnung auf
+  $0.12. Erfolgreich (6/6), aber zwanzigmal teurer als der Median.
+
+**Wie groß wären diese Modelle eigentlich lokal?** Bei Mixture-of-Experts-
+Architekturen (die meisten hier) zählt für den RAM-Bedarf die
+**Gesamtparameterzahl**, nicht die „aktiven" Parameter — alle Experten müssen
+im Speicher liegen, unabhängig davon, wie viele pro Token tatsächlich rechnen:
+
+| Modell | Parameter | RAM bei Q4 (praxistauglich) | Passt auf 32 GB (M1 Max)? |
+|---|---:|---:|:---:|
+| `mistral-small-24b` | 24B | ~13 GB | ✅ |
+| `codestral-2508` | ~22B | ~12 GB | ⚠️ theoretisch ja — **aber API-exklusiv**, keine offenen Gewichte verfügbar |
+| `deepseek-v4-pro` | 91,2B | ~50 GB | ❌ |
+| `gpt-oss-120b` | 120B | ~66 GB | ❌ |
+| `glm-5.2` | 115B | ~63 GB | ❌ |
+| `mimo-v2.5` | 109B | ~60 GB | ❌ |
+| `hy3-preview` | 130B | ~72 GB | ❌ |
+| `minimax-m3` | 157B | ~86 GB | ❌ |
+| `mixtral-8x22b` (8×22B) | 176B | ~97 GB | ❌ |
+| `deepseek-v4-flash` / `qwen3-235b-a22b` | 235B | ~129 GB | ❌ |
+
+**Nur 1 der 12 Kandidaten wäre auf einem Consumer-Mac überhaupt ladbar** —
+`mistral-small-24b`. `codestral-2508` passt zwar von der Größe her, ist aber
+**API-exklusiv**: Mistral hat für diese Version keine offenen Gewichte
+veröffentlicht, RAM-Rechnung hin oder her. Der Rest bräuchte selbst bei
+aggressiver Quantisierung 50–129 GB RAM: Mac-Studio-Ultra-Territorium oder
+mehrere High-End-GPUs, nicht ein einzelner Consumer-Rechner. Das ist die
+eigentliche Erklärung hinter dem 92%-vs-15%-Graben aus Abschnitt 9.3: die
+Cloud-Modelle sind nicht „klüger trainiert" — sie sind schlicht 5- bis
+15-mal größer als alles, was lokal überhaupt in den Speicher passt, und
+laufen dort typischerweise kaum bis gar nicht quantisiert.
+
+**Die Gegenprobe: passt ≠ funktioniert.** `codestral:22b` und
+`mistral-small:24b` liefen lokal (Ollama-Library, Q4_K_M) — mit
+ernüchterndem Ergebnis, **0 von 3 Läufen** bei beiden:
+
+- `codestral:22b` schrieb **wörtliche Platzhalter statt echtem Code**
+  (`"from flask import Flask, request ... # rest of your app.py code"`) und
+  erklärte dem Nutzer unaufgefordert, er solle die Platzhalter selbst durch
+  echten Code ersetzen — ein fundamentales Missverständnis der Aufgabe, kein
+  Formatfehler. Grund: Ollamas offizielles `codestral`-Tag zeigt auf **v0.1**,
+  Mistrals Originalversion von 2024 — die über OpenRouter getestete
+  `codestral-2508` ist nicht nur neuer, sondern **API-exklusiv**: Mistral hat
+  dafür nie offene Gewichte veröffentlicht. Ein lokaler Nachbau war also von
+  vornherein unmöglich, nicht nur unwahrscheinlich. „Gleicher Name" heißt
+  hier nicht „gleiches Modell" — teils heißt es sogar „gibt es lokal gar
+  nicht".
+- `mistral-small:24b` brauchte im einzigen abgeschlossenen Lauf **1004
+  Sekunden** und schrieb am Ende **0 von 6 Dateien** — es wiederholte in
+  allen zehn Schritten denselben JSON-Escaping-Fehler, ohne ihn je zu
+  korrigieren, obwohl das Tool ihn jedes Mal exakt benannte.
+
+**Lektion:** Die RAM-Rechnung sagt nur, ob ein Modell *technisch ladbar*
+ist — nichts darüber, ob die *lokal verfügbare Version* mit der in der
+Cloud getesteten identisch ist, und nichts über Formatdisziplin. Wer einen
+Cloud-Befund lokal nachstellen will, muss zuerst die tatsächliche
+Modellversion hinter dem Ollama-Tag prüfen (Datum, Digest, Quant) — sonst
+vergleicht man zwei verschiedene Modelle unter demselben Namen.
+
+**Nachtrag: der Kontext-Fensterknoten.** Vier weitere Kandidaten
+(`devstral:24b`, zwei „abliterated"/„OBLITERATED"-Uncensoring-Finetunes und
+ein Devstral-Import bei Q6_K) scheiterten zunächst noch drastischer — nicht
+mal ein triviales „PONG" kam binnen 45–60 Sekunden zurück. Grund: Ollama
+setzt für frisch importierte GGUF-Modelle automatisch ein sehr großes
+Kontextfenster (128k, teils sogar bei nur 14-GB-Dateien) — der KV-Cache
+dafür ließ den tatsächlichen RAM-Bedarf auf 31–41 GB explodieren, weit über
+das Dateigewicht hinaus, mit sichtbarem CPU/GPU-Split als Symptom. Der
+Reparaturversuch — ein eigenes Modelfile mit `PARAMETER num_ctx 16384` via
+`ollama create` — behob das Kapazitätsproblem tatsächlich: drei der vier
+antworteten danach normal, eines (`huihui-devstral2-24b`) durchlief sogar
+die komplette CRUD-Aufgabe **vollständig** (6/6 Dateien). Nur eben in
+**859 Sekunden** — mehr als doppelt so lang wie die 400-Sekunden-Grenze.
+**Lektion:** Ein reduziertes Kontextfenster kann ein „antwortet gar nicht"
+in ein „arbeitet korrekt" verwandeln — aber es macht aus einem
+speichergedrängten 24B-Modell auf Consumer-Hardware kein schnelles. Kapazität
+und Tempo sind zwei verschiedene Probleme mit zwei verschiedenen Lösungen;
+eines zu beheben, behebt das andere nicht automatisch mit.
+
+**Lektion:** Bei Cloud-APIs zahlt sich die Investition in ein robustes
+Protokoll-Tool doppelt aus — nicht weil Cloud-Modelle das Format öfter
+brechen (tun sie kaum), sondern weil ein einzelner Ausreißer wie Mixtral
+sofort sichtbar macht, wo das Tool eingreift und wo nicht. Und: bei
+Centbeträgen pro Lauf lohnt sich für den produktiven Einsatz kaum noch die
+stundenlange lokale Fehlersuche von Abschnitt 9.3 — außer Offline-Betrieb
+oder Datenschutz sind harte Anforderungen.
+
+#### Kosten vs. Geschwindigkeit: korrelieren kaum
+
+Ein Streudiagramm der elf erfolgreichen Läufe (Kosten × Zeit, beide
+logarithmisch) räumt mit der naheliegenden Annahme auf, „billig = langsam"
+oder „schnell = teuer" seien verlässliche Faustregeln:
+
+| Modell | Zeit | Kosten | Einordnung |
+|---|---:|---:|---|
+| `openai/gpt-oss-120b` | 64 s | **$0.0015** | **Gesamtsieger** — am günstigsten *und* ordentlich schnell |
+| `mistralai/codestral-2508` | 29 s | $0.0054 | schnell *und* günstig — dominiert `qwen3-235b` klar |
+| `stepfun/step-3.7-flash` | 29 s | $0.0054 | dito |
+| `z-ai/glm-5.2` | **12 s** | $0.0265 | am schnellsten, aber Aufpreis dafür — höherer Pro-Token-Preis lohnt sich hier trotzdem, weil wenig generiert wird |
+| `qwen/qwen3-235b-a22b-2507` | 306 s | $0.0059 | **strikt dominiert**: langsamer *und* teurer als Codestral/Step — kein Kompromiss, einfach schlechter auf beiden Achsen |
+| `mistralai/mixtral-8x22b` | 51 s | $0.1224 | Ausreißer, kein Modell-Merkmal (siehe oben: Batch-Limit-Korrektur + ineffizienter Tokenizer) |
+
+**Lektion:** Der Pro-Token-Preis eines Modells sagt fast nichts über die
+tatsächlichen Kosten *einer Aufgabe* aus — die hängen von der Tokenmenge ab,
+und die wiederum von Fehlerquote und Antwortlänge, nicht vom Preisschild.
+`qwen3-235b-a22b` wird von zwei anderen Modellen auf *beiden* Achsen
+gleichzeitig geschlagen (schneller **und** günstiger) — bei so einem Befund
+lohnt sich kein Kompromiss-Argument mehr, das Modell ist schlicht dominiert.
+Umgekehrt zeigt `gpt-oss-120b`: das güns­tigste Modell muss nicht das
+langsamste sein — hier fallen niedriger Preis und brauchbares Tempo
+zusammen.
+
+### 9.7 Die entscheidende Kontrollfrage: Liegt es an der Größe?
+
+Nach einem Tag voller großer Cloud-Modelle (91B–235B) blieb eine Lücke: Wir
+hatten nie ein wirklich *kleines* Modell unter fairen Cloud-Bedingungen
+(volle Präzision, gutes Serving) getestet. Genau das trennt zwei
+Erklärungen, die den ganzen Tag über verschwommen nebeneinander standen —
+„Cloud-Modelle sind einfach größer" versus „lokale Quantisierung zerstört
+Formatdisziplin". Fünf kleine (8B–24B) Modelle über OpenRouter, je ein
+Screening-Lauf, beantworteten das eindeutig:
+
+| Modell | Cloud-Ergebnis | Lokales Ergebnis (selbes/verwandtes Modell) |
+|---|---|---|
+| `openai/gpt-oss-20b` | ✅ 41 s, 6/6, $0.0014 | ❌ lokal `gpt-oss:20b`: leere Antwort, 0 Dateien (Abschnitt 5) |
+| `mistralai/mistral-small-24b` | ✅ 64 s, 6/6, $0.0017 | ❌ lokal `mistral-small:24b`: 1004 s, 0/6, derselbe JSON-Fehler zehnmal wiederholt (9.6) |
+| `google/gemma-3-12b-it` | ✅ 124 s, 6/6, $0.0027 | ❌ lokal `gemma3:12b`: 0 Dateien, ungültiges JSON (Abschnitt 5, Original-Benchmark) |
+| `qwen/qwen3-14b` | ✅ 317 s, 6/6 (+1 Extra), $0.0103 | — (nicht lokal getestet) |
+| `qwen/qwen3-8b` | ⏸️ HTTP 429 (Rate-Limit „Alibaba") nach 3 valider Dateien | — unentschieden, kein Modellfehler |
+
+**Drei von fünf sind exakt dieselben oder direkt verwandte Modelle, die
+heute bereits lokal gescheitert waren — und alle drei liefen in der Cloud
+tadellos, bei gleicher oder sogar kleinerer Parametergröße.** Das ist die
+sauberste kontrollierte Beobachtung des gesamten Tages: Modellgröße scheidet
+als Erklärung aus. `gpt-oss-20b` ist besonders eindeutig — exakt dasselbe
+Modell, nur der Zugangsweg unterscheidet sich, und das Ergebnis kippt von
+„nichts" zu „vollständig in 41 Sekunden".
+
+**Was übrig bleibt, sind die beiden bereits vermuteten Ursachen:**
+Quantisierung (Q4-Consumer-Gewichte statt cloud-typischem FP16/FP8) und
+Serving-Schicht (`gpt-oss`s Reasoning-Kanal kommt über Ollamas lokale `/v1`
+nicht im sichtbaren `content`-Feld an, über OpenRouter schon). Ein 12–24B-
+Modell reicht als *Fähigkeit* völlig aus, um die CRUD-Aufgabe zu lösen — das
+belegen alle vier funktionierenden Cloud-Läufe hier eindrucksvoll, drei
+davon sogar unter 130 Sekunden. Es scheitert lokal nicht an Intelligenz,
+sondern an der Kombination aus Kompression und Infrastruktur.
+
+**Lektion, die den ganzen Tag zusammenfasst:** Die Frage „welches Modell
+sollte ich benutzen" ist unvollständig ohne die Zusatzfrage „auf welcher
+Infrastruktur". Dasselbe Modell kann an einem Nachmittag beides sein — ein
+kompletter Totalausfall und eine 41-Sekunden-Erfolgsgeschichte —, je
+nachdem, wie stark es komprimiert wurde und ob die Serving-Schicht seinen
+vollen Output tatsächlich durchreicht.
+
+### 9.8 Noch eine Serving-Schicht: LM Studio auf derselben Maschine
+
+Als letzte Variable des Tages: LM Studio, parallel zu Ollama auf demselben
+Mac installiert, unter einer LAN-IP erreichbar. Erste, unangenehme
+Entdeckung per `ifconfig`: **diese LAN-IP war die eigene Maschine** — LM
+Studio und Ollama teilen sich denselben 32-GB-Speicherpool. Ein Vorab-Check
+gegen LM Studio, während im Hintergrund noch ein Ollama-Batch lief, hat
+prompt zwei Testläufe kontaminiert (auffällig kurze Totalausfälle statt der
+erwarteten Ergebnisse). **Lektion: zwei lokale Inferenz-Server auf einer
+Maschine sind kein „mehr Kapazität", sondern ein gemeinsamer, ehrlicherweise
+unsichtbarer Wettbewerb um denselben RAM.** Ab da strikt seriell getestet.
+
+**Ein Kontrast, der auffiel:** Wo Ollama beim zu großen Kontextfenster
+stillschweigend in Swap-Thrashing abrutschte (Abschnitt 9, Devstral-Fall),
+**verweigerte LM Studio das Laden aktiv** mit einer klaren Fehlermeldung
+(„Model loading was stopped due to insufficient system resources"), sobald
+ein Modell (Mistral-Small 3.2, 6-bit) zu groß für den verfügbaren Speicher
+war. Kein stiller Fehlschlag, sondern ein sofortiger, verständlicher
+Abbruch — deutlich nutzerfreundlicher.
+
+**Der eigentliche Fund: natives MLX ist spürbar schneller als GGUF/llama.cpp
+für dasselbe Modell.** `Devstral-Small-2-24B` lief:
+- über Ollama/GGUF (Q4_K_M, mit `num_ctx`-Fix aus Abschnitt 9): **859 s**
+- über LM Studio/MLX (4-bit, natives Format): **483 s**
+
+Fast doppelt so schnell bei vergleichbarer Quantisierungsstufe — beide 6/6
+Dateien vollständig, `483 s` reißt die 400-Sekunden-Grenze aber immer noch.
+`qwen/qwen3.6-27b` (MLX, 4-bit) schaffte es dagegen **knapp darunter: 390 s,
+6/6** — im Gegensatz zur unruhigeren Ollama-MLX-Variante desselben Modells
+aus Abschnitt 9.3 (2/3, mit einer leeren Reasoning-Antwort unterwegs).
+
+**Vorläufiges Fazit:** Für dieselbe Modellklasse auf Apple Silicon ist die
+Serving-Software selbst eine messbare Variable — nicht nur Quantisierung
+und Modellwahl. MLX über LM Studio schlägt GGUF über Ollama beim Tempo
+spürbar, auch wenn die 400-Sekunden-Latte für 24B-Modelle auf diesem
+Rechner insgesamt hoch bleibt.
+
+---
+
 ## Anhang: Die `mc`-Aufrufe & Prompts
 
 Zur Nachvollziehbarkeit die tatsächlich verwendeten Aufrufe. `$BASE` steht für die
