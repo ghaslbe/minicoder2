@@ -1055,6 +1055,108 @@ Testrunde durch: **die Trefferquote bleibt niedrig — nicht weil gute Modelle
 fehlen, sondern weil Größe, Speicher, Konvertierungsqualität und
 Formatdisziplin alle gleichzeitig passen müssen.**
 
+### 9.10 Gesamtübersicht: alle Systeme, alle Ergebnisse
+
+Zum Abschluss die komplette Liste — vier Zugangswege, über 40 Testläufe,
+sortiert nach System und Serving-Software. „✅ Sieger" heißt: mindestens ein
+Lauf mit 6/6 Dateien **und** unter 400 Sekunden.
+
+#### Lokal — Ollama, M1 Max (32 GB)
+
+| Modell | Beste Zeit | Ergebnis |
+|---|---:|---|
+| **`gemma4:26b-mlx`** | 138 s | ✅ Sieger — 3/3 |
+| `qwen3.6:27b-mlx` | 379 s | ⚠️ 2/3 (1× leere Reasoning-Antwort) |
+| `qwen3.6:27b-coding-nvfp4` | — | nicht getestet |
+| `gemma4:e2b` | 315 s | ⚠️ 2/3 uneinheitlich |
+| `gemma4:e4b` | 354 s | ⚠️ 1/3 |
+| `gemma4:12b-mlx` | — | ❌ JSON-Escaping-Bug + Endlosschleife |
+| `qwen3.6:35b-mlx` | — | ❌ Swap-Thrashing (128k-Kontext, 21 GB Modell) |
+| `DeepSeek-R1-Distill-14B` (Q2_K) | — | ❌ 0/3 vollständig |
+| `Qwable-5-27B-Coder` | — | ❌ Timeout, 0/6 |
+| `gemma-4-26B-A4B-heretic` | — | nicht vollständig getestet (abgebrochen) |
+| `Qwen3.6-27B-MTP` (IQ3_XXS) | 341 s | ⚠️ 1/3 (Fence-Label-Bug in einem Lauf) |
+| `codestral:22b` (v0.1) | — | ❌ 0/3, schrieb Platzhalter statt Code |
+| `mistral-small:24b` (Q4_K_M) | — | ❌ 1004 s, 0/6, unkorrigierter JSON-Fehler |
+| `mistral-small:24b` (Q8_0) | — | ⏸️ abgebrochen (RAM-Enge: 30 GB von 32 GB) |
+| `devstral:24b` (128k Kontext) | — | ❌ keine Antwort — 36 GB RAM-Explosion |
+| `devstral2-24b` (`num_ctx`-Fix, 16k) | 859 s | ⚠️ 1 Erfolg, aber weit über 400 s |
+| `gpt-oss:20b` | 126 s | ⚠️ inkonsistent — mal Content, mal leer |
+
+#### Lokal — Ollama, Mac mini M4 Pro (16 GB, LAN)
+
+| Modell | Beste Zeit | Ergebnis |
+|---|---:|---|
+| **`gemma4:26b-mlx`** | 146 s | ✅ Sieger — 3/3 |
+| `Qwopus3.6-27B` (Q4_K_M) | 320 s | ✅ Sieger — 2/3 |
+| `qwen3-coder:30b` | 862 s | ⚠️ 1/3, über 400 s |
+| `Qwen3-Coder-30B-A3B` | 515 s | ⚠️ 2/3, über 400 s |
+| `Ornith-1.0-35B` (Q3_K_L) | 92 s | ⚠️ 1/3, aber sehr schnell |
+| `gemma4:e2b` | 496 s | ⚠️ 1/3, über 400 s |
+| `gemma4:e4b` | 493 s | ⚠️ 1/3, über 400 s |
+| `gpt-oss:20b`, `phi4-reasoning:14b` | — | nicht getestet (vorab als Reasoning-Modelle ausgeschlossen) |
+
+#### Gemietete GPUs — vast.ai (`gemma4:26b`, GGUF)
+
+| GPU | Beste Zeit | Ergebnis |
+|---|---:|---|
+| **RTX 5090** (guter Host) | 109 s | ✅ Sieger |
+| RTX 5090 (anderer Host) | 314 s | ⚠️ dieselbe GPU, Faktor-3-Varianz |
+| **RTX 4090** | 169 s | ✅ Sieger |
+| **RTX 3090** | 240 s | ✅ Sieger |
+
+#### Cloud — OpenRouter (17 Modelle/Läufe)
+
+| Modell | Zeit | Kosten | Ergebnis |
+|---|---:|---:|---|
+| **`z-ai/glm-5.2`** | 12 s | $0.0265 | ✅ |
+| **`mistralai/codestral-2508`** | 29 s | $0.0054 | ✅ |
+| **`stepfun/step-3.7-flash`** | 29 s | $0.0054 | ✅ |
+| **`openai/gpt-oss-20b`** | 41 s | $0.0014 | ✅ |
+| **`minimax/minimax-m3`** | 49 s | $0.0079 | ✅ |
+| **`deepseek/deepseek-v4-pro`** | 50 s | $0.0172 | ✅ |
+| **`mistralai/mixtral-8x22b`** | 51 s | $0.1224 | ✅ (teuer, Ausreißer) |
+| **`openai/gpt-oss-120b`** | 64 s | $0.0015 | ✅ |
+| **`mistralai/mistral-small-24b-2501`** | 64 s | $0.0017 | ✅ |
+| **`xiaomi/mimo-v2.5`** | 88 s | $0.0027 | ✅ |
+| `qwen/qwen3-8b` | — | — | 429 Rate-Limit, unentschieden |
+| **`google/gemma-3-12b-it`** | 124 s | $0.0027 | ✅ |
+| **`tencent/hy3-preview`** | 151 s | $0.0040 | ✅ |
+| **`deepseek/deepseek-v4-flash`** | 223 s | $0.0024 | ✅ |
+| `qwen/qwen3-14b` | 317 s | $0.0103 | ✅ (schwächster Erfolg) |
+| **`qwen/qwen3-235b-a22b-2507`** | 306 s | $0.0059 | ✅ |
+| `mistralai/mistral-small-24b-2501` (1. Versuch) | — | — | 429 Rate-Limit, unentschieden |
+
+**16 von 17 Läufen erfolgreich, alle unter 400 s.** Mit Abstand die höchste
+Trefferquote des Tages.
+
+#### LM Studio — MLX/GGUF, dieselbe M1-Max-Maschine
+
+| Modell | Beste Zeit | Ergebnis |
+|---|---:|---|
+| **`qwen/qwen3.6-27b`** (4-bit) | 390 s | ✅ Sieger |
+| **`microsoft/phi-4`** (Q4_K_M) | 347 s | ✅ Sieger |
+| `mistralai/devstral-small-2-2512` (4-bit) | 483 s | ⚠️ vollständig, über 400 s |
+| `google/gemma-4-e2b` (4-bit) | 677 s | ⚠️ vollständig, aber 144k Tokens/17 Fehler |
+| `openai/gpt-oss-20b` (MXFP4) | 244 s | ❌ 2/6, JSON-Fehler |
+| `liquid/lfm2-24b-a2b` (4-bit) | 234 s | ❌ 0/6, Wiederholungsschleife |
+| `zai-org/glm-4.6v-flash` (4-bit) | — | ❌ abgebrochen (>20 Min), JSON-Fehlerschleife |
+| `mistral-small-3.2-24b` (6-bit) | — | ⏸️ Ladeverweigerung (Sicherheitscheck) |
+| `qwen/qwen2.5-coder-32b` (4-bit) | — | ⏸️ konsistent zu groß fürs System |
+| `qwen/qwen3.6-35b-a3b` (4-bit) | — | ⏸️ zu groß |
+| `ornith-1.0-35b-mlx` (`ToPo-ToPo`) | — | ⏸️ zu groß |
+| `ornith-1.0-35b-mlx-oq4` (`deepsweet`) | — | ⏸️ zu groß |
+| `ornith-1.0-9b` (4-bit + 6-bit) | — | ❌ generischer Ladefehler, publisherspezifisch |
+| `bonsai-8b-mlx` (1-bit) | — | ❌ generischer Ladefehler |
+
+**Gesamtsieger des Tages, alle Zugangswege zusammengenommen:** `gemma4:26b`
+(lokal auf beiden Macs *und* über gemietete GPUs zuverlässig), praktisch
+jedes Cloud-Modell über OpenRouter, sowie lokal via MLX/LM-Studio
+`qwen3.6:27b` und `phi-4`. Die gemeinsame Eigenschaft aller Gewinner: keiner
+davon ist aggressiv quantisiert (Cloud: kaum/keine Kompression; lokal:
+durchweg 4-bit oder besser, nie Q2/Q3) — genau die Lektion aus Abschnitt 9.7,
+hier ein letztes Mal über alle vier Systeme hinweg bestätigt.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
