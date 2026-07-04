@@ -1024,10 +1024,36 @@ derselben Modellschwäche.
 | Modell | Ergebnis |
 |---|---|
 | `google/gemma-4-e2b` | ✅ 677 s, 6/6 — aber 144.506 Tokens, 17 JSON-Fehler; bestätigt: zu klein fürs Protokoll, unabhängig vom Serving |
-| `ornith-1.0-9b` (3 Varianten) | ❌ Ladefehler bei allen getesteten — ungeklärt |
-| `ornith-1.0-35b-mlx` | ⏸️ nicht testbar — Systemspeicher reicht nicht, unabhängig vom Modell |
+| `ornith-1.0-9b` (4-bit + 6-bit, `mlx-community`) | ❌ generischer Ladefehler bei beiden Quant-Stufen — reproduzierbar, publisherspezifisch |
+| `ornith-1.0-35b-mlx` (`ToPo-ToPo`) | ⏸️ nicht testbar — Systemspeicher reicht nicht |
+| `ornith-1.0-35b-mlx-oq4` (`deepsweet`) | ⏸️ korrekt als Text-Modell klassifiziert, aber ebenfalls am Speicher gescheitert |
+| **`microsoft/phi-4`** | ✅ **347 s, 6/6** — sauber, nur ein korrekt behandeltes Batch-Limit unterwegs |
+| `qwen/qwen2.5-coder-32b` | ⏸️ konsistent am Speicher gescheitert, auch mit viel freiem RAM — schlicht zu groß für dieses System |
+| `bonsai-8b-mlx` (1-bit) | ❌ generischer Ladefehler, kein Speicherproblem — vermutlich korrupt/inkompatibel |
+| `qwen/qwen3.6-35b-a3b` | ⏸️ nicht testbar — dieselbe Größenklasse, die auf Ollama das Swap-Desaster verursachte |
 | `liquid/lfm2-24b-a2b` | ❌ 234 s, 0/6 — Wiederholungsschleife, neuer Fehlertyp |
 | `zai-org/glm-4.6v-flash` | ❌ abgebrochen nach >20 Min, 0/6 — hing bei Schritt 7 in wiederholten, fast identischen JSON-Fehlern fest, keine Selbstkorrektur. Bereits im Vorab-Test auffällig: echote die Anweisung zurück statt „PONG" zu antworten |
+
+**Eine kleine Detektivarbeit am Rande:** Ornith-1.0-35B existiert in mehreren
+Community-Konvertierungen — `ToPo-ToPo` und `mlx-community` (fürs 9B)
+klassifizieren es fälschlich als `"type": "vlm"` (Vision-Language-Model),
+`deepsweet`s Konvertierung dagegen korrekt als `"type": "llm"`. Das VLM-
+Missverständnis ist also **publisherspezifisch bei der Konvertierung**, kein
+grundsätzliches Problem mit Ornith selbst — erklärt aber möglicherweise, warum
+ausgerechnet die fehlklassifizierten Varianten mit einem generischen Ladefehler
+statt einem klaren Ressourcen-Hinweis scheiterten.
+
+**Ergebnis der kompletten LM-Studio-Session (13 Modelle/Varianten getestet):**
+Nur zwei bestehen die 400-Sekunden-Regel klar — `qwen/qwen3.6-27b` (390 s) und
+`microsoft/phi-4` (347 s). Devstral-Small-2 und `gemma-4-e2b` liefern zwar
+vollständigen, korrekten Code, aber zu langsam. Der Rest scheitert an
+Systemspeicher (zu groß für diese Maschine, unabhängig vom Modell selbst),
+generischen Ladefehlern (vermutlich Konvertierungsprobleme einzelner
+Publisher) oder echten Modellschwächen (Wiederholungsschleifen, unkorrigierte
+JSON-Fehler). Damit zieht sich das Bild des ganzen Tages bis in die letzte
+Testrunde durch: **die Trefferquote bleibt niedrig — nicht weil gute Modelle
+fehlen, sondern weil Größe, Speicher, Konvertierungsqualität und
+Formatdisziplin alle gleichzeitig passen müssen.**
 
 ---
 
