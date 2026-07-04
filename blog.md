@@ -1251,6 +1251,35 @@ das Problem ist, sollte ein Modell, das für Quantisierung *trainiert* wurde,
 robuster sein als eines, das nachträglich komprimiert wurde. Der Beleg
 dafür ist so eindeutig, wie er heute nur einmal auftauchte.
 
+### 9.14 Die LM-Studio-Bestenliste: unter 450 Sekunden, ohne Fehler
+
+Aus allen 40+ LM-Studio-Testläufen des Tages (Abschnitte 9.8–9.13) die
+Modelle, die **vollständig (6/6 Dateien), unter 450 Sekunden und ganz ohne
+eine einzige `FEHLER`-Meldung** durchliefen:
+
+| Modell | Zeit | Schritte | Fehler |
+|---|---:|---:|---:|
+| **`google/gemma-4-26b-a4b-qat`** | 103 s | 4 | 0 |
+| **`qwopus3.6-27b-v2-mlx`** (Jackrong) | 368 s | 3 | 0 |
+| **`qwen/qwen3.6-27b`** | 390 s | 5 | 0 |
+
+Nur drei von über 40 Läufen schaffen beides gleichzeitig: schnell **und**
+absolut sauber, ohne dass die Validierung/Retry-Mechanik von `mc.py`
+überhaupt eingreifen musste. Knapp daneben — vollständig und unter 450 s,
+aber mit genau einem (selbst korrigierten oder korrekt abgefangenen) Fehler:
+
+| Modell | Zeit | Fehler |
+|---|---:|---:|
+| `gemma-4-26b-a4b-it@4bit` (lmstudio-community) | 141 s | 1 |
+| `gemma-4-26b-a4b-it@mxfp4` | 140 s | 1 |
+| `fakerockert543/gemma-4-26b-a4b-it-mlx` | 175 s | 1 |
+| `microsoft/phi-4` | 347 s | 1 |
+| `mlx-qwopus3.5-9b-v3@8bit` (Jackrong) | 289 s | 1 |
+
+Auffällig: **vier der acht Modelle in beiden Tabellen sind Gemma-4-26B-A4B-
+Varianten** — dieselbe Architektur, die auch die beste Trefferquote der
+gesamten Session lieferte (Abschnitt 9.13).
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
