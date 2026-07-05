@@ -1955,6 +1955,53 @@ unangetastet liegen zu lassen. Isoliert und über die echte CLI getestet:
 sauberer finish → Commit, Baum danach sauber; unsauberer Abschluss → kein
 Auto-Commit, Datei bleibt unangetastet uncommitted.
 
+**Zwei weitere Funde aus einem eigenen, parallelen Testlauf des Nutzers**
+(anderes Arbeitsverzeichnis `test3/`, mit einem älteren, unvollständigen
+Prompt-Entwurf ohne Material-Web-Anforderung — daher unten kein
+`oninput`/Card-Bug, weil die Bibliothek nie angefragt wurde):
+
+Backend und Frontend selbst waren einwandfrei (live nachgeprüft: korrekte
+404-Behandlung, Anlegen über die echte UI funktioniert) — aber die vom
+Modell mitgelieferten `run_all.sh`/`stop_all.sh`-Skripte verhinderten
+genau das. Der Bug:
+
+```bash
+cd backend && python3 app.py &     # laeuft in einer SUBSHELL (wegen &)
+cd ../frontend && npm run dev &    # bezieht sich weiterhin aufs ALTE cwd!
+```
+
+Das erste `cd backend` ändert das Arbeitsverzeichnis des Skripts selbst
+nicht (nur das der Subshell). `cd ../frontend` scheitert deshalb mit
+„No such file or directory" — das Frontend startet nie. Ein klassischer
+Shell-Fallstrick, den auch `--check` nicht automatisch gefunden hätte,
+denn: Hätte das Modell `./run_all.sh` selbst ausgeführt und den Frontend-
+Port getestet, wäre der Fehler sofort sichtbar gewesen — aber die
+Skripte waren offenbar das *Ergebnis* der Prüfung, nicht Teil davon.
+Zweiter, kleinerer Fund: `stop_all.sh` killt Port 5173 (Vites Standard),
+obwohl `vite.config.js` korrekt `5091` fest eingestellt hatte
+(`strictPort: true`) — das Skript hätte den Server nie sauber beendet.
+
+**Die praktische Rückfrage, die daraus folgte:** `mc.py` wird oft aus
+einem separaten, frischen Projektverzeichnis heraus genutzt, das noch gar
+kein Git-Repo ist — genau wie `test3/`. Bisher blieb die gesamte
+Git-Absicherung dort wirkungslos, weil `git_usable()` nur „kein
+Git-Repository" meldete und aufgab. Neue Funktion `git_auto_init()`:
+Findet `mc.py` beim Start kein Repo vor, legt es automatisch eines an,
+ergänzt eine `.gitignore` (`node_modules/`, `venv/`, `__pycache__/`,
+`*.db`, `dist/`, `build/`, `.DS_Store` — nur falls noch keine vorhanden
+ist) und committet den Ausgangszustand als Baseline. Risikoarm und
+jederzeit rückgängig zu machen (nur ein lokales `.git`-Verzeichnis, kein
+Remote, kein Push). Wichtig: nur bei ECHT fehlendem Repo — ein bereits
+vorhandenes, aber unsauberes Repo (offene Änderungen) bleibt unangetastet,
+kein automatischer Eingriff in bestehende Arbeit.
+
+Vier Szenarien über die echte CLI verifiziert: frisches leeres
+Verzeichnis (Auto-Init + Baseline-Commit), bestehendes Verzeichnis mit
+`node_modules` (korrekt durch `.gitignore` ausgeschlossen, nur
+Quelldateien landen im Baseline-Commit), bereits sauberes Repo
+(unangetastet, normale Funktion), bereits unsauberes Repo (keine
+Absicherung, aber auch kein Eingriff).
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
