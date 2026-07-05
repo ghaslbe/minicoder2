@@ -333,7 +333,16 @@ def _chat_once(messages, model):
                # Token-/Kostenabrechnung anfordern (OpenAI-Standard + OpenRouter).
                # Endpoints, die das nicht kennen (z.B. Ollama), ignorieren es.
                "stream_options": {"include_usage": True},
-               "usage": {"include": True}}
+               "usage": {"include": True},
+               # Milde Anti-Wiederholungs-Bremse: beobachtet wurde, dass lokale
+               # Modelle mitten in EINER Antwort in eine Token-Wiederholung
+               # geraten koennen (z.B. ein JSON-Feld dutzendfach identisch
+               # wiederholt), bevor ueberhaupt ein parsebarer Action-Block
+               # entsteht — das faengt _check_repetition() nicht ab, die greift
+               # erst NACH einem erfolgreich geparsten write. frequency_penalty
+               # ist Standard-OpenAI-Feld, wird von inkompatiblen Endpoints
+               # (z.B. reines Ollama) einfach ignoriert.
+               "frequency_penalty": 0.3}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
