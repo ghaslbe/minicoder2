@@ -92,8 +92,8 @@ def build():
     print(f"Starte Bauprozess für: {instruction[:50]}...")
     
     # Umgebungsvariablen auslesen
-    base_url = os.environ.get('VIBELOVE_BASE_URL', 'http://localhost:11434/v1')
-    model = os.environ.get('VIBELOVE_MODEL', 'qwen3-coder:30b')
+    base_url = os.environ.get('VIBELOVE_BASE_URL', 'http://localhost:1234/v1')
+    model = os.environ.get('VIBELOVE_MODEL', 'gemma-4-26b-a4b-it@mxfp4')
 
     # Befehl zusammenbauen
     command = [

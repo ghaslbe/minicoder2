@@ -35,26 +35,37 @@ ein **text-basiertes Action-Protokoll** und ist unabhängig von Function-Calling
 3. Das Ergebnis wird als nächste Nachricht zurück an das Modell gespeist.
 4. Das wiederholt sich, bis das Modell eine `finish`-Aktion ausgibt.
 
-## Ollama / OpenAI-kompatibel
+## LM Studio / Ollama / OpenAI-kompatibel
 
 `mc` spricht ausschließlich die **OpenAI-kompatible Chat-API**
-(`/v1/chat/completions` + `/v1/models`). Damit läuft es gegen **jeden
-Ollama-Server** und jede andere OpenAI-kompatible Schnittstelle — einfach
-`MC_BASE_URL` umstellen.
+(`/v1/chat/completions` + `/v1/models`). Damit läuft es gegen **LM Studio,
+jeden Ollama-Server** und jede andere OpenAI-kompatible Schnittstelle —
+einfach `MC_BASE_URL`/`MC_MODEL` umstellen.
 
-Lokales Ollama (Standard-Port 11434, der Default):
+Lokales LM Studio (Standard-Port 1234, der Default — im ausgiebigen
+Modell-Vergleich weiter unten hat sich `gemma-4-26b-a4b-it@mxfp4` als
+zuverlässigstes lokales Modell erwiesen, siehe Abschnitt
+[„Modell-Challenge"](#modell-challenge-dieselbe-crud-app-von-mehreren-modellen)):
+
+```bash
+# LM Studio starten, gemma-4-26b-a4b-it@mxfp4 laden (Server-Tab)
+python3 mc.py "schreib hello.py"                # nutzt http://localhost:1234/v1
+```
+
+Lokales Ollama (Standard-Port 11434):
 
 ```bash
 ollama serve                                   # Ollama läuft lokal
 ollama pull qwen3-coder:30b                     # Modell holen
-python3 mc.py "schreib hello.py"                # nutzt http://localhost:11434/v1
+MC_BASE_URL=http://localhost:11434/v1 MC_MODEL=qwen3-coder:30b \
+  python3 mc.py "schreib hello.py"
 ```
 
 Entfernter Endpoint:
 
 ```bash
 MC_BASE_URL=https://dein-endpoint.example/v1 \
-MC_MODEL=qwen3-coder:30b \
+MC_MODEL=gemma-4-26b-a4b-it@mxfp4 \
   python3 mc.py "schreib hello.py"
 ```
 
@@ -117,7 +128,7 @@ chmod +x mc.py
 ```bash
 python3 mc.py                                   # interaktiver Chat
 python3 mc.py "schreib fizzbuzz.py und führ es aus"   # Prompt direkt mitgeben
-python3 mc.py --model gpt-oss:20b "..."         # anderes Modell
+python3 mc.py --model qwen3-coder:30b "..."     # anderes Modell
 python3 mc.py --base-url http://server:11434/v1 "..."  # anderer Server
 python3 mc.py --list-models                      # Modelle des Servers auflisten
 python3 mc.py --file=index.html "modernisiere das Layout"  # Datei in den Kontext
@@ -193,8 +204,8 @@ Ollama gibt es keine Preise → nur die IDs.
 
 | Flag             | Bedeutung                                              |
 |------------------|--------------------------------------------------------|
-| `--model M`      | Modell wählen (Default `qwen3-coder:30b`)              |
-| `--base-url URL` | Server-Basis-URL (Default `http://localhost:11434/v1`)|
+| `--model M`      | Modell wählen (Default `gemma-4-26b-a4b-it@mxfp4`)     |
+| `--base-url URL` | Server-Basis-URL (Default `http://localhost:1234/v1`) |
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
 | `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
 | `--dir`, `-C PFAD` | Zielverzeichnis, in dem gearbeitet wird (statt cwd) |
@@ -287,7 +298,7 @@ $ python3 mc.py -v --list-models
 
 $ python3 mc.py -v "..."
 · verbinde mit https://server/v1/chat/completions …
-· verbunden (HTTP 200), frage Modell 'qwen3-coder:30b', warte auf Antwort …
+· verbunden (HTTP 200), frage Modell 'gemma-4-26b-a4b-it@mxfp4', warte auf Antwort …
 · Antwort beginnt …
 · Antwort vollständig (53 Zeichen).
 ```
@@ -372,8 +383,8 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 
 | Variable        | Default                     | Zweck                                  |
 |-----------------|-----------------------------|----------------------------------------|
-| `MC_BASE_URL`   | `http://localhost:11434/v1` | Basis-URL der Schnittstelle            |
-| `MC_MODEL`      | `qwen3-coder:30b`           | Default-Modell                         |
+| `MC_BASE_URL`   | `http://localhost:1234/v1`  | Basis-URL der Schnittstelle            |
+| `MC_MODEL`      | `gemma-4-26b-a4b-it@mxfp4`  | Default-Modell                         |
 | `MC_API_KEY`    | *(leer)*                    | Optionaler Bearer-Token, falls nötig   |
 | `MC_HEADERS`    | *(leer)*                    | Zusätzliche HTTP-Header pro Request     |
 | `MC_PROXY`      | *(leer)*                    | HTTP(S)-Proxy (Zscaler/Firmennetz)     |
@@ -782,11 +793,13 @@ Vom jeweiligen Endpoint abfragbar:
 
 ```bash
 curl -s "$MC_BASE_URL/models" | python3 -m json.tool
-# bzw. lokal:  curl -s http://localhost:11434/v1/models | python3 -m json.tool
+# bzw. lokal (LM Studio):  curl -s http://localhost:1234/v1/models | python3 -m json.tool
 ```
 
-Welche Modelle bereitstehen, hängt vom Server ab. Fürs Coden eignet sich
-z. B. `qwen3-coder:30b`.
+Welche Modelle bereitstehen, hängt vom Server ab. Im Modell-Vergleich (siehe
+unten) hat sich `gemma-4-26b-a4b-it@mxfp4` als zuverlässigstes lokales
+Modell erwiesen; auch `qwen3-coder:30b` (Ollama) funktioniert gut, ist
+lokal aber deutlich langsamer.
 
 ## Validierung & Git-Absicherung
 

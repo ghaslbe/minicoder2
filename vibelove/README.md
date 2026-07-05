@@ -15,10 +15,11 @@ python3 server.py
 Die Anwendung ist unter http://localhost:5050 erreichbar.
 
 Um den Bauprozess zu steuern, nutzen Sie diese Umgebungsvariablen:
-* VIBELOVE_BASE_URL: URL zum Endpunkt (z.B. http://localhost:11434/v1)
-* VIBELOVE_MODEL: Name des Modells (z.B. qwen3-coder:30b)
+* VIBELOVE_BASE_URL: URL zum Endpunkt (z.B. http://localhost:1234/v1 fuer LM Studio)
+* VIBELOVE_MODEL: Name des Modells (z.B. gemma-4-26b-a4b-it@mxfp4)
 
-Ohne diese Variablen werden die Standardwerte von mc.py genutzt.
+Ohne diese Variablen nutzt server.py dieselben Standardwerte (LM Studio auf
+Port 1234, Modell gemma-4-26b-a4b-it@mxfp4).
 
 ## Wie es funktioniert
 Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Live-Vorschau rechts zeigt die App auf Port 5173 (Vite-Server), welcher von server.py verwaltet wird.

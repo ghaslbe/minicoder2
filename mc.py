@@ -20,12 +20,12 @@ Faehigkeiten des Agenten:
 Benutzung:
   python3 mc.py                      # interaktiver Chat
   python3 mc.py "schreib fizzbuzz.py"  # einmalige Aufgabe
-  python3 mc.py --model gpt-oss:20b
+  python3 mc.py --model qwen3-coder:30b
   python3 mc.py --yes                # alle Aktionen ohne Rueckfrage (Vorsicht!)
 
 Env-Variablen:
-  MC_BASE_URL  (default http://localhost:11434/v1 — lokales Ollama)
-  MC_MODEL     (default qwen3-coder:30b)
+  MC_BASE_URL  (default http://localhost:1234/v1 — lokales LM Studio)
+  MC_MODEL     (default gemma-4-26b-a4b-it@mxfp4)
   MC_API_KEY   (optional, falls der Endpoint einen Key verlangt)
 """
 
@@ -45,8 +45,8 @@ import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
 
-BASE_URL = os.environ.get("MC_BASE_URL", "http://localhost:11434/v1").rstrip("/")
-DEFAULT_MODEL = os.environ.get("MC_MODEL", "qwen3-coder:30b")
+BASE_URL = os.environ.get("MC_BASE_URL", "http://localhost:1234/v1").rstrip("/")
+DEFAULT_MODEL = os.environ.get("MC_MODEL", "gemma-4-26b-a4b-it@mxfp4")
 API_KEY = os.environ.get("MC_API_KEY", "")
 # Zusaetzliche HTTP-Header pro Request, z.B. MC_HEADERS="X-Foo: bar; X-Baz: qux"
 # (mehrere durch ';' oder Zeilenumbruch getrennt, je 'Name: Wert').
