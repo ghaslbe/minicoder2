@@ -1,0 +1,9 @@
+In workspace/frontend/index.html fehlt die Einbindung von React: der body enthaelt nur statisches HTML (eine Ueberschrift "Willkommen bei Vibelove" direkt im HTML), aber es fehlt <div id="root"></div> sowie <script type="module" src="/src/main.jsx"></script>. Dadurch wird React NIE gemountet und Aenderungen an App.jsx haben KEINE sichtbare Wirkung.
+
+Repariere workspace/frontend/index.html so, dass der body NUR <div id="root"></div> enthaelt (kein statischer Platzhaltertext mehr direkt im HTML) sowie das Script-Tag <script type="module" src="/src/main.jsx"></script>. Der Tailwind-CDN-Script-Tag im head bleibt erhalten. Der eigentliche Willkommenstext gehoert nach App.jsx (falls dort nicht schon vorhanden).
+
+PRUEFE danach WIRKLICH, nicht nur oberflaechlich:
+1. curl http://localhost:5173/ (Vite-Server sollte bereits laufen, sonst kurz selbst starten) und pruefe, dass die Antwort <div id="root"></div> UND <script type="module" src="/src/main.jsx"> enthaelt.
+2. curl http://localhost:5173/src/App.jsx und pruefe, dass der Text aus App.jsx (nicht mehr "Willkommen bei Vibelove" aus dem alten index.html) enthalten ist.
+3. Falls du selbst einen Vite-Server startest: danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
