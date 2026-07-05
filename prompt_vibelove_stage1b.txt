@@ -1,0 +1,9 @@
+In server.py fehlt bisher, dass der mc.py-Aufruf im '/build'-Endpunkt fest die Standardwerte von mc.py nutzt (Modell/Server werden nicht mitgegeben). Ergaenze server.py NUR um Folgendes, ohne sonst etwas an der bestehenden Struktur zu aendern:
+
+- Zwei Umgebungsvariablen auslesen (mit os.environ.get, jeweils mit sinnvollem Fallback falls nicht gesetzt): VIBELOVE_BASE_URL (Fallback: 'http://localhost:11434/v1') und VIBELOVE_MODEL (Fallback: 'qwen3-coder:30b').
+- Im subprocess.run-Aufruf von mc.py im /build-Endpunkt zusaetzlich '--base-url', '<VIBELOVE_BASE_URL>', '--model', '<VIBELOVE_MODEL>' als Argumente uebergeben.
+
+PRUEFE danach:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" muss fehlerfrei durchlaufen.
+2. Starte server.py kurz mit den Umgebungsvariablen VIBELOVE_BASE_URL=http://192.168.178.191:1234/v1 und VIBELOVE_MODEL=gemma-4-26b-a4b-it@mxfp4 gesetzt, und pruefe per curl -X POST -d "instruction=schreibe eine Datei test.txt mit dem Inhalt hallo" http://localhost:5050/build, ob in der Antwort das richtige Modell (gemma-4-26b-a4b-it@mxfp4) auftaucht statt des alten Default-Modells. Danach server.py wieder beenden.
+Behebe alle Fehler, bevor du finish aufrufst.
