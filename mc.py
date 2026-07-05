@@ -96,6 +96,7 @@ DANGEROUS_RUN = re.compile(
     r"\b(sudo|shutdown|reboot|halt|mkfs\S*)\b"
     r"|rm\s+(-\w+\s+)*(/|~)(\s|$)"
     r"|dd\s+.*of=/dev/")
+SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
 
 # Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
 # Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
@@ -1060,7 +1061,13 @@ def do_run(args):
         )
         out = proc.stdout + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
         out = out.strip() or "(keine Ausgabe)"
-        return True, f"exit={proc.returncode}\n{truncate(out)}"
+        warn = ""
+        if SHELL_BG.search(cmd):
+            warn = ("\nACHTUNG: Dieses Kommando endet auf '&' (Shell-Hintergrundstart) — "
+                    "ein so gestarteter Prozess wird von mc NICHT verfolgt und beim "
+                    "Programmende NICHT automatisch beendet (verwaist danach). Nutze "
+                    "fuer Dauerlaeufer stattdessen \"background\":true.")
+        return True, f"exit={proc.returncode}\n{truncate(out)}" + warn
     except subprocess.TimeoutExpired:
         return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Dauerlaeufer wie "
                        "Dev-Server bitte mit \"background\":true starten.")
