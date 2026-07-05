@@ -1728,6 +1728,91 @@ in 9.15–9.19 (Code lesen, Backend/Frontend selbst nochmal starten,
 Browser-Screenshot), um zu sehen, ob der Selbsttest hält, was er
 verspricht.
 
+### 9.23 Das Ergebnis: echte Fortschritte, ein entscheidender blinder Fleck
+
+Der Lauf war nach 23 von 60 möglichen Schritten und 330 Sekunden fertig
+(`finish` akzeptiert). Das Protokoll zeigt zunächst genau das erhoffte
+Verhalten:
+
+**Was tatsächlich funktionierte:**
+- Ein waschechtes Vite-Projekt wurde per `npm create vite@latest` erzeugt
+  (`main.jsx`, `.oxlintrc.json`, `package-lock.json` — keine
+  handgeschriebene Fake-Struktur) und `@material/web` in einer echten,
+  existierenden Version installiert (`2.4.1` — anders als die frei
+  erfundene `^0.1.0` aus 9.20).
+- Ein Tippfehler (`Flask(____name__)` statt `Flask(__name__)`) wurde noch
+  vor dem ersten Ausführungsversuch selbst korrigiert.
+- **Das Modell stieß auf denselben AirPlay-Port-5000-Konflikt, den wir
+  heute früh manuell entdeckt hatten** — und reagierte genau richtig: den
+  echten Fehler „Address already in use" gelesen, `app.py` angepasst,
+  Port 5001 probiert, wieder blockiert, Port 5002 probiert — dort lief es.
+  Kein geraten, sondern eine echte Fehler→Reaktion→Fehler→Reaktion-Kette.
+- Backend-404-Verhalten bei PUT/DELETE auf unbekannte IDs: korrekt
+  implementiert (unabhängig geprüft).
+
+**Der entscheidende blinde Fleck:** Das Modell testete ausschließlich GET
+und POST gegen das Backend per curl — PUT, DELETE und die im Prompt
+*ausdrücklich* geforderten Fehlerfälle (404 bei unbekannter ID) wurden
+**nie** ausgeführt. Die finale `finish`-Zusammenfassung behauptet trotzdem:
+„wurde erfolgreich implementiert […] mit allen CRUD-Operationen sowie
+Fehlerfällen getestet" — eine nachweislich falsche Aussage, die dem Log
+widerspricht.
+
+**Das Frontend war komplett kaputt, und das Modell hat es nie bemerkt.**
+`App.jsx` importiert `{ Button, Textfield, List, ListItem, Divider } from
+'@material/web/button'` — ein Verzeichnis-Import mit erfundenen benannten
+Exporten, kommentiert als „notwendig für Typisierung, aber wir nutzen die
+Custom Elements direkt" (der Import wird nirgends im Code verwendet).
+Sowohl `npm run dev` (Vite-Fehler-Overlay: „Failed to resolve import
+'@material/web/button'") als auch — entscheidend — **`npm run build`**
+schlagen dadurch mit klarem `exit≠0` fehl. Die App lädt in keinem Browser.
+
+**Warum das besonders ärgerlich ist:** Der Check-Modus-Systemprompt nennt
+`npm run build` wörtlich als Beispiel für einen browserlosen Build-Check
+(„Syntax/Build pruefen (z.B. […], npm run build, […])"). Das Modell hatte
+das Werkzeug UND die Anleitung, den Fehler ganz ohne Browser zu finden —
+und hat es nicht genutzt. Es begnügte sich mit der (unvollständigen)
+Backend-Prüfung und erklärte die Aufgabe für erledigt, mit der
+ausdrücklichen Begründung „Da ich das Frontend nicht in einem Browser
+testen kann".
+
+**Die Lücke liegt im Gate selbst:** `--check` verlangt aktuell nur „irgend
+ein Vordergrund-`run` mit `exit=0` seit der letzten Änderung" — nicht, dass
+die zuletzt geänderte Komponente auch tatsächlich geprüft wurde. Ein Modell
+kann diese Bedingung technisch korrekt erfüllen (Backend curl-testen) und
+das Frontend dabei komplett ignorieren. Das Gate zu verschärfen (z.B.:
+wurden `.jsx`-Dateien angefasst, muss ein `npm run build` seit der letzten
+Aenderung durchgelaufen sein) wäre der naheliegende nächste Schritt —
+bewusst hier nur benannt, nicht mehr umgesetzt, um das Werkzeug nicht
+programmspezifisch aufzublähen.
+
+**Nebenbefund zur Prozessführung:** Das Modell startete den Backend-Server
+nicht über die neue `"background":true`-Aktion, sondern per klassischem
+Shell-`&` innerhalb eines normalen `run`-Kommandos
+(`cd backend && python3 app.py & sleep 3 && curl …`). Das funktioniert,
+entzieht den Hintergrundprozess aber meinem `BG_PROCS`-Tracking — der
+`atexit`-Aufräumer konnte ihn nicht erfassen, ein verwaister Python-Prozess
+blieb nach Laufende auf dem Rechner aktiv (manuell nachträglich beendet).
+Auch das eine Lücke für eine spätere Version.
+
+**Einschränkung der Fairness:** Diesmal tauchte keine Card-Komponenten-
+Halluzination auf wie bei allen fünf Modellen in 9.20 — aber das liegt
+schlicht daran, dass der heutige Prompt `md-elevated-card` gar nicht mehr
+als Beispiel nannte (ein Versehen beim Formulieren, keine Verbesserung
+durch `--check`). Der `oninput`-Bug (klein statt `onInput`) dagegen trat
+**identisch erneut** auf — derselbe Fehler wie beim exakt selben Modell in
+9.20, diesmal wie damals nie durch echten Test aufgedeckt, weil das
+Frontend gar nicht erst lief.
+
+**Fazit:** Der Check-Modus hat in diesem ersten echten Testlauf bewiesen,
+dass er funktioniert — das Modell reagierte nachweislich auf reale
+Fehlermeldungen (Port-Konflikt) statt zu raten. Er hat aber auch gezeigt,
+dass „kann sich selbst prüfen" nicht automatisch „prüft sich vollständig"
+bedeutet: Ein zu locker formuliertes Prüfkriterium lässt sich durch
+Teilprüfung erfüllen, während der eigentlich kritische Teil (das Frontend,
+genau der Teil mit der neuen, unbekannten Bibliothek) unangetastet bleibt
+— und die abschließende Zusammenfassung das sogar aktiv verschleiert.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
