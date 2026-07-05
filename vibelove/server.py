@@ -19,6 +19,13 @@ MC_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'mc.py')
 # Globaler Prozess-Speicher für den Vite-Server
 vite_process = None
 
+# Chat-Verlauf
+BUILD_HISTORY = []
+
+def reset_history():
+    global BUILD_HISTORY
+    BUILD_HISTORY = []
+
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
@@ -65,9 +72,22 @@ def build():
     if not instruction:
         return "Keine Anweisung erhalten."
 
+    # Kontext-Text zusammenbauen aus BUILD_HISTORY (letzte 5 Einträge)
+    context_parts = []
+    if BUILD_HISTORY:
+        context_parts.append("Bisherige Bauschritte in dieser Sitzung (chronologisch, ggf. darauf aufbauen):")
+        for i, entry in enumerate(BUILD_HISTORY[-5:]):
+            context_parts.append(f"{i+1}. Anweisung: {entry['instruction']}")
+            context_parts.append(f"   Ergebnis: {entry['result_summary']}")
+    
+    if context_parts:
+        full_instruction = "\n".join(context_parts) + f"\n\nNEUE Anweisung: {instruction}"
+    else:
+        full_instruction = instruction
+
     # Der geforderte Zusatztext
     suffix = "\n\nStarte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
-    full_instruction = instruction + suffix
+    full_instruction += suffix
 
     print(f"Starte Bauprozess für: {instruction[:50]}...")
     
@@ -101,12 +121,26 @@ def build():
         
         # Nach dem Bauen sicherstellen, dass der Vite-Server wieder läuft (falls er durch mc.py beendet wurde)
         ensure_vite_running()
+
+        # Verlauf speichern
+        summary = output[-500:] if len(output) > 500 else output
+        BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
         
         return output
     except subprocess.TimeoutExpired:
-        return "Fehler: Bauprozess hat das Timeout von 900 Sekunden überschritten."
+        error_msg = "Fehler: Bauprozess hat das Timeout von 900 Sekunden überschritten."
+        BUILD_HISTORY.append({"instruction": instruction, "result_summary": error_msg})
+        return error_msg
     except Exception as e:
-        return f"Fehler beim Ausführen von mc.py: {str(e)}"
+        error_msg = f"Fehler beim Ausführen von mc.py: {str(e)}"
+        BUILD_HISTORY.append({"instruction": instruction, "result_summary": error_msg})
+        return error_msg
+
+@app.route('/reset', methods=['POST'])
+def reset():
+    reset_history()
+    return "OK"
+
 
 def cleanup():
     stop_vite_server()

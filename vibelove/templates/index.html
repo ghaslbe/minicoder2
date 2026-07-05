@@ -24,6 +24,13 @@
             >
                 Bauen
             </button>
+            <button 
+                type="button"
+                id="resetButton"
+                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
+            >
+                Verlauf zurücksetzen
+            </button>
         </form>
         <div class="mt-4 flex-grow overflow-auto bg-gray-900 text-green-400 p-3 rounded font-mono text-sm">
             <pre id="logOutput" class="whitespace-pre-wrap">Warte auf Bauanweisung...</pre>
@@ -43,15 +50,19 @@
         const form = document.getElementById('buildForm');
         const logOutput = document.getElementById('logOutput');
         const buildButton = document.getElementById('buildButton');
+        const resetButton = document.getElementById('resetButton');
+        const instructionInput = document.getElementById('instruction');
 
         form.onsubmit = async (e) => {
             e.preventDefault();
-            const instruction = document.getElementById('instruction').value;
+            const instruction = instructionInput.value;
             if (!instruction) return;
 
             buildButton.disabled = true;
             buildButton.innerText = 'Baue...';
-            logOutput.textContent = 'Starte Bauprozess...\n';
+            
+            const separator = '\n\n=== Anweisung: ' + instruction + ' ===\n';
+            logOutput.textContent += separator;
 
             try {
                 const response = await fetch('/build', {
@@ -60,12 +71,30 @@
                     body: `instruction=${encodeURIComponent(instruction)}`
                 });
                 const text = await response.text();
-                logOutput.textContent = text;
+                logOutput.textContent += text;
+                
+                logOutput.scrollTop = logOutput.scrollHeight;
+                instructionInput.value = '';
             } catch (err) {
-                logOutput.textContent = 'Fehler: ' + err.message;
+                logOutput.textContent += '\nFehler: ' + err.message;
             } finally {
                 buildButton.disabled = false;
                 buildButton.innerText = 'Bauen';
+            }
+        };
+
+        resetButton.onclick = async () => {
+            if (!confirm('Möchtest du den Verlauf wirklich zurücksetzen?')) return;
+            
+            try {
+                const response = await fetch('/reset', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    logOutput.textContent = 'Verlauf wurde zurueckgesetzt.\nWarte auf Bauanweisung...';
+                }
+            } catch (err) {
+                console.error('Reset failed:', err);
             }
         };
     </script>

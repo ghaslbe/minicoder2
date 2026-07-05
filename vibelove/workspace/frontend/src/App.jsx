@@ -16,7 +16,7 @@ function App() {
           <img src={viteLogo} className="vite" alt="Vite logo" />
         </div>
         <div style={{ textAlign: 'center' }}>
-          <h1 style={{ fontSize: '3rem', margin: '20px 0' }}>Hallo von Gemma - Vibelove funktioniert!</h1>
+          <h1 style={{ fontSize: '3rem', margin: '20px 0' }}>Vibelove Demo</h1>
           <p>
             Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
           </p>
@@ -102,7 +102,7 @@ function App() {
                 <svg
                   className="button-icon"
                   role="presentation"
-                  aria-hidden="true"
+                  aria="true"
                 >
                   <use href="/icons.svg#bluesky-icon"></use>
                 </svg>

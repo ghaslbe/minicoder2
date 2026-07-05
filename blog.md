@@ -2258,7 +2258,88 @@ python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
 
 Vollständiger Prompt:
 [`prompt_vibelove_stage2_chat.txt`](prompt_vibelove_stage2_chat.txt).
-Ergebnis folgt im nächsten Abschnitt.
+
+### 10.3 Etappe 2, Ergebnis: eine zweite, andere Art von Wiederholungsschleife
+— und wieder zwei grundsätzliche `mc.py`-Fixes
+
+**1) Der erste Versuch hängt erneut fest — diesmal auf einer tieferen
+Ebene.** Nicht wie in Etappe 1 eine wiederholte komplette Dateineuschrift
+über mehrere Schritte, sondern eine **Token-Wiederholung innerhalb EINER
+einzigen, noch unfertigen Antwort**: Beim Versuch, per `edit_file` einen
+`<h1>`-Tag zu ändern, produzierte Gemma wiederholt denselben ungültigen
+JSON-Escape (`</h1\>` — ein überflüssiger Backslash vor `>`). Bemerkenswert:
+das Modell **erkannte den Fehler im eigenen Fließtext** ("*Ah, ich sehe
+es: `</h1\>` war in meiner Antwort. Das ist falsch.*"), reproduzierte ihn
+danach aber **identisch erneut** — mehrfach, wortgleich, über mehrere
+„Korrekturversuche" hinweg, alles noch bevor überhaupt eine gültige Aktion
+zustande kam. Das konnte die in Etappe 1 gebaute `_check_repetition()`
+nicht abfangen, weil sie erst NACH einem erfolgreich geparsten
+`write_file`/`write_files` greift — hier kam nie eine gültige Aktion
+zustande.
+
+**Grundsätzlicher Fund #3 → `mc.py` geändert:** `frequency_penalty: 0.3`
+im Request-Payload (Standard-OpenAI-Feld, von inkompatiblen Endpoints
+einfach ignoriert) — eine Bremse auf Sampling-Ebene statt auf
+Anwendungs-/Protokoll-Ebene, weil das Problem dort entsteht.
+
+**2) Retry mit dem Fix lief durch (121s), aber mit einer Lehre:** Ohne
+`--plan` gab es keine selbst genannten Prüfschritte, an denen das
+Check-Gate das Modell hätte festhalten können — es reichte ein einziger
+`ast.parse`-Syntaxcheck, um `finish` zu akzeptieren, obwohl die im Prompt
+verlangten funktionalen `curl`-Tests (zwei aufeinanderfolgende
+`/build`-Aufrufe, `/reset`) nie liefen. Genau die aus 9.23 bekannte
+Kernschwäche des Check-Gates — diesmal selbst verursacht, weil `--check`
+ohne `--plan` gestartet wurde. **Lehre für zukünftige Läufe:** `--check`
+entfaltet seine volle Durchsetzungskraft nur zusammen mit `--plan`.
+
+**3) Eigene Live-Verifikation deckte einen echten, aber
+anwendungsspezifischen Bug auf:** `templates/index.html` referenzierte im
+JavaScript einen Button mit `id="resetButton"`, der im HTML-Markup nie
+angelegt wurde — ein `TypeError` beim Laden der Seite, die
+„Verlauf-zurücksetzen"-Funktion komplett unbenutzbar. Klar
+anwendungsspezifisch → **nicht** an `mc.py` geändert, nur per gezieltem
+Prompt behoben (25 Sekunden Laufzeit,
+[`prompt_vibelove_stage2_fix.txt`](prompt_vibelove_stage2_fix.txt)).
+
+**4) Beim erneuten direkten Testen desselben `h1`-Änderungsauftrags trat
+dieselbe Escape-Wiederholung nochmal auf** — `frequency_penalty` allein
+reichte nicht, um sie zu verhindern, nur die Erfolgsquote zu verbessern.
+
+**Grundsätzlicher Fund #4 → `mc.py` geändert:** Statt nur zu bremsen, jetzt
+zusätzlich eine **eskalierte Rückmeldung ab dem 2. aufeinanderfolgenden
+JSON-Parse-Fehler**: konkreter Hinweis auf das wahrscheinliche
+Escaping-Problem, explizite Anweisung den Text NICHT zu wiederholen,
+sondern einen kürzeren Ausschnitt zu wählen oder auf `write_file`
+auszuweichen. Ergebnis im direkten Retest: Nach dem 2. Fehler wechselte
+Gemma **genau wie vorgeschlagen** auf `write_file` mit dem kompletten
+Dateiinhalt — Auftrag danach in nur 6 Schritten mit echtem
+`npm run build`-Check abgeschlossen.
+
+**Finale End-to-End-Verifikation, mit beiden Fixes, ohne weitere
+Störungen:** Zwei aufeinanderfolgende Bauanweisungen über die echte
+Weboberfläche — 1. „Ändere die Hauptüberschrift zu 'Vibelove Demo'" (30s),
+2. „Ändere die Textfarbe dieser Überschrift zu Rot" (10s, per neuer
+CSS-Regel `h1 { color: red; }` sauber umgesetzt) — beide sichtbar in der
+Live-Vorschau bestätigt. `/reset` liefert korrekt `OK`. Auffällig: **beide
+Läufe waren mit den neuen Fixes drastisch schneller** (30s/10s) als die
+vorherigen, von Wiederholungsschleifen geplagten Versuche (mehrere
+Minuten bis zum Abbruch) — ein Nebeneffekt, der zeigt, wie teuer
+Wiederholungsschleifen in Tempo sind, nicht nur in Zuverlässigkeit.
+
+**Nebenbefund, keine Code-Änderung wert:** Bei den Tests sammelten sich
+mehrfach verwaiste `vite`-Prozesse an — überwiegend, weil *ich selbst*
+`server.py` beim Testen wiederholt mit `kill -9` statt `kill -TERM`
+beendet habe. `SIGKILL` umgeht `atexit`-Handler grundsätzlich (Unix-
+Semantik, kein behebbarer Bug) — der von `server.py` selbst verwaltete
+Vite-Kindprozess überlebt das dann zwangsläufig. Eigene Lektion: beim
+manuellen Testen `kill -TERM` verwenden, nicht `kill -9`.
+
+**Gesamtbilanz Etappe 2:** Zwei weitere `mc.py`-Erweiterungen
+(`frequency_penalty`, eskalierte Parse-Fehler-Rückmeldung) sind jetzt
+dauerhaft im Werkzeug — beide unabhängig von Vibelove nützlich. Der
+Mehrfach-Chat-Verlauf funktioniert vollständig: Formular, Kontext über
+mehrere Bauschritte, Verlauf-Reset, alles live über die echte UI
+verifiziert.
 
 ---
 
