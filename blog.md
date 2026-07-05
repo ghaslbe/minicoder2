@@ -1525,6 +1525,82 @@ ist — die aktuelle Validierung deckt das nicht ab. **`mxfp4` bleibt nach
 allen Tiefenprüfungen des Tages der einzige Kandidat ganz ohne jeden
 gefundenen Bug.**
 
+### 9.20 Der Material-Design-Stresstest
+
+Ein letztes Experiment: Dieselbe Aufgabe an die fünf besten Modelle des
+Tages, aber mit einer geänderten Anforderung — das Frontend soll die
+[Material Web Components](https://github.com/material-components/material-web)
+(`@material/web`) nutzen statt einfacher HTML-Elemente. Eine völlig neue,
+unbekannte UI-Bibliothek mit eigener Custom-Element-API — ein deutlich
+härterer Test für die tatsächlichen Web-Kenntnisse der Modelle als das
+gewohnte CRUD-Grundgerüst.
+
+| Modell | Zeit | Dateien | Schritte | Fehler |
+|---|---:|---:|---:|---:|
+| `qwen/qwen3.6-27b` | 656 s | 6 | 7 | 1 |
+| `qwopus3.6-27b-v2-mlx` | 1327 s (22 Min!) | 8 | 13 | 1 |
+| `gemma-4-26b-a4b-it@4bit` | 247 s | 6 | 10 | 3 |
+| `google/gemma-4-26b-a4b-qat` | 386 s | 7 | 13 | 5 |
+| `gemma-4-26b-a4b-it@mxfp4` | 171 s | 6 | 7 | 1 |
+
+Alle fünf brauchten spürbar länger als beim gewohnten HTML-CRUD (die
+schnellste Zeit, 171 s, liegt bereits über dem, was `mxfp4` normalerweise
+für die einfache Version braucht) — die ungewohnte Bibliothek kostet
+sichtbar Overhead. Aber die eigentliche Geschichte steckt nicht in der
+Zeit, sondern im Code selbst.
+
+**Fund 1 — alle fünf Modelle halluzinieren dieselbe, nicht existierende
+Komponente.** `@material/web` hat schlicht **keine Card-Komponente** (echte
+Kategorien: `button`, `checkbox`, `chips`, `dialog`, `divider`, `fab`,
+`icon`, `list`, `menu`, `progress`, `radio`, `select`, `slider`, `switch`,
+`tabs`, `textfield`). Trotzdem importierten und verwendeten **alle fünf**
+Modelle unabhängig voneinander ein `<md-elevated-card>` bzw.
+`elevated-card.js` — ein Konzept, das Material Design als *Designsprache*
+zwar kennt (und andere Implementierungen wie Flutter oder MUI auch anbieten),
+das aber in Googles offizieller Web-Components-Bibliothek nie umgesetzt
+wurde. Fünf verschiedene Modelle, fünf unabhängige Testläufe, derselbe
+spezifische Fehlschluss — ein starkes Indiz, dass dieses Wissen aus den
+Trainingsdaten (Material Design allgemein) nicht sauber von der konkreten
+Implementierung (`@material/web` speziell) getrennt gespeichert ist.
+
+**Fund 2 — Browserslist-Halluzinationen jetzt in fünf von fünf Läufen.**
+Jedes einzelne Modell produzierte eine andere Variante desselben
+Fehlertyps: ungültige Werte in der `browserslist`-Konfiguration
+(`"not firefox"` ohne Version, `">0.2"` ohne %-Zeichen, ein komplett falsches
+Objekt-Format im Babel-Zielsyntax-Stil statt eines Arrays). Zusammen mit den
+drei Fällen aus 9.15/9.19 sind das jetzt **acht unabhängige
+Browserslist-Bugs an einem einzigen Tag** — mit Abstand die häufigste
+Einzel-Fehlerart der gesamten Session.
+
+**Fund 3 — drei verschiedene, unterschiedlich erfolgreiche Ansätze, Werte
+an Custom Elements zu binden:**
+
+| Ansatz | Modelle | Funktioniert? |
+|---|---|---|
+| Verschachteltes `<input slot="input">` im Custom Element | `qwen3.6-27b`, `qwopus3.6-27b-v2` | ❌ React aktualisiert den State nie — Formular komplett funktionsunfähig |
+| `ref`-basiertes Auslesen von `.value` bei Submit | `google/gemma-4-26b-a4b-qat` | ⚠️ funktioniert technisch, aber Adresse/Telefon durch `address`/`phone`-statt-`adresse`/`telefon`-Verwechslung immer leer |
+| Direktes `value={}` + Event-Handler auf dem Custom Element | `gemma-4-26b-a4b-it@4bit` (korrekt: `onInput`), `gemma-4-26b-a4b-it@mxfp4` (falsch: `oninput` klein geschrieben) | ✅ bei korrekter Groß-/Kleinschreibung — ❌ bei `oninput` reagiert React gar nicht |
+
+**Nur `gemma-4-26b-a4b-it@4bit` lieferte eine tatsächlich vollständig
+funktionierende Material-Design-Anwendung** — live im Browser verifiziert:
+Anlegen und Bearbeiten funktionieren, neue Personen erscheinen korrekt in
+der Liste. Alle anderen vier scheiterten an mindestens einem Punkt so
+grundlegend, dass die zentrale Funktion (eine Person anlegen) nicht
+funktionierte, obwohl `mc.py` bei allen "6/6 Dateien" meldete. `qwopus3.6-
+27b-v2` war dabei am gravierendsten betroffen: Es referenzierte sechs
+eigene "Stub"-Dateien für die Material-Komponenten, schrieb aber nur zwei
+davon tatsächlich — die App kompilierte ohne manuellen Fix gar nicht erst.
+
+**Fazit:** Sobald die Aufgabe eine Bibliothek verlangt, die seltener in
+Trainingsdaten vorkommt als React+HTML, bricht die Trefferquote massiv ein
+— selbst bei den fünf zuverlässigsten Modellen des gesamten Tages. Die
+Fehler liegen dabei nicht im gewohnten Bereich (JSON-Formatierung,
+fehlende 404-Prüfung), sondern in einer neuen Kategorie: **plausibel
+aussehende, aber falsche Annahmen über die tatsächliche API einer
+UI-Bibliothek** — Fehler, die weder `mc.py`s Syntax-Validierung noch ein
+einfacher Dateicheck aufdecken, sondern nur ein echter Blick in den
+laufenden Browser.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
