@@ -1,0 +1,18 @@
+Erweitere server.py so, dass die Ausgabe von mc.py waehrend eines '/build'-Aufrufs LIVE (zeilenweise) an den Browser gestreamt wird, statt erst nach komplettem Abschluss auf einmal geliefert zu werden. Lies zuerst server.py und templates/index.html komplett, um die bestehende Struktur zu verstehen (NICHT raten). Aendere NUR was noetig ist, bestehende Funktionalitaet (BUILD_HISTORY/Kontext-Aufbau, /reset-Route, Vite-Server-Verwaltung, Umgebungsvariablen) bleibt unveraendert erhalten.
+
+AENDERUNGEN AN server.py:
+1. Statt subprocess.run(...) im '/build'-Endpunkt: subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) verwenden.
+2. Der '/build'-Endpunkt gibt eine Flask-Streaming-Response zurueck: from flask import stream_with_context, Response - und return Response(stream_with_context(generate()), mimetype='text/plain'), wobei generate() ein Generator ist.
+3. Der generate()-Generator liest die Ausgabe des Popen-Prozesses ZEILENWEISE (z.B. for line in iter(proc.stdout.readline, '')) und yieldet jede Zeile SOFORT, sobald sie verfuegbar ist - dadurch sieht der Browser den Fortschritt live, waehrend mc.py noch laeuft.
+4. Der Generator sammelt die kompletten Zeilen intern in einer Liste/einem String, damit nach Ende des Prozesses (proc.wait()) weiterhin wie bisher ein Eintrag mit 'instruction' und 'result_summary' (letzte ca. 500 Zeichen) an BUILD_HISTORY angehaengt werden kann, UND ensure_vite_running() aufgerufen wird - das muss also INNERHALB des Generators nach der Schleife passieren, nicht danach (da die Funktion sonst schon zurueckgekehrt waere).
+5. Ein einfacher Timeout-Mechanismus (900 Sekunden Gesamtzeit): falls ueberschritten, proc.terminate() aufrufen und eine entsprechende Fehlermeldung yielden.
+
+AENDERUNGEN AN templates/index.html:
+1. Im JavaScript: statt 'const text = await response.text(); logOutput.textContent += text;' MUSS die Antwort jetzt zeilenweise/chunkweise gelesen werden, waehrend sie ankommt: response.body.getReader() verwenden, mit einem TextDecoder, in einer Schleife lesen (while(true) { const {done, value} = await reader.read(); if (done) break; logOutput.textContent += decoder.decode(value, {stream: true}); logOutput.scrollTop = logOutput.scrollHeight; }). So erscheint der Fortschritt live im Log-Bereich, waehrend mc.py noch arbeitet, nicht erst am Ende.
+2. Das Formularfeld soll weiterhin erst NACH Abschluss (also nach dem 'done'-Signal des Readers) geleert werden.
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" muss fehlerfrei durchlaufen.
+2. Starte server.py kurz im Hintergrund (VIBELOVE_BASE_URL=http://192.168.178.191:1234/v1 VIBELOVE_MODEL=gemma-4-26b-a4b-it@mxfp4), schicke per curl (mit --no-buffer) eine kurze /build-Anfrage (z.B. "lege eine Datei test_stream.txt mit dem Inhalt hallo an") und pruefe, dass curl bereits WAEHREND der Ausfuehrung mehrere Zeilen Ausgabe zeigt (nicht erst ganz am Ende alles auf einmal) - das kannst du z.B. daran erkennen, dass curl mehrfach neue Zeilen ausgibt, bevor der Befehl fertig ist.
+3. server.py danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
