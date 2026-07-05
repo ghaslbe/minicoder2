@@ -1570,7 +1570,24 @@ def run_task(messages, model):
 
         if "_parse_error" in action:
             parse_error_streak += 1
-            if parse_error_streak >= 2:
+            if parse_error_streak >= 4:
+                # Trotz Eskalationsstufe 2 wiederholt sich das Problem — in der
+                # Praxis beobachtet: zwischen den fehlgeschlagenen Versuchen
+                # lag eine unabhaengige, ERFOLGREICHE Aktion (z.B. ein read_file
+                # oder run), die den Zaehler zurueckgesetzt haette, waere er
+                # naiv auf JEDE erfolgreiche Aktion zurueckgesetzt worden —
+                # daher zaehlt dieser Streak NUR erfolgreiche SCHREIB-Aktionen
+                # als Reset (s.u.), nicht beliebige Zwischenschritte. Staerkste
+                # Eskalation: konkrete alternative Strategie vorschlagen statt
+                # nur zu bremsen.
+                obs = (f"FEHLER: dein action-JSON ist jetzt {parse_error_streak}x insgesamt "
+                       f"ungueltig ({action['_parse_error']}) — das Problem liegt vermutlich "
+                       f"an der schieren Groesse des Inhalts. Teile die Datei auf: schreibe "
+                       f"zuerst ein MINIMALES Geruest per write_file (z.B. nur die Struktur "
+                       f"mit Platzhalter-Kommentaren), pruefe es (ast.parse/npm run build), "
+                       f"und ergaenze den Rest DANACH in mehreren kleinen edit_file-Schritten "
+                       f"statt eines einzigen grossen write_file.")
+            elif parse_error_streak >= 2:
                 # Wiederholtes JSON-Escaping-Problem (in der Praxis beobachtet:
                 # dasselbe falsche '\>' o.ae. wird trotz eigener Korrektur-
                 # Ankuendigung im Text identisch wiederholt). Der generische
@@ -1591,7 +1608,14 @@ def run_task(messages, model):
             print(f"{C.RED}{obs}{C.RESET}")
             messages.append({"role": "user", "content": obs})
             continue
-        parse_error_streak = 0
+        if action.get("action") in ("write_file", "write_files", "edit_file"):
+            # Nur ein erfolgreicher SCHREIB-Versuch zeigt, dass das eigentliche
+            # Problem (JSON-Encoding von Dateiinhalt) geloest ist — ein
+            # zwischengeschobenes read_file/run/list_dir etc. soll den Zaehler
+            # NICHT zuruecksetzen, sonst kann sich das Muster "2x scheitern,
+            # harmlose Aktion, 2x scheitern, ..." endlos wiederholen, ohne je
+            # die staerkere Eskalation zu erreichen.
+            parse_error_streak = 0
 
         if "_fence_error" in action:
             obs = f"FEHLER: {action.pop('_fence_error')} Sende die Aktion bitte erneut."
