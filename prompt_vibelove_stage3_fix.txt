@@ -1,0 +1,13 @@
+In server.py gibt es drei kleine Probleme im '/build'-Endpunkt, die du beheben sollst. Lies zuerst server.py komplett, um die genaue aktuelle Struktur zu sehen (NICHT raten), und aendere NUR die drei folgenden Stellen, sonst nichts:
+
+1. HAUPTPROBLEM (Streaming funktioniert noch nicht wirklich): Im 'command'-Array, das an subprocess.Popen uebergeben wird, fehlt der Unbuffered-Modus fuer den mc.py-Subprozess. Python puffert stdout blockweise statt zeilenweise, wenn es in eine Pipe umgeleitet wird (nicht in ein Terminal) - dadurch kommt beim Streamen ueber Flask trotz korrektem Generator-Code die Ausgabe erst ganz am Ende auf einmal an, nicht live waehrend mc.py laeuft. Der Fix: aendere im command-Array den Eintrag "python3" zu "python3", "-u" (also zwei Eintraege statt einem: "python3" gefolgt von "-u"), sodass mc.py unbuffered laeuft.
+
+2. Im except-Block direkt nach 'return output' (oder 'return error_msg', je nachdem wie es aktuell benannt ist) gibt es toten, nie erreichbaren Code danach (zwei Zeilen, die nach einem return-Statement stehen und daher nie ausgefuehrt werden). Entferne diesen toten Code.
+
+3. Der Timeout-Mechanismus (900 Sekunden) prueft die verstrichene Zeit nur ZWISCHEN Aufrufen von proc.stdout.readline() - da readline() aber blockierend ist, wuerde der Timeout NICHT greifen, falls mc.py komplett haengt und ueberhaupt keine neue Zeile mehr produziert (readline() blockiert dann unendlich, die Zeitpruefung davor wird nie erneut erreicht). Behebe das: nutze stattdessen z.B. proc.stdout.readline() in einem separaten Thread mit einer Queue, ODER pruefe mit select.select([proc.stdout], [], [], 1.0) ob innerhalb 1 Sekunde Daten verfuegbar sind, bevor readline() aufgerufen wird - waehle die einfachere der beiden Loesungen.
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" muss fehlerfrei durchlaufen.
+2. Starte server.py kurz im Hintergrund (VIBELOVE_BASE_URL=http://192.168.178.191:1234/v1 VIBELOVE_MODEL=gemma-4-26b-a4b-it@mxfp4). Schicke dann per curl --no-buffer eine /build-Anfrage (z.B. "lege eine Datei test_fix.txt mit dem Inhalt hallo an") im Hintergrund, und pruefe NACH NUR 2-3 SEKUNDEN (waehrend der curl-Befehl noch laeuft) mit einem zweiten Befehl, ob bereits mehrere Zeilen Ausgabe angekommen sind (z.B. indem du die Ausgabe in eine Datei umleitest und deren Zeilenzahl nach 2-3 Sekunden pruefst, waehrend der curl-Prozess noch nicht fertig ist). Das ist der eigentliche Beweis, dass Live-Streaming jetzt funktioniert - nicht nur, dass der Endgueltige Aufruf insgesamt erfolgreich war.
+3. server.py danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
