@@ -2220,6 +2220,46 @@ Nachbesserungsrunden. Zwei `mc.py`-Erweiterungen (Wiederholungserkennung,
 `&`-Warnung) sind jetzt dauerhaft im Werkzeug — beide unabhängig von
 Vibelove nützlich, für jede zukünftige Aufgabe.
 
+### 10.2 Etappe 2: Mehrfach-Chat-Verlauf
+
+Bisher startete jeder Klick auf „Bauen" `mc.py` komplett neu, ohne
+Erinnerung an vorherige Anweisungen — kein echtes iteratives Verfeinern,
+eher eine Aneinanderreihung unabhängiger Einzelaufträge. Etappe 2 soll das
+beheben. Architektur-Vorgabe (wieder vorab festgelegt, damit Gemma sich
+nicht im Session-Design verliert):
+
+- `server.py` sammelt bisherige Bauschritte **im Speicher** (`BUILD_HISTORY`,
+  keine Datei/DB) und hängt die **letzten maximal 5** davon als Kontext-Text
+  vor jede neue Anweisung an `mc.py` — bewusst gedeckelt, damit der Kontext
+  nicht unbegrenzt waechst (dieselbe Sorge wie bei `mc.py`s eigener
+  Kontext-Kürzung, nur hier über mehrere Subprozess-Aufrufe hinweg).
+- Als „Ergebnis"-Merker pro Runde dienen die letzten ~500 Zeichen der
+  `mc.py`-Ausgabe — pragmatisch statt einer fragilen Regex-Extraktion der
+  exakten `finish`-Zusammenfassung.
+- Neue Route `/reset` leert nur den Chat-Verlauf, **rührt `workspace/`
+  nicht an** — der bisherige Baustand bleibt erhalten, nur das Gedächtnis
+  wird geleert.
+- Frontend: Log-Bereich wird ab jetzt **angehängt** statt ersetzt (mit
+  Trennlinie pro Runde, Auto-Scroll nach unten), ein Button „Verlauf
+  zurücksetzen", und das Formular leert sich nach einem Build automatisch
+  für die nächste Eingabe.
+
+Aufruf (unverändert gegen die M4 Pro, `--check` diesmal ohne `--plan`, da
+die Aenderung klein genug ist, um ohne separate Planungsrunde direkt
+loszulegen):
+
+```bash
+cd vibelove
+python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --check --max-steps 30 \
+  "$(cat ../prompt_vibelove_stage2_chat.txt)"
+```
+
+Vollständiger Prompt:
+[`prompt_vibelove_stage2_chat.txt`](prompt_vibelove_stage2_chat.txt).
+Ergebnis folgt im nächsten Abschnitt.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts

@@ -1,0 +1,19 @@
+Erweitere die bestehende Anwendung 'Vibelove' (server.py, templates/index.html) im aktuellen Arbeitsverzeichnis um einen Mehrfach-Chat-Verlauf. Lies zuerst server.py und templates/index.html komplett, um die bestehende Struktur zu verstehen (NICHT raten). Aendere NUR was noetig ist, bestehende Funktionalitaet (Vite-Server-Verwaltung, Umgebungsvariablen VIBELOVE_BASE_URL/VIBELOVE_MODEL) bleibt unveraendert erhalten.
+
+AENDERUNGEN AN server.py:
+1. Eine globale Liste BUILD_HISTORY = [] (Python-Liste von Dicts mit 'instruction' und 'result_summary'), die IM SPEICHER lebt (kein File/DB), zuruecksetzbar.
+2. Im '/build'-Endpunkt: BEVOR die Anweisung an mc.py geschickt wird, aus BUILD_HISTORY (nur die LETZTEN maximal 5 Eintraege) einen Kontext-Text zusammenbauen nach diesem Muster: "Bisherige Bauschritte in dieser Sitzung (chronologisch, ggf. darauf aufbauen):\n1. Anweisung: <instruction1>\n   Ergebnis: <result_summary1>\n2. Anweisung: <instruction2>\n   Ergebnis: <result_summary2>\n...\n\nNEUE Anweisung: <die eigentliche neue instruction>". Falls BUILD_HISTORY leer ist (erster Build), diesen Kontext-Text weglassen und nur die reine Anweisung verwenden.
+3. Nach dem mc.py-Aufruf: die letzten ca. 500 Zeichen der kombinierten stdout/stderr-Ausgabe als 'result_summary' zusammen mit der urspruenglichen (nicht der kontext-angereicherten) instruction als neuen Eintrag an BUILD_HISTORY anhaengen.
+4. Neue Route POST '/reset': leert BUILD_HISTORY (setzt sie auf eine leere Liste zurueck), OHNE workspace/ oder die gebaute Anwendung anzufassen. Gibt einfach "OK" zurueck.
+
+AENDERUNGEN AN templates/index.html:
+1. Statt den Log-Bereich (<pre id="logOutput">) bei jedem Build-Ergebnis KOMPLETT zu ersetzen, das neue Ergebnis ANHAENGEN (mit einer sichtbaren Trennlinie und der jeweiligen Anweisung davor, z.B. "\n\n=== Anweisung: <instruction> ===\n<ergebnis>"), und den Log-Bereich automatisch nach unten scrollen (scrollTop = scrollHeight) nach jedem Update.
+2. Einen kleinen Button 'Verlauf zuruecksetzen' oberhalb oder unterhalb des Log-Bereichs hinzufuegen, der per fetch POST auf '/reset' den Verlauf leert und den Log-Bereich im Frontend auf den Ausgangstext zuruecksetzt.
+3. Nach einem erfolgreichen Build das Formularfeld (Textarea) leeren, damit man direkt die naechste Anweisung eintippen kann.
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" muss fehlerfrei durchlaufen.
+2. server.py kurz im Hintergrund starten (Umgebungsvariablen setzen: VIBELOVE_BASE_URL=http://192.168.178.191:1234/v1 VIBELOVE_MODEL=gemma-4-26b-a4b-it@mxfp4), dann per curl ZWEI aufeinanderfolgende POST-Requests an /build schicken (z.B. erst "aendere den Titel zu Testtitel1", dann "aendere den Titel zu Testtitel2") und pruefen, dass der zweite Aufruf im Log erkennbar auf den ersten aufbaut (z.B. indem die Anweisung selbst im Kontext-Text auftaucht, den mc.py in seiner Antwort zitiert oder verarbeitet).
+3. curl -X POST http://localhost:5050/reset muss "OK" liefern.
+4. server.py danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
