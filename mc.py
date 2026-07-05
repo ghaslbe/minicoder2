@@ -30,6 +30,7 @@ Env-Variablen:
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -66,6 +67,7 @@ VALIDATE = True            # nach dem Schreiben bekannte Dateitypen pruefen
 GIT_ROLLBACK = False       # nur True, wenn git installiert + sauberes Repo (in main gesetzt)
 TOUCHED = []               # von mc geschriebene/geaenderte Pfade (fuer Rollback)
 CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/Prosa-Ende)
+WRITE_HISTORY = {}         # Pfad -> (letzter Inhalt, Anzahl fast identischer Wiederholungen)
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
 
 # Robustheit (aus dem GPU-Benchmark gelernt):
@@ -747,6 +749,34 @@ def _shrink_warning(path, new_len):
     return ""
 
 
+def _check_repetition(path, new_content):
+    """Erkennt eine Wiederholungsschleife: dieselbe Datei wird wiederholt fast
+    unveraendert neu geschrieben, ohne dass sich etwas am eigentlichen Problem
+    aendert (in der Praxis beobachtet: ein Tippfehler wird 'korrigiert', aber
+    der naechste komplette Neuschrieb bringt ihn wieder mit). Ein generischer
+    Validierungsfehler allein loest das nicht, weil das Modell dieselbe
+    (falsche) Strategie — Datei komplett neu schreiben — einfach wiederholt,
+    statt die Strategie zu wechseln. Nach der 3. fast identischen Version in
+    Folge wird das Modell explizit zu 'edit_file statt komplettem Neuschreiben'
+    gedraengt. Zaehler wird zurueckgesetzt, sobald sich der Inhalt spuerbar
+    aendert."""
+    global WRITE_HISTORY
+    prev_content, count = WRITE_HISTORY.get(path, (None, 0))
+    if prev_content is not None:
+        ratio = difflib.SequenceMatcher(None, prev_content, new_content).quick_ratio()
+        count = count + 1 if ratio > 0.9 else 0
+    WRITE_HISTORY[path] = (new_content, count)
+    if count >= 2:
+        return (f"\nACHTUNG: {path} wurde jetzt {count + 1}x in Folge fast "
+                f"identisch komplett neu geschrieben, ohne den Fehler zu "
+                f"beheben. Wechsle die Strategie: Nutze 'edit_file', um NUR "
+                f"die konkrete fehlerhafte Stelle gezielt zu ersetzen, statt "
+                f"die ganze Datei erneut zu schreiben. Ist unklar, was genau "
+                f"falsch ist, erklaere das zuerst in einem Satz, bevor du "
+                f"erneut schreibst.")
+    return ""
+
+
 def do_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
@@ -755,7 +785,7 @@ def do_write_file(args):
     print(f"{C.DIM}{preview}{C.RESET}")
     if not confirm(f"Datei '{path}' schreiben?"):
         return False, "Abgelehnt durch den Benutzer."
-    warn = _shrink_warning(path, len(content))
+    warn = _shrink_warning(path, len(content)) + _check_repetition(path, content)
     try:
         d = os.path.dirname(path)
         if d:
@@ -793,7 +823,7 @@ def do_write_files(args):
         if not path:
             errors.append("(Eintrag ohne 'path' uebersprungen)")
             continue
-        warn = _shrink_warning(path, len(content))
+        warn = _shrink_warning(path, len(content)) + _check_repetition(path, content)
         try:
             d = os.path.dirname(path)
             if d:
