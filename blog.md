@@ -2127,6 +2127,99 @@ Kernpunkte der Vorgabe:
 Der Lauf ist gestartet; Ergebnis und Bewertung folgen im nächsten
 Abschnitt.
 
+### 10.1 Etappe 1, Ergebnis: eine Wiederholungsschleife, zwei echte
+`mc.py`-Lücken, drei kleine Nacharbeiten — am Ende funktioniert der volle
+Kreislauf
+
+**Wichtige Leitplanke vorab, vom Nutzer während des Laufs bekräftigt:**
+`mc.py` bleibt ein eigenständiges, allgemeines Werkzeug — Vibelove ist nur
+ein Anwendungsfall davon. Ein Fund führt nur dann zu einer Änderung an
+`mc.py` selbst, wenn er ein **grundsätzliches** Problem ist, das JEDE
+Aufgabe treffen könnte. Anwendungsspezifische Fehler im von Gemma gebauten
+Vibelove-Code gehören dagegen in einen neuen Prompt, nicht in `mc.py`.
+Diese Trennung hat sich im Verlauf als genau richtig erwiesen — zwei Funde
+waren grundsätzlich (→ `mc.py` geändert), einer war rein
+anwendungsspezifisch (→ nur per Prompt behoben).
+
+**1) Der erste Versuch hängt 36 Minuten in einer Wiederholungsschleife.**
+Ein Validierungsfehler in `server.py` (Tippfehler `atesit` statt `atexit`,
+verschmolzene Zeilen am Dateiende) löste bei Gemma keine echte Korrektur
+aus, sondern einen Monolog: Die komplette Datei wurde immer wieder fast
+identisch neu geschrieben, **mit demselben Fehler wieder drin**, ohne
+jemals zu einem gültigen Zustand zu kommen. Nach 36 Minuten ohne
+Fortschritt manuell abgebrochen.
+
+**Grundsätzlicher Fund #1 → `mc.py` geändert:** `_check_repetition()`
+vergleicht bei jedem `write_file`/`write_files` den neuen Inhalt mit der
+letzten Version desselben Pfads (`difflib.SequenceMatcher.quick_ratio`).
+Ab der dritten fast identischen Version in Folge (>90 % Ähnlichkeit) wird
+das Modell explizit zum Strategiewechsel gedrängt: `edit_file` für die
+konkrete Stelle nutzen statt die ganze Datei neu zu schreiben. Das ist ein
+**allgemeines** Problem — jedes Modell kann bei jeder Aufgabe in so eine
+Schleife geraten, deshalb gehört die Erkennung ins Tool, nicht in einen
+Prompt.
+
+**2) Retry mit gezieltem Prompt** (nur `server.py` reparieren,
+`templates/index.html` und `workspace/frontend/` waren schon fertig, plus
+expliziter Hinweis auf den vorherigen Fehlschlag) lief in **73 Sekunden,
+10 Schritten**, glatt durch — keine Wiederholungswarnung nötig, keine
+Validierungsfehler. Vollständiger Prompt:
+[`prompt_vibelove_stage1_retry.txt`](prompt_vibelove_stage1_retry.txt).
+
+**3) Etappe 1b** (187s): Der Retry-Lauf hatte selbst bemerkt, dass
+`server.py` den `mc.py`-Aufruf ohne `--model`/`--base-url` absetzt und
+damit auf `mc.py`s Standardwerte zurückfällt. Kleiner Folgeauftrag:
+zwei Umgebungsvariablen (`VIBELOVE_BASE_URL`, `VIBELOVE_MODEL`) mit
+Fallback ergänzen — von Gemma selbst per `curl` verifiziert (Prompt:
+[`prompt_vibelove_stage1b.txt`](prompt_vibelove_stage1b.txt)).
+
+**4) Live-Test in der echten Weboberfläche** (nicht nur Code-Review):
+Formular ausgefüllt, „Bauen" geklickt, echter `mc.py`-Lauf gegen Gemma
+ausgelöst — der komplette Kreislauf funktionierte sichtbar (Button zeigt
+„Baue...", Log zeigt „Starte Bauprozess..."). Dabei zwei weitere Funde:
+
+**Grundsätzlicher Fund #2 → `mc.py` geändert:** Nach dem Lauf blieb ein
+Vite-Prozess auf einem verschobenen Port (5178, weil 5173 schon belegt
+war) übrig — **obwohl der `mc.py`-Subprozess längst beendet war.** Ursache:
+ein per `command &` (Shell-Hintergrundstart) gestarteter Prozess wird von
+`mc.py`s eigenem `BG_PROCS`/`kill_bg_procs()`-Tracking nicht erfasst, weil
+nicht die vorgesehene `"background":true`-Aktion genutzt wurde — exakt die
+Lücke, die schon in 9.23 dokumentiert, aber nie behoben wurde. Auch das
+ist ein **allgemeines** Problem (jedes `run`-Kommando mit `&` kann das
+auslösen), deshalb: `SHELL_BG`-Regex erkennt ein trailendes einzelnes `&`
+und hängt bei Erfolg eine deutliche Warnung an („wird NICHT verfolgt und
+NICHT automatisch beendet, nutze `\"background\":true`").
+
+**Anwendungsspezifischer Fund → NICHT `mc.py` geändert, nur Prompt:** Eine
+Bauanweisung über die UI („ändere den Text zu ...") wurde korrekt
+ausgeführt — `App.jsx` enthielt danach nachweislich den neuen Text (per
+`curl` auf den Vite-Quelltext bestätigt) — aber im Browser blieb der ALTE
+Platzhalter sichtbar. Ursache: `workspace/frontend/index.html` enthielt
+seit dem allerersten Lauf nur **statisches HTML** im `body` (der
+Platzhaltertext direkt reingeschrieben), aber **kein**
+`<div id="root"></div>` und **kein** `<script src="/src/main.jsx">` —
+React wurde nie gemountet, `App.jsx` hatte dadurch strukturell **keine
+Wirkung**, egal was drin stand. Ein Fehler, den reine „Port antwortet mit
+200"-Prüfungen nicht erkennen, weil der Server ja durchaus antwortet — nur
+mit dem falschen (statischen) Inhalt statt dem gerenderten React-Baum.
+Klar anwendungsspezifisch (ein Fehler im generierten Vibelove-Code, kein
+Werkzeug-Problem) → behoben per gezieltem Prompt
+([`prompt_vibelove_stage1c.txt`](prompt_vibelove_stage1c.txt)), **nicht**
+an `mc.py` selbst. Etappe 1c lief in 56 Sekunden durch.
+
+**Ergebnis nach allen vier Runden, live verifiziert:** Formular links,
+Live-Vorschau rechts, eine echte Bauanweisung über die UI ändert
+tatsächlich sichtbar die laufende Vorschau — der volle Lovable-artige
+Kreislauf funktioniert, mit `mc.py`/Gemma als alleinigem Motor und mir nur
+als Prompt-Autor/Prüfer, nicht als Code-Autor der eigentlichen
+Vibelove-Logik.
+
+**Gesamtbilanz Etappe 1:** ~40 Minuten Fehlschlag + Diagnose, danach
+73 + 187 + 56 = **316 Sekunden reine Bauzeit** über drei gezielte
+Nachbesserungsrunden. Zwei `mc.py`-Erweiterungen (Wiederholungserkennung,
+`&`-Warnung) sind jetzt dauerhaft im Werkzeug — beide unabhängig von
+Vibelove nützlich, für jede zukünftige Aufgabe.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
