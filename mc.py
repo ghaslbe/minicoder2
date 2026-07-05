@@ -726,6 +726,26 @@ def do_read_file(args):
         return False, f"FEHLER beim Lesen von {path}: {e}"
 
 
+def _shrink_warning(path, new_len):
+    """Erkennt den Fall 'write_file/write_files versehentlich statt read_file
+    benutzt' (in der Praxis beobachtet: Modell will eine Datei nur ANSEHEN,
+    greift aber zur Schreib-Aktion und ueberschreibt sie dabei mit fast
+    nichts). Nur eine Warnung, kein Blocker — mit --yes gibt es ohnehin keine
+    interaktive Rueckfrage, also muss die Rueckmeldung selbst reichen, damit
+    das Modell den Verlust bemerkt und den Inhalt wiederherstellt."""
+    try:
+        old_len = os.path.getsize(path)
+    except OSError:
+        return ""
+    if old_len > 40 and new_len < old_len * 0.4:
+        return (f"\nACHTUNG: {path} hatte vorher {old_len} Zeichen, jetzt nur "
+                f"{new_len} — falls das nicht beabsichtigt war (z.B. write_file "
+                f"statt read_file verwendet, um nur reinzuschauen), stelle den "
+                f"vorherigen Inhalt umgehend wieder her (git diff/read_file "
+                f"pruefen, dann korrekt neu schreiben).")
+    return ""
+
+
 def do_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
@@ -734,13 +754,16 @@ def do_write_file(args):
     print(f"{C.DIM}{preview}{C.RESET}")
     if not confirm(f"Datei '{path}' schreiben?"):
         return False, "Abgelehnt durch den Benutzer."
+    warn = _shrink_warning(path, len(content))
     try:
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-        return True, f"OK, {len(content)} Zeichen nach {path} geschrieben."
+        if warn:
+            print(f"{C.RED}⚠{C.RESET} {warn.strip()}")
+        return True, f"OK, {len(content)} Zeichen nach {path} geschrieben." + warn
     except Exception as e:
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
@@ -763,12 +786,13 @@ def do_write_files(args):
         print(f"   {f.get('path','?')} ({len(f.get('content',''))} Zeichen)")
     if not confirm(f"{len(files)} Datei(en) schreiben?"):
         return False, "Abgelehnt durch den Benutzer."
-    written, errors = [], []
+    written, errors, warns = [], [], []
     for f in files:
         path, content = f.get("path", ""), f.get("content", "")
         if not path:
             errors.append("(Eintrag ohne 'path' uebersprungen)")
             continue
+        warn = _shrink_warning(path, len(content))
         try:
             d = os.path.dirname(path)
             if d:
@@ -776,11 +800,16 @@ def do_write_files(args):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(content)
             written.append(path)
+            if warn:
+                warns.append(warn.strip())
         except Exception as e:
             errors.append(f"{path}: {e}")
     msg = f"{len(written)} Datei(en) geschrieben:\n" + "\n".join(written)
     if errors:
         msg += "\nFEHLER:\n" + "\n".join(errors)
+    if warns:
+        msg += "\n" + "\n".join(warns)
+        print(f"{C.RED}⚠ {warns[0][:120]}{C.RESET}")
     return (not errors), msg
 
 
