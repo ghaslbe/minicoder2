@@ -2002,6 +2002,63 @@ Quelldateien landen im Baseline-Commit), bereits sauberes Repo
 (unangetastet, normale Funktion), bereits unsauberes Repo (keine
 Absicherung, aber auch kein Eingriff).
 
+### 9.26 Der Härtetest der Tag-Erkenntnisse: Tailwind statt Material Web
+
+Eine abschließende, aufschlussreiche Frage: Wie baut man mit einem lokalen
+Modell eigentlich eine Anwendung, die auch optisch etwas hermacht? Die
+Antwort liegt direkt in den Lektionen des Tages — Material Web Components
+(Abschnitte 9.20–9.25) ist eine relativ neue, wenig verbreitete
+Custom-Element-Bibliothek und produzierte praktisch in jedem Lauf
+Halluzinationen (nicht existierende Card-Komponente, falsche Import-Pfade,
+ein kleingeschriebenes `oninput` statt `onInput`). Die naheliegende
+Gegenprobe: Ein neuer Prompt (`prompt_cool_tailwind.txt`) verlangt
+**Tailwind CSS statt Material Web Components** — extrem gut dokumentiert,
+massenhaft in Trainingsdaten vertreten — bewusst **per CDN-Skript-Tag**
+(`<script src="https://cdn.tailwindcss.com">`) statt als npm-Paket, um
+zusätzlich jedes Modul-Auflösungsrisiko zu umgehen, das den Tag über für
+Ärger sorgte. Dazu eine **konkrete Design-Vorgabe** statt „mach es
+hübsch": zentrierte Karte, Weißraum, ein einheitlicher Akzentton, farblich
+unterscheidbare Aktions-Buttons.
+
+Getestet mit `gemma-4-26b-a4b-it@mxfp4` gegen die M4 Pro
+(`http://192.168.178.191:1234/v1`), mit `--plan --check`, ohne Eingriff
+während des Laufs:
+
+```bash
+python3 mc.py --base-url http://192.168.178.191:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --plan --check --max-steps 60 \
+  "$(cat prompt_cool_tailwind.txt)"
+```
+
+**Das Ergebnis übertraf die Erwartungen deutlich:**
+
+| | Material Web (9.20–9.25) | Tailwind CSS (dieser Lauf) |
+|---|---|---|
+| Zeit | 160–1327 s über mehrere Versuche | **160 s** — schnellster Lauf des ganzen Experiments |
+| Prüfschritte aus dem eigenen Plan | Nur Backend getestet, Frontend nie | **GET/POST/PUT/DELETE + der 404-Fehlerfall** vollständig abgearbeitet |
+| `"background":true` genutzt | Nein, riskantes Shell-`&` | **Ja**, korrekt über die neue Aktion |
+| Visuell | Kaputt oder gar nicht ladbar | **Sieht tatsächlich gut aus** — zentrierte Karte, Indigo-Akzent, Schatten, sauberer Weißraum |
+| Live funktionsfähig? | Nie vollständig | **Ja** — Anlegen, Bearbeiten, 404-Fehlerfälle unabhängig verifiziert |
+
+Das Backend (SQLAlchemy, korrekte 404-Behandlung bei PUT/DELETE) war
+tadellos; das Frontend nutzt ausschließlich Standard-`<input>`/`<button>`-
+Elemente mit Tailwind-Utility-Klassen — die ganze Fehlerklasse „falsche
+Annahme über eine Custom-Element-API" ist damit strukturell gar nicht
+mehr möglich. Das Ergebnis erfüllt die Design-Vorgabe fast exakt: weißer
+Karten-Hintergrund mit Schatten und abgerundeten Ecken auf hellgrauem
+Seitenhintergrund, `bg-indigo-600` als Akzent, klare Typografie-Hierarchie,
+farblich unterschiedene Bearbeiten-/Löschen-Aktionen — sogar ein
+Lade-Zustand für den Button, der nirgends explizit verlangt war.
+
+**Fazit, das den ganzen Tag zusammenfasst:** Die Wahl der Bibliothek ist
+der wirksamste Hebel für Qualität bei einem lokalen Modell — wichtiger als
+Prompt-Formulierungen, die auf „Sorgfalt" abzielen. Gleichzeitig zeigen
+sich hier beide `mc.py`-Erweiterungen von heute (Prüfschritte aus der
+Plan-Phase, `"background":true`) zum ersten Mal gemeinsam wirksam: Das
+Modell hielt sich an sein eigenes, vorher genanntes Testprogramm, statt
+sich mit einer Teilprüfung zufriedenzugeben.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
