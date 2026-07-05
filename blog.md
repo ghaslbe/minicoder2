@@ -1767,6 +1767,36 @@ Sowohl `npm run dev` (Vite-Fehler-Overlay: „Failed to resolve import
 '@material/web/button'") als auch — entscheidend — **`npm run build`**
 schlagen dadurch mit klarem `exit≠0` fehl. Die App lädt in keinem Browser.
 
+Gefunden wurde das mit genau den Mitteln, die auch das Modell selbst zur
+Verfügung hatte — keine Spezialwerkzeuge, kein Quellcode-Verständnis
+nötig, nur Ausführung:
+
+```bash
+cd frontend && npm install                       # installiert @material/web@2.4.1 real
+npm run build
+# ✗ Build failed in 536ms
+# Error: [vite]: Rolldown failed to resolve import "@material/web/button"
+#   from ".../src/App.jsx". This is most likely unintended because it
+#   can break your application at runtime.
+```
+
+Vite/Rolldown lösen beim Build (und beim Start des Dev-Servers) JEDEN
+Import-Pfad gegen echte Dateien auf der Platte auf — ein nicht existierender
+Export wird dabei zwangsläufig sichtbar, ganz ohne Browser oder
+Codeverständnis. Das ist derselbe Mechanismus, der auch die zusätzliche
+404-Lücke beim Backend offenlegte:
+
+```bash
+curl -X PUT http://localhost:5003/api/persons/999 -d '{"name":"X"}'   # -> 404, korrekt
+curl -X DELETE http://localhost:5003/api/persons/999                  # -> 404, korrekt
+```
+
+Beide Endpunkte waren tatsächlich korrekt implementiert — nur eben nie vom
+Modell selbst aufgerufen, obwohl es exakt dieselbe `curl`-Aktion schon für
+GET/POST genutzt hatte. Der Unterschied zwischen „gefunden" und „nicht
+gefunden" war in beiden Fällen nicht Wissen, sondern schlicht: ausführen
+oder nicht.
+
 **Warum das besonders ärgerlich ist:** Der Check-Modus-Systemprompt nennt
 `npm run build` wörtlich als Beispiel für einen browserlosen Build-Check
 („Syntax/Build pruefen (z.B. […], npm run build, […])"). Das Modell hatte
