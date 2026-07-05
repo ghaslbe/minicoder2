@@ -1,0 +1,39 @@
+Baue im aktuellen Arbeitsverzeichnis eine Web-Anwendung 'Bilderkennung': man laedt ein Bild hoch, es wird an ein Vision-Sprachmodell geschickt, und die Beschreibung des Bildinhalts wird unter dem Bild angezeigt. Laedt man ein neues Bild hoch, beginnt der Ablauf komplett von vorne (alte Beschreibung wird geleert, neue Analyse startet automatisch).
+
+STRUKTUR:
+- backend/app.py: Flask-Server, MUSS fest auf Port 5060 laufen. Route POST /api/analyze nimmt eine hochgeladene Bilddatei (multipart/form-data, Feldname 'image') entgegen.
+- frontend/: React-App, erstellt mit Vite (npm create vite@latest frontend -- --template react), Styling mit Tailwind CSS per CDN-Skript-Tag in index.html (kein npm-Paket fuer Tailwind). Der Vite-Dev-Server MUSS fest auf Port 5175 laufen (server.port in vite.config.js oder 'vite --port 5175').
+
+BACKEND-LOGIK (WICHTIG, bitte GENAU so umsetzen):
+1. Das hochgeladene Bild als Base64 kodieren.
+2. Eine Anfrage an einen OpenAI-kompatiblen Chat-Completions-Endpunkt schicken (URL und Modellname ueber Umgebungsvariablen konfigurierbar: BILDERKENNUNG_BASE_URL mit Fallback 'http://192.168.178.191:1234/v1', BILDERKENNUNG_MODEL mit Fallback 'gemma-4-26b-a4b-it@mxfp4' - dieses Modell unterstuetzt Bildeingaben). Das Request-JSON MUSS GENAU diesem Multimodal-Format folgen (OpenAI Vision API Standard):
+{
+  "model": "<model>",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Beschreibe genau und ausfuehrlich, was auf diesem Bild zu sehen ist. Gehe auf Objekte, Personen, Farben, Anordnung und Kontext ein."},
+        {"type": "image_url", "image_url": {"url": "data:<mime-type>;base64,<BASE64_DATEN>"}}
+      ]
+    }
+  ]
+}
+3. <mime-type> muss zum tatsaechlichen Bildformat passen (z.B. image/jpeg, image/png) - anhand der hochgeladenen Datei ermitteln, nicht raten.
+4. Die Antwort des Modells (choices[0].message.content) als JSON zurueckgeben, z.B. {"description": "..."}.
+5. Timeout fuer den Modell-Request grosszuegig setzen (mind. 120 Sekunden), da Bildanalyse laenger dauern kann als reine Textantworten.
+6. Fehlerfaelle sauber behandeln (kein Bild hochgeladen, Modell-Server nicht erreichbar, ungueltige Antwort) und als JSON mit 'error'-Feld zurueckgeben statt abzustuerzen.
+
+FRONTEND-LOGIK:
+1. Ein Datei-Upload-Feld (input type="file", accept="image/*").
+2. Sobald ein Bild ausgewaehlt wird: sofort eine Vorschau des Bildes anzeigen, den alten Beschreibungstext (falls vorhanden) LEEREN, einen Ladezustand anzeigen ("Analysiere Bild..."), und automatisch die Anfrage an POST http://localhost:5060/api/analyze schicken (FormData mit dem Bild).
+3. Nach Erhalt der Antwort: die Beschreibung UNTER dem Bild anzeigen. Bei Fehler eine klare Fehlermeldung anzeigen.
+4. Waehlt der Nutzer ein NEUES Bild aus (auch waehrend eine vorherige Analyse noch laeuft), beginnt der komplette Ablauf von vorne (Punkt 2).
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst - das ist hier besonders wichtig, da eine echte Bildanalyse getestet werden muss, nicht nur ob der Server antwortet:
+1. python3 -c "import ast; ast.parse(open('backend/app.py').read())" muss fehlerfrei durchlaufen.
+2. Erzeuge testweise ein winziges Testbild (z.B. per Python mit Pillow, falls installiert, ein einfaches 100x100 rotes PNG erstellen - pip install Pillow falls noetig; alternativ ein vorhandenes kleines Bild im System suchen).
+3. Starte backend/app.py im Hintergrund und schicke das Testbild per curl -X POST -F "image=@testbild.png" http://localhost:5060/api/analyze - pruefe, dass eine ECHTE, sinnvolle Beschreibung zurueckkommt (nicht nur ein Fehler oder eine leere Antwort). Das ist der wichtigste Check.
+4. Starte den Vite-Dev-Server kurz und pruefe per curl, dass er auf Port 5175 antwortet.
+5. Beende beide Prozesse wieder (kill).
+Behebe alle Fehler, bevor du finish aufrufst.

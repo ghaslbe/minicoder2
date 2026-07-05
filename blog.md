@@ -2423,6 +2423,51 @@ Kürzung/Analyse beheben liesse — dafür wäre ein echtes Browser-Rendering
 Browser-basiertes Rendering steht in keinem Verhältnis zum Nutzen für
 dieses Experiment. Als bekannte Grenze dokumentiert statt behoben.
 
+## 11. Neues Projekt: Bilderkennung (Vision-Test mit `gemma-4-26b-a4b-it@mxfp4`)
+
+Ein separates, neues Testprojekt (`bilderkennung/`, unabhängig von
+Vibelove): eine kleine App, die ein hochgeladenes Bild an ein
+**Vision-Sprachmodell** schickt und die Beschreibung darunter anzeigt. Lädt
+man ein neues Bild hoch, beginnt der Ablauf komplett von vorne. Praktischer
+Zufallsfund vorab: `gemma-4-26b-a4b-it@mxfp4` ist laut LM Studios
+`/api/v0/models` tatsächlich als `"type": "vlm"` gelistet — also ein
+echtes Vision-Language-Model, keine reine Text-Coding-Annahme.
+
+**Architektur-Vorgabe** (wieder vorab festgelegt, diesmal mit besonderem
+Fokus auf das exakte Multimodal-Request-Format, da ein falsch aufgebautes
+JSON hier nicht nur einen Fehler, sondern eine sinnlose, aber technisch
+„erfolgreiche" Antwort produzieren könnte):
+
+- `backend/app.py` (Flask, fest Port 5060): kodiert das hochgeladene Bild
+  als Base64, schickt eine Chat-Completions-Anfrage im
+  **OpenAI-Vision-Standardformat** (`content` als Array mit `{"type":
+  "text", ...}` und `{"type": "image_url", "image_url": {"url":
+  "data:<mime>;base64,<daten>"}}`) an einen konfigurierbaren Endpunkt
+  (`BILDERKENNUNG_BASE_URL`/`BILDERKENNUNG_MODEL`, Fallback M4 Pro +
+  `gemma-4-26b-a4b-it@mxfp4`), mit großzügigem Timeout (Bildanalyse dauert
+  länger als reine Textantworten).
+- `frontend/` (Vite+React, Tailwind per CDN, fest Port 5175): Datei-Upload
+  löst **sofort** automatisch die Analyse aus (kein separater
+  „Los"-Button), zeigt einen Ladezustand, und ein **neues** Bild setzt den
+  alten Beschreibungstext zurück, bevor die neue Analyse startet.
+- Wichtigster Prüfschritt im Prompt: **ein echtes Testbild erzeugen und
+  hochladen**, nicht nur prüfen, ob der Server antwortet — bei einer
+  Vision-Anwendung ist „Server antwortet mit HTTP 200" bedeutungslos, wenn
+  die Antwort keine echte Bildbeschreibung enthält.
+
+Aufruf:
+
+```bash
+cd bilderkennung
+python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --plan --check --max-steps 40 \
+  "$(cat ../prompt_bilderkennung.txt)"
+```
+
+Vollständiger Prompt: [`prompt_bilderkennung.txt`](prompt_bilderkennung.txt).
+Lauf gestartet, Ergebnis folgt.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
