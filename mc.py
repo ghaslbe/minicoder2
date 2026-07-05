@@ -1290,6 +1290,38 @@ def git_usable():
     return True, "ok"
 
 
+DEFAULT_GITIGNORE = """node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.db
+dist/
+build/
+.DS_Store
+"""
+
+
+def git_auto_init():
+    """Legt in einem frischen Arbeitsverzeichnis (noch KEIN Git-Repo) automatisch
+    eines an, mit einem Ausgangs-Commit des bereits Vorhandenen — sonst waere
+    die ganze Git-Absicherung (Commit nach sauberem finish, s.o.) in genau dem
+    Fall wirkungslos, fuer den sie am meisten gedacht ist: mc.py in einem neuen,
+    separaten Projektverzeichnis. Risikoarm und jederzeit rueckgaengig zu machen
+    (nur ein lokales .git-Verzeichnis, kein Remote, kein Push)."""
+    rc, out = _git("init")
+    if rc != 0:
+        return False, f"git init fehlgeschlagen: {out.strip()[:150]}"
+    if not os.path.exists(".gitignore"):
+        with open(".gitignore", "w", encoding="utf-8") as f:
+            f.write(DEFAULT_GITIGNORE)
+    _git("add", "-A")
+    rc, out = _git("commit", "-m", "mc: Ausgangszustand vor erstem Lauf")
+    if rc != 0 and "nothing to commit" not in out:
+        return False, f"Ausgangs-Commit fehlgeschlagen: {out.strip()[:150]}"
+    return True, "ok"
+
+
 def validate_path(path):
     """Validiert eine Datei nach Typ. Gibt (status, meldung) zurueck, wobei status
     'ok' | 'bad' | 'skip' ist. Unbekannte/nachsichtige Typen -> 'skip'."""
@@ -1637,7 +1669,18 @@ def main():
     # Git-Sicherung: unabhaengig von --yes pruefen (frueher nur interaktiv, damit
     # war bei --yes-Laeufen JEDE Git-Absicherung aus — genau die Laeufe, die sie
     # am noetigsten haben). Nur moeglich, wenn git installiert + sauberer Baum.
+    # Gibt es noch KEIN Repo (z.B. ein frisches, separates Projektverzeichnis),
+    # wird eins mit einem Ausgangs-Commit angelegt — sonst waere die Absicherung
+    # ausgerechnet in diesem, dem naheliegendsten Fall, nutzlos.
     ok, why = git_usable()
+    if not ok and why == "kein Git-Repository":
+        init_ok, init_why = git_auto_init()
+        if init_ok:
+            info("Kein Git-Repository vorgefunden — eines angelegt (Ausgangszustand "
+                 "committet, .gitignore ergaenzt falls noetig).")
+            ok, why = git_usable()
+        else:
+            info(f"Automatisches 'git init' fehlgeschlagen ({init_why}).")
     GIT_ROLLBACK = ok
     if ok:
         info("Git verfuegbar: sauberer finish wird committet, unfertiger Stand "
