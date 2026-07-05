@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vibelove - App Builder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 h-screen flex overflow-hidden">
+    <!-- LEFT: Form & Logs -->
+    <div class="w-1/2 h-full flex flex-col p-4 border-r border-gray-300 bg-white">
+        <h1 class="text-xl font-bold mb-4">Vibelove Builder</h1>
+        <form id="buildForm" class="flex flex-col gap-4">
+            <textarea 
+                id="instruction" 
+                name="instruction" 
+                class="w-full h-32 p-2 border border-gray-300 rounded shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="Beschreibe deine App..."
+            ></textarea>
+            <button 
+                type="submit" 
+                id="buildButton"
+                class="bg-blue-600 text-white font-bold py-2 px-4 rounded hover:bg-blue-700 transition-colors"
+            >
+                Bauen
+            </button>
+        </form>
+        <div class="mt-4 flex-grow overflow-auto bg-gray-900 text-green-400 p-3 rounded font-mono text-sm">
+            <pre id="logOutput" class="whitespace-pre-wrap">Warte auf Bauanweisung...</pre>
+        </div>
+    </div>
+
+    <!-- RIGHT: Live Preview -->
+    <div class="w-1/2 h-full">
+        <iframe 
+            id="previewFrame" 
+            src="http://localhost:5173" 
+            style="width:100%;height:100%;border:none;"
+        ></iframe>
+    </div>
+
+    <script>
+        const form = document.getElementById('buildForm');
+        const logOutput = document.getElementById('logOutput');
+        const buildButton = document.getElementById('buildButton');
+
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const instruction = document.getElementById('instruction').value;
+            if (!instruction) return;
+
+            buildButton.disabled = true;
+            buildButton.innerText = 'Baue...';
+            logOutput.textContent = 'Starte Bauprozess...\n';
+
+            try {
+                const response = await fetch('/build', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `instruction=${encodeURIComponent(instruction)}`
+                });
+                const text = await response.text();
+                logOutput.textContent = text;
+            } catch (err) {
+                logOutput.textContent = 'Fehler: ' + err.message;
+            } finally {
+                buildButton.disabled = false;
+                buildButton.innerText = 'Bauen';
+            }
+        };
+    </script>
+</body>
+</html>

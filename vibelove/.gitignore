@@ -1,0 +1,4 @@
+server_log.txt
+*.log
+.DS_Store
+workspace/*.db
