@@ -1467,6 +1467,64 @@ die Bilanz eindeutig: **Gemma-4-26B-A4B ist über beide Maschinen, alle
 getesteten Quantisierungsstufen und beide Serving-Formate hinweg die
 zuverlässigste und schnellste Modellfamilie des gesamten Tages.**
 
+### 9.19 Auch auf der M4 Pro: Code-Tiefenprüfung, und ein spektakulärer Fund
+
+Dieselbe Tiefenprüfung wie in 9.15 — Code lesen, Backend/Frontend live
+starten, Edge Cases testen — für die sechs M4-Pro-Läufe unter 300 s
+(Abschnitt 9.18 plus `qwen3.6-27b`):
+
+| Modell | 404-Behandlung | Sonstige Befunde |
+|---|---|---|
+| `gemma-4-26b-a4b-it-qat` (MLX) | ⚠️ stiller Erfolg bei PUT/DELETE | sonst sauber |
+| **`gemma-4-26b-a4b-it@4bit`** (MLX) | ✅ korrekt bei PUT und DELETE | halluzinierter Browserslist-Wert `"#DA0000"` (ein Hex-Farbcode statt einer Browser-Query) in `package.json` |
+| **`gemma-4-26b-a4b-it@mxfp4`** (MLX) | ✅ korrekt via `get_or_404()` | nutzt SQLAlchemy statt rohem sqlite3 — elegantester Code des ganzen Tages, keine Bugs |
+| `google/gemma-4-26b-a4b-qat` (GGUF) | ⚠️ stiller Erfolg bei PUT/DELETE | weiterer halluzinierter Browserslist-Wert: `"not firefox"` / `"not safari"` ohne Versionsangabe sind ungültige Syntax |
+| `google/gemma-4-26b-a4b` (GGUF) | — | **siehe unten — kompiliert gar nicht** |
+| `qwen/qwen3.6-27b` | ⚠️ korrekt bei PUT, fehlt bei DELETE | sonst sauber |
+
+**Der bemerkenswerteste Fund des gesamten Tages** steckte in
+`google/gemma-4-26b-a4b` (GGUF-Standardversion, 184 s, von `mc.py` als
+„6/6 Dateien" gemeldet): Die Datei `App.jsx` bricht nach 58 Zeilen mit
+einer einzelnen schließenden Klammer ab — kein JSX-Return, kein
+`export default`. Der Grund war im Text selbst sichtbar: Das Modell hatte
+sein **eigenes Gedankenprotokoll direkt als Code-Kommentare in die Datei
+geschrieben**, komplett mit einer sichtbaren Selbstkorrektur mitten im
+Fließtext:
+
+```js
+const url = editingId ? `${API_URL}/${editinglyId}` : API_URL;
+// Note: fixed variable name typo in logic below to be consistent with prompt
+const targetUrl = editingId ? `${API_URL}/${editingId}` : API_URL;
+...
+// Re-implementing handleSubmit correctly without the typo I just introduced in thought
+const savePerson = async (e) => {
+  ...
+  const url = editingId ? `${API_URL}/${editingId}` : API_URL;
+  // Wait, I need to be careful with my own code generation.
+  // Let's rewrite the App.jsx content clearly.
+} catch(e) {}
+};
+// Corrected version for the action block:
+}
+```
+
+`mc.py`s Validierung prüft nur py/json/yaml/php-Syntax, nicht JS/JSX —
+dieser komplett unbrauchbare Code passierte die Prüfung unbemerkt. Erst
+`npm start` deckte es auf: **„Attempted import error: './App' does not
+contain a default export"** — die Anwendung kann nicht einmal geladen
+werden, trotz gemeldeten Erfolgs.
+
+**Zwischenbilanz aller Tiefenprüfungen (M1 Max + M4 Pro, 14 Modelle
+insgesamt):** Browserslist-Halluzinationen in `package.json` traten jetzt
+**drei Mal** unabhängig voneinander auf (M1-Max-`mxfp4`, M4-`4bit`,
+M4-`qat`) — offenbar eine systematische Schwachstelle über die ganze
+Gemma-4-Familie hinweg, nicht ein Einzelfall. Und der „Gedankenprotokoll-
+im-Code"-Fund zeigt: Selbst ein von `mc.py` als vollständig gemeldeter
+Lauf kann eine Datei enthalten, die syntaktisch kein gültiges JavaScript
+ist — die aktuelle Validierung deckt das nicht ab. **`mxfp4` bleibt nach
+allen Tiefenprüfungen des Tages der einzige Kandidat ganz ohne jeden
+gefundenen Bug.**
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
