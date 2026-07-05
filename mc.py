@@ -97,6 +97,14 @@ DANGEROUS_RUN = re.compile(
     r"|rm\s+(-\w+\s+)*(/|~)(\s|$)"
     r"|dd\s+.*of=/dev/")
 SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
+FETCH_URL_RE = re.compile(r"\b(curl|wget)\b[^\n]*https?://", re.IGNORECASE)
+FETCH_ANALYSIS_MAX_CHARS = 20000  # grosszuegig ggue. MAX_OUTPUT_CHARS, aber
+# vorsichtig gewaehlt: viele lokale Server laden Modelle mit kleinerem
+# Kontextfenster als deren theoretisches Maximum (z.B. 8192 statt 262144
+# Token) - bei Ueberschreitung kommt keine Fehlermeldung, sondern eine LEERE
+# Antwort. summarize_large_fetch() faengt das zusaetzlich mit einem
+# automatischen Rueckfall auf die Haelfte ab.
+CURRENT_MODEL = ""  # von run_task() gesetzt, fuer isolierte Sub-Calls in do_run()
 
 # Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
 # Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
@@ -718,6 +726,62 @@ def truncate(s):
     return s
 
 
+def summarize_large_fetch(raw_output, model):
+    """Fuer grosse curl/wget-Ergebnisse (z.B. eine ganze Webseite): statt die
+    Rohausgabe blind auf MAX_OUTPUT_CHARS zu kuerzen (bei einer WordPress-Seite
+    steckt oft schon der halbe <head> mit Meta-Tags in den ersten 8000 Zeichen,
+    der eigentliche <body> kommt nie an), wird ein ISOLIERTER Chat-Aufruf
+    ausserhalb der Haupt-Konversation gemacht: die Rohausgabe (deutlich
+    grosszuegiger als das normale Limit, weil sie NICHT dauerhaft im Verlauf
+    verbleibt) wird analysiert, und nur die kompakte Struktur-Zusammenfassung
+    fliesst zurueck in den eigentlichen Agenten-Loop.
+
+    WICHTIG: "grosszuegig" heisst hier NICHT das theoretische Maximum des
+    Modells (max_context_length kann z.B. 262144 sein), sondern das aktuell
+    in LM Studio/Ollama GELADENE Kontextfenster (loaded_context_length) -
+    das ist oft viel kleiner (z.B. 8192), um RAM zu sparen. Ein zu grosser
+    Prompt liefert dann keinen Fehler, sondern eine LEERE Antwort. Deshalb:
+    erst mit FETCH_ANALYSIS_MAX_CHARS versuchen, bei leerer Antwort mit der
+    HAELFTE erneut (einmal), sonst eine klare Fehlermeldung statt stillem
+    Nichts."""
+    def ask_for(chars):
+        content = raw_output[:chars]
+        ask = (
+            "Die folgende Rohausgabe stammt von einem curl/wget-Abruf einer Webseite "
+            "und ist zu gross fuer den normalen Arbeitskontext. Analysiere sie und "
+            "liefere eine KOMPAKTE, aber vollstaendige STRUKTUR-Beschreibung: "
+            "Reihenfolge und Art der Abschnitte/Sections, Layout-Hinweise (Farben, "
+            "auffaellige CSS-Klassen falls erkennbar), verwendete Komponenten (Hero, "
+            "Formulare, Bildbereiche, Navigation, Footer etc.), Ueberschriften "
+            "sinngemaess zusammengefasst. KEINE wortwoertliche Wiedergabe von "
+            "Fliesstext oder ganzen Saetzen aus der Seite — nur Struktur und "
+            "Zusammenfassung in eigenen Worten, das reicht fuer einen Nachbau.\n\n"
+            f"--- ROHAUSGABE (ggf. gekuerzt) ---\n{content}"
+        )
+        return chat_stream([{"role": "user", "content": ask}], model)
+
+    print(f"{C.DIM}(Große Abrufausgabe erkannt — analysiere in einem separaten, "
+          f"isolierten Aufruf statt sie in den Verlauf zu uebernehmen …){C.RESET}")
+    try:
+        summary = ask_for(FETCH_ANALYSIS_MAX_CHARS)
+        if not summary.strip():
+            print(f"{C.DIM}(Leere Antwort — vermutlich reicht das GELADENE "
+                  f"Kontextfenster des Modells nicht, versuche mit der Haelfte "
+                  f"erneut …){C.RESET}")
+            summary = ask_for(FETCH_ANALYSIS_MAX_CHARS // 2)
+    except Exception as e:
+        return f"FEHLER bei der Analyse der grossen Abrufausgabe: {e}"
+    if not summary.strip():
+        return (f"FEHLER: Die Analyse der {len(raw_output)} Zeichen grossen Abrufausgabe "
+                f"lieferte zweimal eine leere Antwort — das geladene Kontextfenster "
+                f"des Modells reicht vermutlich nicht aus. Nutze stattdessen gezielte "
+                f"Werkzeuge wie 'curl ... | grep' oder 'curl ... | sed -n ...', um nur "
+                f"einen kleineren, relevanten Ausschnitt zu holen.")
+    return (f"[Hinweis: Die Rohausgabe war {len(raw_output)} Zeichen gross und "
+            f"wurde deshalb NICHT direkt uebernommen, sondern in einem "
+            f"separaten Aufruf analysiert. Das ist das Ergebnis:]\n\n{summary}")
+
+
 def confirm(prompt):
     if AUTO_YES:
         print(f"{C.DIM}(auto-yes){C.RESET}")
@@ -1076,7 +1140,15 @@ def do_run(args):
                     "ein so gestarteter Prozess wird von mc NICHT verfolgt und beim "
                     "Programmende NICHT automatisch beendet (verwaist danach). Nutze "
                     "fuer Dauerlaeufer stattdessen \"background\":true.")
-        return True, f"exit={proc.returncode}\n{truncate(out)}" + warn
+        if len(out) > MAX_OUTPUT_CHARS and FETCH_URL_RE.search(cmd):
+            # Grosser curl/wget-Abruf (z.B. eine ganze Webseite): statt blind
+            # auf MAX_OUTPUT_CHARS zu kuerzen (haengt bei HTML oft nur im
+            # <head> fest), isoliert analysieren statt in den Verlauf zu
+            # uebernehmen (siehe summarize_large_fetch).
+            body = summarize_large_fetch(out, CURRENT_MODEL)
+        else:
+            body = truncate(out)
+        return True, f"exit={proc.returncode}\n{body}" + warn
     except subprocess.TimeoutExpired:
         return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Dauerlaeufer wie "
                        "Dev-Server bitte mit \"background\":true starten.")
@@ -1480,8 +1552,9 @@ def git_commit_run(summary):
 
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
-    global RAN_SINCE_WRITE, CLEAN_FINISH
+    global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL
     CLEAN_FINISH = False
+    CURRENT_MODEL = model
     finish_rejects = 0
     parse_error_streak = 0
     for step in range(1, MAX_STEPS + 1):
