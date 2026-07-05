@@ -2390,6 +2390,39 @@ Ein Beleg dafür, dass auch explizite Scope-Einschränkungen im Prompt
 jedem Lauf bleibt notwendig, unabhängig davon, wie genau der Prompt
 formuliert ist.
 
+### 10.5 Bekannte Grenze: `curl`-basierte Seitenanalyse sieht kein JavaScript
+
+Nach der `summarize_large_fetch()`-Erweiterung (10. Kapitel oben) wurde
+Vibelove gebeten, `https://herr.tech/ki-webinar/` erneut nachzubauen. Das
+Ergebnis sah auf den ersten Blick gut aus (passendes Farbschema, generische
+Hero/Features/Formular/Footer-Struktur) — bei genauerem Nachfragen zeigte
+ein direkter Strukturvergleich mit der echten Seite aber, dass die
+**Struktur nicht wirklich getroffen wurde**:
+
+- Die Originalseite hat **null** `<h1>`- und **null** `<h2>`-Tags (nur 5
+  `<h3>`) — sie ist mit Elementor (WordPress-Baukasten) gebaut, Überschriften
+  laufen dort über custom-gestylte Widgets statt semantischer HTML-Tags.
+  Der Nachbau hat dagegen ein klassisches `<h1>` gesetzt.
+- Die Originalseite hat **kein einziges** natives `<form>`-Element. Die
+  „Anmeldung" läuft über zwei eingebettete Drittanbieter-Widgets
+  (`heyflow.com`, ein interaktiver Multi-Step-Formular-Builder, und
+  `webinarjam.com`, eine externe Webinar-Registrierungsplattform) — beide
+  werden per JavaScript nachgeladen, im rohen HTML steht dafür nur ein
+  leerer Container plus ein `<script>`-Tag.
+
+**Ursache:** `mc.py` sieht bei `curl` nur den **rohen, unausgeführten
+HTML-Quelltext** — bei modernen Seiten mit JS-nachgeladenen Widgets (wie
+hier Heyflow/WebinarJam) ist der eigentliche interaktive Inhalt im
+Rohtext schlicht nicht vorhanden, unabhängig davon, wie gut die
+Analyse-Zusammenfassung sonst ist. Das ist eine **grundsätzliche Grenze**
+von `curl`-basiertem Seitenabruf, keine, die sich durch eine bessere
+Kürzung/Analyse beheben liesse — dafür wäre ein echtes Browser-Rendering
+(z.B. headless Chrome) nötig, um zu sehen, was tatsächlich im DOM landet.
+
+**Entscheidung:** Bewusst nicht weiterverfolgt — der Aufwand für
+Browser-basiertes Rendering steht in keinem Verhältnis zum Nutzen für
+dieses Experiment. Als bekannte Grenze dokumentiert statt behoben.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
