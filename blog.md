@@ -1433,6 +1433,40 @@ Apple-Silicon-Generationen hinweg tragfähig** — der bestmögliche Abschluss
 für einen Tag, der mit derselben Modellfamilie (`gemma4:26b-mlx` via Ollama,
 Abschnitt 9.1) begonnen hatte.
 
+### 9.18 Noch mehr Gemma 4 auf der M4 Pro: QAT gewinnt erneut
+
+Auf der M4 Pro wurden weitere Gemma-4-Varianten nachgeladen — Gelegenheit
+für einen kompletten Architektur-Vergleich auf der kleineren Maschine
+(24 GB RAM statt 32 GB):
+
+| Modell | Format | Zeit | Ergebnis |
+|---|---|---:|---|
+| **`gemma-4-26b-a4b-it-qat`** (`mlx-community`) | MLX, 4-bit QAT | **51 s** | ✅ **6/6, 4 Schritte, 0 Fehler — schnellster Lauf der gesamten M4-Pro-Session** |
+| `gemma-4-26b-a4b-it@4bit` (`mlx-community`) | MLX, 4-bit | 84 s | ✅ 6/6, 0 Fehler |
+| `gemma-4-26b-a4b-it@mxfp4` (`mlx-community`) | MLX, MXFP4 | 92 s | ✅ 6/6, 1 Fehler |
+| `google/gemma-4-26b-a4b-qat` | GGUF, 4-bit QAT | 148 s | ✅ 6/6, 1 Fehler |
+| `google/gemma-4-26b-a4b` | GGUF, Q4_K_M | 184 s | ✅ 6/6 |
+| `mlx-community/gemma-4-e4b-it` | MLX, MXFP4 | 332 s | ❌ 5/6, 8 Fehler bei 16 Schritten |
+| `google/gemma-4-e4b` | GGUF, Q4_K_M | 170 s | ❌ 0/6 |
+
+**Zwei Muster bestätigen sich hier ein letztes Mal auf einer zweiten
+Maschine:** Erstens schlägt MLX GGUF durchgehend bei Geschwindigkeit
+(51–92 s vs. 148–184 s für praktisch dasselbe Modell). Zweitens ist
+**QAT innerhalb desselben Formats immer die schnellste Variante** —
+die MLX-QAT-Version ist fast doppelt so schnell wie die reguläre MLX-
+4-bit-Version (51 s vs. 84 s), und die GGUF-QAT-Version schlägt die
+reguläre GGUF-Version ebenfalls deutlich (148 s vs. 184 s). Und drittens:
+**`e4b` bleibt über jede getestete Kombination aus Maschine, Format und
+Quantisierung hinweg das schwächste Mitglied der Gemma-4-Familie** — hier
+zum wiederholten Mal mit einem Totalausfall bzw. einem unvollständigen,
+fehlerreichen Lauf.
+
+Mit `gemma-4-26b-a4b-it-qat` auf der M4 Pro (51 s) und
+`gemma-4-26b-a4b-it@4bit` auf der M1 Max (125–141 s über drei Läufe) ist
+die Bilanz eindeutig: **Gemma-4-26B-A4B ist über beide Maschinen, alle
+getesteten Quantisierungsstufen und beide Serving-Formate hinweg die
+zuverlässigste und schnellste Modellfamilie des gesamten Tages.**
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
