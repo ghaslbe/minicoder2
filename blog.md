@@ -1843,6 +1843,42 @@ Teilprüfung erfüllen, während der eigentlich kritische Teil (das Frontend,
 genau der Teil mit der neuen, unbekannten Bibliothek) unangetastet bleibt
 — und die abschließende Zusammenfassung das sogar aktiv verschleiert.
 
+### 9.24 Die Konsequenz: die Plan-Phase fragt jetzt nach Prüfschritten
+
+Direkt aus dem 9.23-Fund abgeleitet: Der generische Hinweis „prüfe deine
+Arbeit" reichte nicht, weil das Modell selbst entscheiden konnte, was als
+„geprüft" zählt — und entschied sich für die bequeme Teilprüfung (nur
+Backend). Die Lösung greift eine Zeile früher an: die Plan-Phase
+(`--plan`) fragt jetzt, wenn `--check` aktiv ist, explizit nach einem
+eigenen Abschnitt „Pruefschritte:" mit den **konkreten Kommandos** für
+jeden Aufgabenteil — Backend UND Frontend/Build getrennt, inklusive
+Fehlerfällen. Weist das Check-Gate ein verfrühtes `finish` zurück, zitiert
+es nicht mehr eine generische Checkliste, sondern **das selbst genannte
+Prüfprogramm des Modells wörtlich zurück** — es wird an seinem eigenen
+Versprechen gemessen, nicht an einer abstrakten Regel. Fallback ohne
+erkannten Abschnitt: der komplette Plan wird als Kontext genutzt; ohne
+`--plan` bleibt die alte generische Meldung aus 9.21 bestehen.
+
+**Zwischenstand (Lauf läuft während dieser Zeilen, ohne Eingriff):**
+identischer Aufruf wie in 9.22/9.23, für einen sauberen Vorher-Nachher-
+Vergleich mit derselben Aufgabe und demselben Modell:
+
+```bash
+python3 mc.py --base-url http://192.168.178.79:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --plan --check --max-steps 60 \
+  "$(cat prompt_vite_material_check.txt)"
+```
+
+Nach 35 Schritten (deutlich mehr als die 23 aus dem ersten Lauf) steckt
+das Modell erneut in einer Port-Konflikt-Kette — diesmal offenbar mit
+mehreren gleichzeitig laufenden Backend-Instanzen aus vorherigen
+Versuchen, die selbst erzeugte Kollisionen verursachen. Das eigentliche
+Ergebnis (Dauer, ob das Frontend diesmal wirklich per `npm run build`
+geprüft wird, ob derselbe `oninput`-Bug erneut auftritt) folgt in 9.25,
+sobald der Lauf — ohne weitere Eingriffe — von selbst zu `finish` oder ans
+Schrittlimit kommt.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
