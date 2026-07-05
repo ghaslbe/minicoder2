@@ -1879,6 +1879,56 @@ geprüft wird, ob derselbe `oninput`-Bug erneut auftritt) folgt in 9.25,
 sobald der Lauf — ohne weitere Eingriffe — von selbst zu `finish` oder ans
 Schrittlimit kommt.
 
+**Dieser Lauf wurde abgebrochen, bevor er ein Ergebnis lieferte** — nicht
+wegen des Schrittlimits, sondern wegen eines neuen, ernsteren Fundes
+mitten im Protokoll:
+
+```
+» write_files 2 Datei(en):
+   backend/requirements.txt (24 Zeichen)
+   frontend/package.json (84 Zeichen)
+(auto-yes)
+✓ 2 Datei(en) geschrieben:
+
+── Schritt 2 ─────────────────────────────
+Ich habe versehentlich write_files verwendet, anstatt die Dateien zu
+lesen. Ich korrigiere dies nun und lese die tatsaechlichen Inhalte...
+```
+
+Das Modell wollte zwei bereits bestehende Konfigurationsdateien nur
+ANSEHEN (um z.B. den richtigen Start-Befehl zu ermitteln), griff aber zur
+Schreib- statt zur Lese-Aktion — und überschrieb beide dabei mit fast
+nichts. Es bemerkte den eigenen Fehler sofort im nächsten Satz, aber der
+Schaden war angerichtet: Der echte Inhalt beider Dateien war weg. Mit
+`--yes` gibt es keine interaktive Rückfrage, die das hätte abfangen
+können — genau die Voraussetzung, die einen unbeaufsichtigten Lauf erst
+möglich macht, nimmt hier auch die letzte Bremse weg.
+
+**Die Abhilfe liegt nicht im Prompt, sondern im Tool selbst:**
+`_shrink_warning()` vergleicht vor jedem Schreiben die bisherige
+Dateigröße mit der neuen. Schrumpft eine bereits substantielle Datei
+(>40 Zeichen) auf unter 40 % ihrer Größe, wird eine deutliche
+ACHTUNG-Meldung in die Ergebnis-Antwort geschrieben — kein Blocker (der
+Schreibvorgang gelingt weiterhin, denn manchmal ist drastisches Kürzen
+gewollt), sondern eine Rückmeldung, die das Modell im nächsten Zug sieht
+und auf die es reagieren kann. Fügt sich damit in dasselbe Muster wie die
+bestehende Syntax-Validierung ein, statt eine neue Bestätigungsschicht
+einzuführen, die mit `--yes` ohnehin wirkungslos wäre. Isoliert an fünf
+Szenarien getestet (Erstanlage, drastisches Schrumpfen, legitimes leichtes
+Kürzen, `write_files`-Variante, brandneue Datei) — korrekt erkannt, keine
+Fehlalarme.
+
+**Zweite Anpassung für den nächsten Versuch:** Die wiederkehrende
+Port-Konflikt-Kette (AirPlay auf 5000, dann Kollisionen mit eigenen
+vorherigen Backend-Instanzen über mehrere Läufe hinweg) kostete in beiden
+bisherigen Läufen unnötig viele Schritte. Der Prompt bekommt deshalb feste
+Ports vorgeschrieben statt freier Wahl: Backend **5010**, Vite-Dev-Server
+**8095** — als eigene Datei
+[`prompt_vite_material_check.txt`](prompt_vite_material_check.txt) jetzt
+mit im Repository statt nur im Scratchpad.
+
+Der dritte Versuch mit beiden Korrekturen folgt in 9.25.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
