@@ -204,6 +204,7 @@ Ollama gibt es keine Preise → nur die IDs.
 | `--keep-context N` | Letzte N Schritte bleiben voll im Kontext (Default 3) |
 | `--no-prune`     | Kontext-Beschneidung abschalten (volle Historie)      |
 | `--fence`        | Dateiinhalte als rohe ```content-Blöcke (kein Escaping) |
+| `--check`        | Selbsttest-Modus: `finish` erst nach echter Ausführung/Prüfung (s. u.) |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
 | `--insecure`     | TLS-Prüfung abschalten (nur als Notnagel)             |
@@ -231,9 +232,48 @@ Plan ok? [Enter]=ja · Text=Änderungswunsch · n=abbrechen>
 
 Die Plan-Phase ist **deterministisch im Tool** umgesetzt (nicht dem Modell
 überlassen) und damit zuverlässig — gut für größere/mehrdeutige Aufgaben. Ohne
-`--plan` arbeitet `mc` direkt los. (Mit `--yes` ist die Plan-Phase aus, da dort
-nichts bestätigt wird.) Unabhängig davon kann der Agent über die `ask`-Aktion
+`--plan` arbeitet `mc` direkt los. `--plan` funktioniert auch zusammen mit
+`--yes` (dann wird der Plan angezeigt, aber automatisch akzeptiert statt
+nachzufragen) — praktisch für unbeaufsichtigte Läufe, die trotzdem erst
+planen sollen. Unabhängig davon kann der Agent über die `ask`-Aktion
 jederzeit selbst nachfragen, wenn etwas unklar ist.
+
+Mit `--check` (siehe unten) fragt die Plan-Phase zusätzlich nach einem
+eigenen Abschnitt **„Pruefschritte:"** — den konkreten Kommandos, mit denen
+das Modell später jeden Teil der Aufgabe wirklich verifizieren will.
+
+### Selbsttest-Modus (`--check`)
+
+Ohne `--check` akzeptiert `mc` ein `finish` auch dann, wenn das Modell seine
+Arbeit nie tatsächlich ausgeführt hat — es könnte plausibel klingenden, aber
+ungetesteten Code abliefern. Mit `--check` wird `finish` **zurückgewiesen**,
+solange seit der letzten Änderung kein erfolgreicher `run` stattfand:
+
+```bash
+python3 mc.py --check --plan --max-steps 60 "Erstelle ... und pruefe es wirklich."
+```
+
+- Im **System-Prompt** wird zusätzlich ein Prüf-Workflow vorgegeben:
+  Abhängigkeiten installieren, Syntax/Build real prüfen, Dienste per
+  `"background":true` starten und mit `curl` testen — **auch Fehlerfälle**
+  wie eine unbekannte ID (soll 404 liefern, nicht stillschweigend Erfolg).
+- Mit `--plan` zusammen (empfohlen) benennt das Modell in der Plan-Phase
+  selbst konkrete Prüfkommandos (Abschnitt „Pruefschritte:"). Versucht es
+  danach ein verfrühtes `finish`, zitiert `mc` **diese selbst genannten
+  Schritte wörtlich zurück** („Das sind DEINE EIGENEN Pruefschritte aus
+  deinem Plan — hast du WIRKLICH JEDEN davon ausgeführt?") statt einer
+  generischen Erinnerung. Das hält das Modell an seinem eigenen Versprechen
+  fest, nicht an einer abstrakten Regel — in der Praxis der Unterschied
+  zwischen „nur das Backend getestet, Frontend nie gestartet" (ohne
+  Pruefschritte-Abschnitt) und einem vollständig abgearbeiteten
+  GET/POST/PUT/DELETE-plus-404-Test (mit Abschnitt).
+- Die Zurückweisung greift **maximal 3×**, danach wird `finish` akzeptiert
+  (Sicherheitsventil gegen Endlosschleifen).
+- `run`-Kommandos, die während `--check` als Dauerläufer gestartet werden
+  sollen, brauchen `"background":true` — sonst blockiert der Agent sich mit
+  einem Dev-Server selbst, bis der Timeout greift.
+- `--max-steps` sollte höher als der Default gesetzt werden: jede
+  Nachbesserungsrunde kostet zusätzliche Schritte.
 
 ### Verbose-Modus
 
@@ -358,12 +398,29 @@ export MC_HEADERS="X-Trace-Id: abc123; X-App: minicoder"
 | `read_file`   | `{"action":"read_file","path":"..."}`                         | nein      |
 | `write_file`  | `{"action":"write_file","path":"...","content":"..."}`        | **ja**    |
 | `write_files` | `{"action":"write_files","files":[{"path":"...","content":"..."}, ...]}` | **ja** |
+| `edit_file`   | `{"action":"edit_file","path":"...","old":"...","new":"..."}` | **ja**    |
 | `list_dir`    | `{"action":"list_dir","path":"..."}`                          | nein      |
 | `find`        | `{"action":"find","pattern":"..."}`                           | nein      |
 | `grep`        | `{"action":"grep","pattern":"..."}`                           | nein      |
 | `ask`         | `{"action":"ask","question":"..."}`                           | fragt     |
-| `run`         | `{"action":"run","command":"..."}`                            | **ja**    |
+| `run`         | `{"action":"run","command":"...","background":false,"timeout":120}` | **ja** |
 | `finish`      | `{"action":"finish","summary":"..."}`                         | —         |
+
+`run` akzeptiert zwei optionale Felder: `"background":true` startet einen
+Dauerläufer (Dev-Server o. ä.) nicht-blockierend im Hintergrund — alle so
+gestarteten Prozesse werden beim Programmende automatisch beendet;
+`"timeout"` (Sekunden, max. 300, Default 120) begrenzt normale, blockierende
+Kommandos. Offensichtlich destruktive Kommandos (`sudo`, `rm -rf /` o. ä.)
+werden unabhängig von `--yes` immer abgelehnt.
+
+Schreibt eine Aktion eine **bereits bestehende, nicht-triviale** Datei auf
+unter 40 % ihrer bisherigen Größe, gibt `mc` eine deutliche Warnung im
+Ergebnis zurück (`ACHTUNG: ... hatte vorher X Zeichen, jetzt nur Y ...`) —
+der häufigste Fall ist ein Modell, das versehentlich `write_file` statt
+`read_file` nutzt und dabei den Inhalt zerstört. Der Schreibvorgang selbst
+wird nicht blockiert (manchmal ist drastisches Kürzen gewollt), aber das
+Modell bekommt die Chance, den Fehler im nächsten Schritt selbst zu
+bemerken und zu beheben.
 
 ### Projektkontext & Datei-Erkennung
 
@@ -731,7 +788,7 @@ curl -s "$MC_BASE_URL/models" | python3 -m json.tool
 Welche Modelle bereitstehen, hängt vom Server ab. Fürs Coden eignet sich
 z. B. `qwen3-coder:30b`.
 
-## Validierung & Git-Rollback
+## Validierung & Git-Absicherung
 
 Weil Modelle unzuverlässig sind (mal 6/6, mal kaputtes JSON), prüft `mc`
 geschriebene Dateien und kann einen ganzen Lauf zurücknehmen:
@@ -749,24 +806,57 @@ geschriebene Dateien und kann einen ganzen Lauf zurücknehmen:
   Andere/nachsichtige Typen (HTML, CSS, JS) werden übersprungen. Schlägt eine
   Prüfung fehl, wird der Fehler **in den Loop zurückgespeist**, sodass das Modell
   die Datei selbst korrigiert (Auto-Retry über die normalen Schritte).
-- **Git-Rollback** — **nur wenn gefahrlos möglich**: `git` installiert **und** im
-  Repo **und** Arbeitsbaum beim Start **sauber**. Dann merkt sich `mc` die
-  geänderten/angelegten Dateien und bietet am Ende an, den Lauf zu verwerfen
-  (getrackte → zurück auf HEAD, neu angelegte → gelöscht) — **ohne** deine
-  sonstigen Änderungen anzutasten. Ist die Bedingung nicht erfüllt (kein Git, kein
-  Repo, oder offene Änderungen), ist das Feature still deaktiviert.
+- **Git-Absicherung** — **nur wenn gefahrlos möglich**: `git` muss installiert
+  sein **und** der Arbeitsbaum beim Start **sauber** (keine offenen Änderungen).
+  Findet `mc` in einem sonst sauberen Verzeichnis **noch gar kein Git-Repo**
+  vor (der Normalfall, wenn man `mc` in einem frischen Projektverzeichnis
+  benutzt — siehe [„`mc` getrennt vom Projekt betreiben"](#mc-getrennt-vom-projekt-betreiben-empfohlen)),
+  legt `mc` **automatisch eines an**: `git init`, eine `.gitignore` mit den
+  üblichen Ausschlüssen (`node_modules/`, `venv/`, `__pycache__/`, `*.db`,
+  `dist/`, `build/`, `.DS_Store` — nur falls noch keine vorhanden ist) und ein
+  Baseline-Commit des bereits Vorhandenen. Das ist risikoarm und jederzeit
+  rückgängig zu machen (nur ein lokales `.git`-Verzeichnis, kein Remote, kein
+  Push). Ein bereits vorhandenes, aber **unsauberes** Repo (offene Änderungen)
+  bleibt dabei unangetastet — kein automatischer Eingriff in bestehende Arbeit.
+  - Endet ein Lauf mit einem **sauberen `finish`** (keine offenen Probleme),
+    committet `mc` die berührten Dateien automatisch als einen
+    Sicherungspunkt — mit der `finish`-Zusammenfassung als Commit-Message.
+    Das funktioniert auch **unbeaufsichtigt mit `--yes`**, nicht nur
+    interaktiv.
+  - Endet ein Lauf **nicht sauber** (Schrittlimit erreicht oder noch
+    ungültige Dateien), bietet `mc` interaktiv an, den Lauf per Git zu
+    verwerfen (getrackte Dateien → zurück auf HEAD, neu angelegte →
+    gelöscht). Bei `--yes` wird in diesem Fall **nichts automatisch
+    verworfen** — automatisches Löschen ohne Rückfrage wäre riskanter als
+    einen unfertigen Stand einfach liegen zu lassen; die Änderungen bleiben
+    einfach uncommitted und damit jederzeit manuell prüf- und verwerfbar.
+  - Ist keine der Bedingungen erfüllbar (kein Git installiert, oder ein
+    bereits vorhandenes Repo mit offenen Änderungen), ist die gesamte
+    Git-Absicherung still deaktiviert — Änderungen sind dann endgültig.
 
-So bleibt von einem misslungenen Lauf nichts Kaputtes liegen — vorausgesetzt, du
-arbeitest in einem sauberen Git-Repo.
+So bleibt von einem misslungenen Lauf nichts Kaputtes liegen und ein
+gelungener Lauf hinterlässt einen nachvollziehbaren Commit — auch ganz ohne
+manuellen `git init` vorher.
 
 ## Sicherheit
 
 - **Bestätigung** vor jedem Schreibvorgang und jedem Shell-Kommando
   (außer mit `--yes`).
-- **Validierung** geschriebener Dateien (py/json/yaml/php) + optionaler
-  **Git-Rollback** bei sauberem Repo (siehe oben).
+- **Validierung** geschriebener Dateien (py/json/yaml/php) + automatische
+  **Git-Absicherung** (Auto-Init, Auto-Commit bei sauberem `finish`,
+  Rollback-Angebot sonst — siehe oben).
+- **Warnung bei drastischem Dateischrumpfen**: überschreibt eine Aktion eine
+  bestehende, nicht-triviale Datei mit unter 40 % ihrer bisherigen Größe
+  (typischer Fall: `write_file` versehentlich statt `read_file` benutzt),
+  bekommt das Modell das im Ergebnis explizit mitgeteilt.
+- **Destruktive Kommandos werden abgelehnt**: `run` prüft jedes Kommando
+  gegen ein Muster für offensichtlich gefährliche Aufrufe (`sudo`,
+  `rm -rf /` bzw. `~`, `dd ... of=/dev/`, `shutdown`/`reboot` u. ä.) — auch
+  mit `--yes`.
 - Schrittlimit pro Aufgabe (Default **40**, via `--max-steps` / `MC_MAX_STEPS`).
-- **120 s** Timeout pro Shell-Kommando.
+- **120 s** Timeout pro Shell-Kommando (bis **300 s** einstellbar über
+  `"timeout"` in der `run`-Aktion); Dauerläufer gehören mit
+  `"background":true` gestartet, damit sie den Agenten nicht blockieren.
 - Tool-Ausgaben an das Modell werden auf **8000 Zeichen** gekürzt.
 
 Trotzdem gilt: `run` führt beliebige Shell-Kommandos aus. `mc` am besten in
