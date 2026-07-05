@@ -76,6 +76,19 @@ MAX_WRITE_FILES_BATCH = 3  # max. Dateien pro write_files-Block
 MAX_FINISH_REJECTS = 2     # so oft wird ein verfruehtes finish zurueckgewiesen
 EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Check)
 
+# Check-Modus (--check): finish wird erst akzeptiert, wenn das Modell seine
+# Arbeit nach der letzten Aenderung per run WIRKLICH ausgefuehrt hat (exit=0).
+# Hintergrund: Syntax-Validierung findet keine falschen API-Annahmen,
+# Feldnamen-Verwechslungen oder kaputte Dependencies — echte Ausfuehrung schon.
+CHECK = os.environ.get("MC_CHECK", "") not in ("", "0", "false")
+RAN_SINCE_WRITE = False    # seit letztem Schreiben ein run mit exit=0?
+BG_PROCS = []              # Hintergrundprozesse (Dev-Server); Ende: aufgeraeumt
+# Notbremse fuer run mit --yes: offensichtlich destruktive Kommandos ablehnen.
+DANGEROUS_RUN = re.compile(
+    r"\b(sudo|shutdown|reboot|halt|mkfs\S*)\b"
+    r"|rm\s+(-\w+\s+)*(/|~)(\s|$)"
+    r"|dd\s+.*of=/dev/")
+
 # Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
 # Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
 # mitgeschickt wird. Auf lokalen Maschinen ist Prompt-Processing der
@@ -938,20 +951,72 @@ def do_ask(args):
 
 def do_run(args):
     cmd = args.get("command", "")
-    print(f"{C.YELLOW}» run{C.RESET} {C.BOLD}{cmd}{C.RESET}")
+    bg = bool(args.get("background"))
+    try:
+        timeout = min(max(int(args.get("timeout", 120)), 5), 300)
+    except (TypeError, ValueError):
+        timeout = 120
+    tag = " (hintergrund)" if bg else ""
+    print(f"{C.YELLOW}» run{tag}{C.RESET} {C.BOLD}{cmd}{C.RESET}")
+    if DANGEROUS_RUN.search(cmd):
+        return False, ("ABGELEHNT: das Kommando sieht destruktiv aus (sudo/rm auf "
+                       "Wurzelpfade/etc.). Waehle ein harmloses, projektlokales Kommando.")
     if not confirm("Kommando ausfuehren?"):
         return False, "Abgelehnt durch den Benutzer."
+    if bg:
+        # Dauerlaeufer (Dev-Server): starten, kurz warten, erste Ausgabe zeigen.
+        # Der Prozess laeuft weiter; alle BG-Prozesse werden am Ende beendet.
+        import tempfile
+        logf = tempfile.NamedTemporaryFile(prefix="mc_bg_", suffix=".log",
+                                           delete=False, mode="w")
+        try:
+            proc = subprocess.Popen(cmd, shell=True, stdout=logf,
+                                    stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        except Exception as e:
+            return False, f"FEHLER beim Start: {e}"
+        BG_PROCS.append(proc)
+        time.sleep(3)
+        try:
+            with open(logf.name, "r", errors="replace") as f:
+                head = f.read().strip()
+        except Exception:
+            head = ""
+        if proc.poll() is not None:
+            return False, (f"Prozess hat sich sofort beendet (exit={proc.returncode}). "
+                           f"Ausgabe:\n{truncate(head or '(keine)')}")
+        return True, (f"laeuft im Hintergrund (pid={proc.pid}). Erste Ausgabe:\n"
+                      f"{truncate(head or '(noch keine)')}\n"
+                      "Pruefe den Dienst jetzt mit einem normalen run (z.B. curl). "
+                      "Hintergrundprozesse werden am Ende automatisch beendet.")
     try:
         proc = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=120
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
         )
         out = proc.stdout + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
         out = out.strip() or "(keine Ausgabe)"
         return True, f"exit={proc.returncode}\n{truncate(out)}"
     except subprocess.TimeoutExpired:
-        return False, "FEHLER: Kommando-Timeout (120s)."
+        return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Dauerlaeufer wie "
+                       "Dev-Server bitte mit \"background\":true starten.")
     except Exception as e:
         return False, f"FEHLER bei Ausfuehrung: {e}"
+
+
+def kill_bg_procs():
+    """Beendet alle vom Modell gestarteten Hintergrundprozesse (samt Kindern,
+    dank start_new_session=True ueber die Prozessgruppe)."""
+    import signal
+    for p in BG_PROCS:
+        if p.poll() is None:
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except Exception:
+                pass
+    if BG_PROCS:
+        time.sleep(0.5)
+        n = sum(1 for p in BG_PROCS if p.poll() is not None)
+        info(f"{n}/{len(BG_PROCS)} Hintergrundprozess(e) beendet.")
 
 
 DISPATCH = {
@@ -982,7 +1047,7 @@ Verfuegbare Aktionen (Feld "action"):
   find        -> {"action":"find","pattern":"<namensteil>"}
   grep        -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
   ask         -> {"action":"ask","question":"<frage an den nutzer>"}
-  run         -> {"action":"run","command":"<shell-kommando>"}
+  run         -> {"action":"run","command":"<shell-kommando>"}  (optional: "background":true fuer Dauerlaeufer wie Dev-Server, "timeout":<sek, max 300>)
   finish      -> {"action":"finish","summary":"<kurze zusammenfassung>"}
 
 Regeln:
@@ -1018,6 +1083,11 @@ Regeln:
 - Fuer ein NEUES Projektgeruest nutze, wenn moeglich, offizielle Generatoren via
   run (z.B. 'npm create vite@latest frontend -- --template react') und passe
   danach gezielt einzelne Dateien an, statt jede Datei von Hand zu erzeugen.
+- Nutze run auch zum NACHSCHAUEN statt zu raten: bist du bei einer Bibliotheks-
+  API unsicher, pruefe sie real (ls node_modules/<paket>/, pip show <paket>,
+  python -c "import x; print(dir(x))"). Ein API-Endpunkt laesst sich mit
+  run + curl direkt testen. Was du nachgeschlagen hast, kann nicht halluziniert
+  sein.
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -1060,12 +1130,29 @@ print('hello')
 ```"""
 
 
+CHECK_PROMPT = """
+CHECK-MODUS AKTIV — dein finish wird erst akzeptiert, wenn du deine Arbeit
+nach der letzten Aenderung real ueberprueft hast (mind. ein run mit exit=0):
+  1. Abhaengigkeiten installieren (pip install -r …, npm install).
+  2. Syntax/Build pruefen (z.B. python -c "import app", npm run build,
+     node --check datei.js).
+  3. Dienste mit {"action":"run","command":"…","background":true} starten
+     und dann mit run + curl testen: Endpunkte aufrufen, Antworten pruefen —
+     auch Fehlerfaelle (unbekannte ID sollte 404 liefern, nicht Erfolg).
+  4. Fehlermeldungen ERNST NEHMEN und beheben, dann erneut pruefen.
+Hintergrundprozesse werden am Ende automatisch beendet. Verlasse dich nicht
+auf dein Gedaechtnis, was eine Bibliothek 'haben muesste' — pruefe es
+(z.B. ls node_modules/@material/web/) statt zu raten."""
+
+
 def system_prompt(fence):
     """Baut den System-Prompt fuer den gewaehlten Modus zusammen."""
     sp = SYSTEM_PROMPT_TEMPLATE
     sp = sp.replace("@@WRITE_SPEC@@", WRITE_SPEC_FENCE if fence else WRITE_SPEC_JSON)
     sp = sp.replace("@@CONTENT_RULE@@", CONTENT_RULE_FENCE if fence else CONTENT_RULE_JSON)
     sp = sp.replace("@@EXAMPLE@@", EXAMPLE_FENCE if fence else EXAMPLE_JSON)
+    if CHECK:
+        sp += "\n" + CHECK_PROMPT
     return sp
 
 
@@ -1250,6 +1337,7 @@ def git_rollback():
 
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
+    global RAN_SINCE_WRITE
     finish_rejects = 0
     for step in range(1, MAX_STEPS + 1):
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
@@ -1300,6 +1388,20 @@ def run_task(messages, model):
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
+            # Check-Modus: finish erst nach echter Ausfuehrung. Ein Modell, das
+            # nie gestartet/getestet hat, kann API-Halluzinationen und
+            # Feldnamen-Fehler nicht bemerkt haben.
+            if CHECK and not RAN_SINCE_WRITE and finish_rejects < MAX_FINISH_REJECTS:
+                finish_rejects += 1
+                obs = ("FINISH ABGELEHNT (Check-Modus) — du hast deine Arbeit seit der "
+                       "letzten Aenderung nicht ausgefuehrt. Pruefe sie jetzt real mit "
+                       "run: 1) Abhaengigkeiten installieren, 2) Syntax/Build pruefen, "
+                       "3) Dienste mit \"background\":true starten und per curl testen "
+                       "(auch Fehlerfaelle wie unbekannte IDs), 4) Fehler beheben. "
+                       "Gib erst dann wieder finish aus.")
+                print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
             if missing or still_bad:
                 print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
                       f"(fehlend: {len(missing)}, ungueltig: {len(still_bad)}).{C.RESET}")
@@ -1318,9 +1420,16 @@ def run_task(messages, model):
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
         print(f"{marker}{C.RESET} {C.DIM}{result.splitlines()[0][:100]}{C.RESET}")
 
+        # Check-Modus-Buchhaltung: nur ein VORDERGRUND-run mit exit=0 zaehlt als
+        # Pruefung (ein gestarteter Server allein beweist nichts — der folgende
+        # curl-Test ist dann der Vordergrund-run).
+        if name == "run" and ok and result.startswith("exit=0"):
+            RAN_SINCE_WRITE = True
+
         # Geschriebene Dateien fuer Rollback merken und (bekannte Typen) validieren.
         valed = ""
         if ok and name in ("write_file", "write_files", "edit_file"):
+            RAN_SINCE_WRITE = False
             paths = written_paths(name, action)
             for p in paths:
                 if p not in TOUCHED:
@@ -1339,7 +1448,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -1378,11 +1487,17 @@ def main():
                     help="Fence-Modus: Dateiinhalte als rohe ```content Bloecke statt "
                          "als JSON-Strings (vermeidet Escaping-Fehler); der Parser "
                          "versteht unabhaengig davon immer beide Formate")
+    ap.add_argument("--check", action="store_true",
+                    help="Selbsttest-Modus: finish wird erst akzeptiert, wenn das "
+                         "Modell seine Arbeit per run real ausgefuehrt/geprueft hat "
+                         "(Dependencies, Build, Dienst starten + curl-Tests). "
+                         "Tipp: --max-steps erhoehen, jede Fix-Runde kostet Schritte")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
     AUTO_YES = args.yes
     MAX_STEPS = args.max_steps
     VALIDATE = not args.no_validate
+    CHECK = CHECK or args.check
     KEEP_CONTEXT = args.keep_context
     PRUNE = not args.no_prune
     FENCE = FENCE or args.fence
@@ -1430,6 +1545,10 @@ def main():
     banner(f"mc · Mini Coding Tool  ({args.model} @ {BASE_URL})")
     if AUTO_YES:
         print(f"{C.RED}Achtung: --yes aktiv, Aktionen werden ohne Rueckfrage ausgefuehrt.{C.RESET}")
+    import atexit
+    atexit.register(kill_bg_procs)
+    if CHECK:
+        info("Check-Modus aktiv: finish erst nach echter Ausfuehrung (run mit exit=0).")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
 
     # Git-Rollback nur, wenn gefahrlos moeglich (git da + Repo + sauberer Baum).

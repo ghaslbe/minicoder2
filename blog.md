@@ -1601,6 +1601,63 @@ UI-Bibliothek** — Fehler, die weder `mc.py`s Syntax-Validierung noch ein
 einfacher Dateicheck aufdecken, sondern nur ein echter Blick in den
 laufenden Browser.
 
+### 9.21 Die Konsequenz: mc.py lernt, sich selbst zu überprüfen
+
+Die Bilanz der Abschnitte 9.15–9.20 lässt sich in einem Satz zusammenfassen:
+**Fast alle wirklich schlimmen Bugs des Tages hätte nur echte Ausführung
+gefunden — keine noch so gute statische Prüfung.** Die Card-Halluzination
+wäre bei einem `ls node_modules/@material/web/` sofort aufgeflogen. Der
+Browserslist-Fehler crasht beim ersten `npm start` mit einer klaren Meldung.
+Der `address`/`adresse`-Mismatch wäre in der ersten curl-Antwort als leeres
+Feld sichtbar gewesen. Und ein reines „Selbst-Review" (den Code nochmal
+lesen lassen) hätte all das NICHT gefunden — die Wissenslücke, die den
+Fehler verursachte, bleibt beim erneuten Lesen dieselbe.
+
+Daraus wurde die nächste Ausbaustufe von `mc.py`: ein **Check-Modus**
+(`--check` bzw. `MC_CHECK=1`), bewusst schlank gehalten (~90 Zeilen):
+
+- **`run` kann jetzt Dauerläufer:** `{"action":"run","command":"…",
+  "background":true}` startet z.B. einen Flask-Server, liefert die ersten
+  Sekunden Ausgabe zurück und lässt ihn weiterlaufen; alle Hintergrund-
+  prozesse werden am Ende automatisch beendet (Prozessgruppen-Kill via
+  `atexit`). Dazu ein optionales `"timeout"` (max. 300 s) für langsame
+  Builds.
+- **finish wird verweigert, solange nicht real geprüft wurde:** Im
+  Check-Modus akzeptiert `mc.py` ein finish erst, wenn nach der letzten
+  Dateiänderung mindestens ein Vordergrund-`run` mit `exit=0` durchlief.
+  Ein gestarteter Server allein zählt dabei nicht — erst der curl-Test
+  dagegen ist der Beweis. Jede neue Dateiänderung setzt die Uhr zurück:
+  wer nach dem Fix nicht erneut testet, bekommt das finish wieder
+  abgelehnt.
+- **Der System-Prompt gibt die Prüf-Rezeptur vor:** Dependencies
+  installieren, Build/Syntax prüfen, Dienst im Hintergrund starten, per
+  curl testen — ausdrücklich auch die Fehlerfälle („unbekannte ID sollte
+  404 liefern, nicht Erfolg", die Lektion aus dem stillen-Erfolg-Befund).
+- **Nachschlagen statt raten — jetzt als generelle Regel:** Unabhängig vom
+  Check-Modus ermuntert der Prompt das Modell, bei API-Unsicherheit real
+  nachzusehen (`ls node_modules/<paket>/`, `pip show`, curl gegen den
+  eigenen Endpunkt). Was nachgeschlagen wurde, kann nicht halluziniert
+  sein.
+- **Eine kleine Notbremse für `--yes`:** Offensichtlich destruktive
+  Kommandos (sudo, rm auf Wurzelpfade, dd auf Devices, mkfs …) werden
+  abgelehnt, bevor sie den Bestätigungs-Mechanismus überhaupt erreichen —
+  relevant, weil im Batch-Betrieb jede run-Anfrage automatisch genehmigt
+  wird.
+
+Bewusst weggelassen: echtes Sandboxing (Container, chroot), automatische
+Browser-Tests, Framework-spezifische Testrunner — das würde den Charakter
+des Mini-Tools sprengen. Die Wette ist: allein die Rückkopplung „führe aus,
+lies die echte Fehlermeldung, reagiere" hebt die Qualität spürbar, weil sie
+genau die Fehlerklasse angreift, die heute dominierte.
+
+**Der nächste Schritt ist damit vorgezeichnet:** Die beiden besten Modelle
+des Tages bekommen dieselben Aufgaben erneut — diesmal mit `--check` und
+großzügigerem Schrittbudget. Die spannende Frage: Findet und behebt ein
+lokales 26B-Modell seine eigene Card-Halluzination, wenn ihm das Tool die
+echte `npm start`-Fehlermeldung vor die Nase hält? Nach allem, was dieser
+Tag gezeigt hat, wäre das der Unterschied zwischen „Code-Generator" und
+„Coding-Agent".
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
