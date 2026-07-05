@@ -1929,6 +1929,32 @@ mit im Repository statt nur im Scratchpad.
 
 Der dritte Versuch mit beiden Korrekturen folgt in 9.25.
 
+**Nachtrag — würde Git das verhindert haben?** Die naheliegende Frage:
+`mc.py` hat doch schon einen Git-Mechanismus. Die ehrliche Antwort: nein,
+nicht in diesem Fall. Der bestehende `GIT_ROLLBACK` lief nur interaktiv
+(`if not AUTO_YES`) und bot selbst dann nur EINEN Rollback ganz am Ende
+des Laufs an — keine Zwischen-Sicherungspunkte. Die gute Version von
+`requirements.txt` wurde innerhalb desselben Laufs erzeugt UND zerstört,
+ohne dass je ein Commit dazwischenlag; ein `git diff` gegen den
+Stand-vor-dem-Lauf hätte nur "Datei komplett neu" gezeigt, nicht "Inhalt
+zwischen Schritt 1 und 2 verloren". Und bei `--yes` war die gesamte
+Git-Absicherung ohnehin komplett abgeschaltet — genau der Lauf-Typ, der
+sie am nötigsten hätte.
+
+Behoben mit einer bewusst schlanken Lösung statt Auto-Commit nach jedem
+Schritt (das hätte die Historie mit vielen Zwischenständen vollgemüllt):
+Ein neuer Merker `CLEAN_FINISH` ist nur dann `True`, wenn der Lauf über ein
+echtes `finish` OHNE offene Probleme endet (nicht bei Schrittlimit oder
+stillem Prosa-Ende). Nur dann wird automatisch committet — auch
+unbeaufsichtigt bei `--yes`, mit der `finish`-Zusammenfassung als
+Commit-Message. Endet ein Lauf unsauber, bleibt es bei der bisherigen
+Logik (Rollback-Angebot bei interaktiver Nutzung); automatisches
+*Verwerfen* ohne Rückfrage bleibt bewusst aus — das Risiko, ungefragt
+etwas zu löschen, wiegt schwerer als das Risiko, einen unfertigen Stand
+unangetastet liegen zu lassen. Isoliert und über die echte CLI getestet:
+sauberer finish → Commit, Baum danach sauber; unsauberer Abschluss → kein
+Auto-Commit, Datei bleibt unangetastet uncommitted.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
