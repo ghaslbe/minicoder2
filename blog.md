@@ -1658,6 +1658,76 @@ echte `npm start`-Fehlermeldung vor die Nase hält? Nach allem, was dieser
 Tag gezeigt hat, wäre das der Unterschied zwischen „Code-Generator" und
 „Coding-Agent".
 
+### 9.22 Vorab dokumentiert: der erste echte Selbsttest-Lauf
+
+Bevor der Lauf startet, noch eine winzige Lücke geschlossen: `--plan` und
+`--yes` schlossen sich bisher gegenseitig aus (`plan_mode = args.plan and
+not AUTO_YES`) — sinnvoll für interaktive Nutzung, aber unbrauchbar fuer
+einen unbeaufsichtigten Batch-Lauf, der trotzdem mit einem Plan beginnen
+soll. Da `plan_phase()` sein `input()` bei EOF ohnehin schon als „Plan
+akzeptiert, weiter" behandelt, reichte es, die Bedingung auf `plan_mode =
+args.plan` zu vereinfachen — im nicht-interaktiven Kontext (kein `stdin`,
+z.B. unter `nohup`) läuft der Plan dann automatisch durch, statt komplett
+zu entfallen. Sanity-Check bestanden: Plan wird angezeigt, `EOFError`
+greift, Umsetzung startet automatisch.
+
+**Der Testlauf, der jetzt folgt** (Ergebnis in 9.23): dasselbe Modell wie
+in 9.20 (`gemma-4-26b-a4b-it@mxfp4`, dort an der Card-Halluzination und dem
+kleingeschriebenen `oninput` gescheitert), diesmal mit Plan-Phase UND dem
+neuen Check-Modus — UND mit Vite (https://github.com/vitejs/vite) statt
+Create React App, um gleich das gesamte Browserslist/`react-scripts`-Bug-
+Nest aus 9.15–9.20 zu umgehen. Anders als bei allen bisherigen Läufen
+dieses Tages darf das Modell diesmal selbst installieren und ausführen —
+das war den ganzen Tag über per Prompt-Anweisung ausdrücklich verboten,
+weil `mc.py` es bis eben nicht konnte.
+
+Exakter Aufruf:
+
+```bash
+python3 mc.py --base-url http://192.168.178.79:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --plan --check --max-steps 60 \
+  "$(cat prompt_vite_material_check.txt)"
+```
+
+Der Prompt (`prompt_vite_material_check.txt`):
+
+> Erstelle eine CRUD-Webanwendung 'Personenverwaltung'. BACKEND in backend/:
+> Flask + SQLite (Datei personen.db), Tabelle person mit Spalten id
+> (autoincrement), name, adresse, telefon. REST-API mit flask-cors: GET
+> /api/persons (alle), POST /api/persons (anlegen), PUT /api/persons/<id>
+> (bearbeiten), DELETE /api/persons/<id> (loeschen). Tabelle beim Start
+> automatisch anlegen. FRONTEND in frontend/: React-App, erstellt mit Vite
+> (https://github.com/vitejs/vite, z.B. via 'npm create vite@latest
+> frontend -- --template react'), die fuer die UI-Komponenten die Material
+> Web Components Bibliothek (@material/web,
+> https://github.com/material-components/material-web/tree/main/docs)
+> verwendet statt einfacher HTML-Elemente (z.B. md-outlined-text-field,
+> md-filled-button, md-outlined-button, md-list/md-list-item). Die App
+> zeigt alle Personen in einer Liste und erlaubt Anlegen, Bearbeiten und
+> Loeschen ueber ein Formular; spricht das Backend per fetch auf
+> http://localhost:5000 an. Installiere alle noetigen Abhaengigkeiten
+> (npm install im Frontend, pip install -r requirements.txt im Backend in
+> einer venv) und PRUEFE deine Arbeit wirklich: starte Backend und den
+> Vite-Dev-Server im Hintergrund und teste alle vier REST-Endpunkte per
+> curl, inklusive Fehlerfaellen (PUT/DELETE auf eine nicht existierende ID
+> sollte 404 liefern, nicht stillschweigend Erfolg). Behebe alle Fehler,
+> bevor du finish aufrufst.
+
+Bewusste Unterschiede zu allen bisherigen Läufen des Tages: kein Verbot von
+npm/pip-Installation mehr (das war nötig, weil `mc.py` bislang nichts
+ausführen konnte); explizite Nennung des stillen-Erfolg-Bugs aus 9.15/9.19
+als Testfall; Vite statt Create React App. Ansonsten identische
+Anforderung wie in 9.20, für einen fairen Vorher-Nachher-Vergleich.
+
+Geplantes Vorgehen für den Lauf selbst: `mc.py` bekommt die Aufgabe, baut
+seinen Plan, setzt ihn um und prüft sich mit `--check` so lange selbst,
+bis es `finish` meldet oder das Schrittlimit erreicht — ohne Eingriffe
+währenddessen. Danach folgt eine externe Prüfung nach demselben Muster wie
+in 9.15–9.19 (Code lesen, Backend/Frontend selbst nochmal starten,
+Browser-Screenshot), um zu sehen, ob der Selbsttest hält, was er
+verspricht.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts

@@ -1468,7 +1468,9 @@ def main():
     ap.add_argument("--max-steps", type=int, default=MAX_STEPS,
                     help=f"Max. Agenten-Schritte pro Aufgabe (default {MAX_STEPS})")
     ap.add_argument("--plan", action="store_true",
-                    help="Erst einen Plan zeigen und bestaetigen lassen, dann umsetzen")
+                    help="Erst einen Plan zeigen und bestaetigen lassen, dann umsetzen. "
+                         "Zusammen mit --yes: Plan wird automatisch akzeptiert (keine "
+                         "Rueckfrage moeglich), dann laeuft alles Weitere unbeaufsichtigt")
     ap.add_argument("--dir", "-C", metavar="PFAD",
                     help="Zielverzeichnis, in dem gearbeitet wird (statt des aktuellen). "
                          "So kann mc.py getrennt vom bearbeiteten Projekt liegen.")
@@ -1502,7 +1504,11 @@ def main():
     PRUNE = not args.no_prune
     FENCE = FENCE or args.fence
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
-    plan_mode = args.plan and not AUTO_YES
+    # --plan funktioniert jetzt auch zusammen mit --yes: plan_phase() nutzt
+    # input() direkt (nicht confirm()) und behandelt EOF bereits als "Plan
+    # akzeptiert, weiter" — im nicht-interaktiven Batch-Betrieb (nohup, kein
+    # stdin) laeuft der Plan also automatisch durch, statt komplett zu entfallen.
+    plan_mode = args.plan
     BASE_URL = args.base_url.rstrip("/")
     PROXY = args.proxy
     CA_BUNDLE = args.ca_bundle
