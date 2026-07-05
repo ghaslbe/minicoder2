@@ -1,0 +1,21 @@
+Baue eine kleine Web-Anwendung 'Vibelove' im aktuellen Arbeitsverzeichnis - ein simpler, lokaler App-Builder im Stil von Lovable.dev, der ein bereits vorhandenes Kommandozeilen-Tool namens mc.py (liegt eine Ebene hoeher, absoluter Pfad ueber os.path.dirname(__file__) plus '/../mc.py' ermitteln, NICHT neu schreiben oder veraendern) als Motor benutzt, um Anwendungen per Texteingabe bauen zu lassen.
+
+STRUKTUR (bitte GENAU so anlegen):
+- server.py: Flask-Server, MUSS fest auf Port 5050 laufen.
+- templates/index.html: EINE Seite mit zwei Bereichen nebeneinander (z.B. mit flex, je 50% Breite). LINKS: ein Formular mit einer Textarea (Bauanweisung eingeben) und einem Button 'Bauen', darunter ein <pre>-Block, der nach dem Bauen die Ausgabe/den Log von mc.py anzeigt. RECHTS: ein <iframe style="width:100%;height:100%;border:none;" src="http://localhost:5173"> - das ist die Live-Vorschau der gebauten Anwendung. Fuer das Styling der Vibelove-Seite selbst Tailwind CSS per CDN-Skript-Tag verwenden (kein npm-Paket).
+- workspace/: Zielverzeichnis, in dem die eigentliche, vom Nutzer gewuenschte Anwendung entsteht. mc.py arbeitet IMMER nur hier drin, niemals in Vibelove selbst.
+
+WICHTIGE ARCHITEKTUR-VORGABE fuer server.py (bitte GENAU so umsetzen, nicht selbst anders entwerfen):
+1. Route POST /build nimmt die Bauanweisung aus dem Formular entgegen und startet mc.py per subprocess.run NEU, mit folgendem Kommando-Muster: python3 <absoluter Pfad zu mc.py> --dir workspace --yes --check --max-steps 60 "<ANWEISUNG>". Timeout dafuer: 900 Sekunden. Die kombinierte stdout/stderr-Ausgabe wird als Text zurueckgegeben und im <pre>-Block angezeigt.
+2. An JEDE Anweisung, die an mc.py geschickt wird, muss server.py automatisch folgenden Zusatztext anhaengen (wortwoertlich, als eigener Satz): "Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst." Grund: ein von mc.py selbst gestarteter Hintergrundprozess wird automatisch beendet, sobald mc.py fertig ist - das wuerde die Live-Vorschau sofort wieder abschalten.
+3. server.py ist selbst dafuer zustaendig, EINMALIG einen EIGENEN, von mc.py unabhaengigen Vite-Dev-Server-Prozess fuer workspace/frontend/ zu starten (subprocess.Popen mit start_new_session=True), fest auf Port 5173, DAMIT DIESER AUCH NACH EINEM mc.py-LAUF WEITERLAEUFT. Diese Funktion soll: pruefen ob Port 5173 schon belegt ist (dann nichts tun), sonst den Server starten. Sie wird beim Start von server.py aufgerufen UND nach jedem erfolgreichen /build-Aufruf erneut (falls der Server noch nicht laeuft, z.B. weil workspace/frontend gerade erst durch mc.py angelegt wurde). Der Prozess muss beim Beenden von server.py sauber gestoppt werden (atexit + os.killpg, analog zu bestehenden Mustern).
+4. Falls die gebaute Anwendung ein eigenes Backend braucht, MUSS dieses fest auf Port 5090 laufen (Port 5000 ist auf macOS oft durch AirPlay belegt).
+
+ERSTER INHALT (bitte gleich mit anlegen, damit die Vorschau beim ersten Start nicht leer ist): Lege in workspace/ ein lauffaehiges React+Vite-Projekt an (npm create vite@latest workspace/frontend -- --template react), mit Tailwind CSS per CDN-Skript-Tag (kein npm-Paket) in workspace/frontend/index.html, und einer simplen Platzhalter-Startseite mit dem Text "Willkommen bei Vibelove - beschreibe deine App im Formular links.". npm install im Frontend ausfuehren.
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst:
+1. server.py auf Syntaxfehler pruefen (z.B. python3 -c mit ast.parse).
+2. workspace/frontend: npm run build muss exit 0 liefern.
+3. server.py kurz im Hintergrund starten, mit curl auf http://localhost:5050 pruefen, dass die Seite ein <form> UND ein <iframe> enthaelt, danach server.py wieder beenden (kill).
+4. Pruefen, dass nach dem Start von server.py der Port 5173 tatsaechlich mit dem Vite-Server antwortet (curl -I http://localhost:5173).
+Behebe alle Fehler, bevor du finish aufrufst.

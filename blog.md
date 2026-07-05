@@ -2059,6 +2059,74 @@ Plan-Phase, `"background":true`) zum ersten Mal gemeinsam wirksam: Das
 Modell hielt sich an sein eigenes, vorher genanntes Testprogramm, statt
 sich mit einer Teilprüfung zufriedenzugeben.
 
+## 10. Vibelove — ein Lovable-artiger App-Builder auf Basis von `mc.py`
+
+Der Tag endet mit einem größeren, ehrgeizigeren Experiment: Kann `mc.py`
+nicht nur einzelne Aufgaben abarbeiten, sondern als **Motor für einen
+eigenen App-Builder** dienen — im Stil von [Lovable](https://lovable.dev)
+(chatbasiert, Live-Vorschau, iterative Verfeinerung)? Das neue
+Unterprojekt heißt **Vibelove** und lebt in `vibelove/` im selben Repo.
+
+**Rollenverteilung, bewusst so festgelegt:** `mc.py` (mit
+`gemma-4-26b-a4b-it@mxfp4` auf der M4 Pro) soll den Code **selbst bauen,
+in Etappen** — nicht ich. Meine Rolle ist die eines Copiloten: Ich
+entwerfe die **Architektur-Entscheidungen im Voraus** (damit sich das
+Modell nicht in Systemdesign-Fragen verliert, die es aus eigenem Antrieb
+kaum treffen könnte — Gemma kennt Lovable nicht), schreibe die Prompts,
+und begleite/prüfe die Läufe. Der eigentliche Code entsteht durch `mc.py`.
+
+**Die zentrale Architektur-Weichenstellung**, die ich vorab treffen
+musste, weil sie sonst mit hoher Wahrscheinlichkeit schiefgegangen wäre:
+`mc.py` darf beim Bauen **keinen dauerhaften Dev-Server hinterlassen** —
+ein von `mc.py` selbst per `"background":true` gestarteter Prozess wird
+beim Programmende automatisch beendet (`atexit`/`kill_bg_procs()`, siehe
+weiter oben). Für eine echte Live-Vorschau, die auch **nach** einem
+`mc.py`-Lauf noch läuft, muss **Vibelove selbst** den Vite-Dev-Server
+unabhängig verwalten — einmalig gestartet, unabhängig vom Lebenszyklus
+jedes einzelnen `mc.py`-Aufrufs. Diese Trennung steht explizit im Prompt.
+
+### Etappe 1: das Grundgerüst
+
+Bewusst klein geschnitten (Chat-Verlauf/iteratives Verfeinern kommt erst
+in Etappe 2), um dem Modell eine realistische Chance zu geben:
+
+```bash
+cd vibelove
+python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
+  --model "gemma-4-26b-a4b-it@mxfp4" \
+  --yes --plan --check --max-steps 60 \
+  "$(cat ../prompt_vibelove_stage1.txt)"
+```
+
+Der volle Prompt-Text steht in
+[`prompt_vibelove_stage1.txt`](prompt_vibelove_stage1.txt) im Repo-Root.
+Kernpunkte der Vorgabe:
+
+- **Struktur:** `server.py` (Flask, fest Port 5050), `templates/index.html`
+  (Formular + Log links, `<iframe>` auf Port 5173 rechts, Tailwind per
+  CDN), `workspace/` als Zielverzeichnis für die eigentliche, vom Nutzer
+  gewünschte Anwendung — `mc.py` arbeitet nie in Vibelove selbst, immer
+  nur in `workspace/`.
+- **Der `/build`-Endpunkt** ruft `mc.py` per `subprocess.run` mit
+  `--dir workspace --yes --check` auf und hängt automatisch einen fest
+  vorgeschriebenen Zusatzsatz an jede Anweisung an, der das
+  Hintergrund-Server-Verbot durchsetzt.
+- **Die Vorschau-Verwaltung** ist explizit **von `mc.py` entkoppelt**:
+  `server.py` startet den Vite-Server für `workspace/frontend/` selbst
+  (`subprocess.Popen`, `start_new_session=True`), prüft vorher ob Port
+  5173 schon belegt ist, und hält ihn über mehrere Bau-Anfragen hinweg am
+  Leben.
+- **Sofort ein lauffähiger Startzustand**: ein Platzhalter-Vite+React-
+  Projekt in `workspace/frontend/` (wieder Tailwind per CDN statt
+  Material Web — konsequent aus 9.26 übernommen), damit die Vorschau beim
+  ersten Start nicht leer ist.
+- **Eigene Backend-Ports** für spätere gebaute Anwendungen fest auf 5090
+  (5000 ist durch macOS AirPlay belegt — dieselbe Lektion wie den ganzen
+  Tag über).
+
+Der Lauf ist gestartet; Ergebnis und Bewertung folgen im nächsten
+Abschnitt.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
