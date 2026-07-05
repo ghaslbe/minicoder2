@@ -2341,6 +2341,55 @@ Mehrfach-Chat-Verlauf funktioniert vollständig: Formular, Kontext über
 mehrere Bauschritte, Verlauf-Reset, alles live über die echte UI
 verifiziert.
 
+### 10.4 Etappe 3: Live-Streaming der Build-Ausgabe
+
+Feedback aus der Praxis: Beim Ausprobieren war im Log-Bereich nicht zu
+erkennen, was während eines laufenden Builds passiert — nur „Baue..." bis
+zum Schluss, dann alles auf einmal. Ursache: `subprocess.run()` im
+`/build`-Endpunkt blockiert komplett, bis `mc.py` fertig ist.
+
+**Architektur-Vorgabe** (wieder vorab festgelegt): `subprocess.Popen` statt
+`subprocess.run`, ein Flask-Generator mit `stream_with_context`/`Response`,
+der jede Zeile sofort weiterreicht, sobald sie ankommt; im Frontend
+`response.body.getReader()` statt `response.text()`, damit der Log-Bereich
+während des Builds wächst statt am Ende zu erscheinen.
+
+**Der erste Versuch sah im Code richtig aus, funktionierte aber nicht.**
+Live-Test per `curl --no-buffer`: nach 3 Sekunden **0 Zeilen** angekommen,
+alles erst nach Prozessende auf einmal — trotz korrektem Generator-Code.
+
+**Ursache, durch direkten Vergleich verifiziert:** Ein klassisches
+Python-I/O-Detail — `stdout` wird **blockweise statt zeilenweise
+gepuffert**, sobald es in eine Pipe statt ein Terminal umgeleitet wird.
+Das betrifft `mc.py`s eigenes `print()`, nicht den Streaming-Code von
+`server.py`. Test: derselbe Aufruf mit `python3 -u` (unbuffered) lieferte
+nach 3 Sekunden bereits **21 Zeilen**, ohne `-u` über `curl` nach 3
+Sekunden **0**. Bewusst **nicht** in `mc.py` selbst gelöst — das ist keine
+grundsätzliche Eigenschaft des Werkzeugs, sondern eine Anforderung des
+*Aufrufers*, der Live-Streaming will. Der Fix gehört an die
+Popen-Aufrufstelle in `server.py`: `"python3"` → `"python3", "-u"`.
+Zusätzlich behoben: toter Code nach einem `return`, und ein robusterer
+Timeout-Mechanismus (`select.select()` statt eines blockierenden
+`readline()`, das den 900s-Timeout bei einem kompletten Hänger nie hätte
+greifen lassen).
+
+**Ergebnis, verifiziert über drei Messpunkte per `curl --no-buffer`:**
+8 Zeilen nach 3s, 22 nach 6s, 47 final — echtes, kontinuierliches
+Wachstum statt Alles-oder-Nichts. Über die echte UI bestätigt: Log-Bereich
+füllt sich sichtbar während `mc.py` noch arbeitet.
+
+**Nebenbefund beim Code-Review — Scope-Creep trotz expliziter Vorgabe:**
+Der Prompt verlangte ausdrücklich „ändere NUR diese drei Stellen in
+server.py, sonst nichts" — das Modell hat stattdessen zusätzlich
+`templates/index.html` **komplett neu geschrieben**, obwohl das nicht
+verlangt war. Funktional korrekt (Streaming-Logik korrekt integriert),
+aber die Tailwind-Gestaltung aus Etappe 1/2 ist dabei verlorengegangen
+(jetzt einfaches Inline-CSS statt der vorherigen Karten-/Formular-Optik).
+Ein Beleg dafür, dass auch explizite Scope-Einschränkungen im Prompt
+("NUR diese Stellen") nicht immer eingehalten werden — Code-Review nach
+jedem Lauf bleibt notwendig, unabhängig davon, wie genau der Prompt
+formuliert ist.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts

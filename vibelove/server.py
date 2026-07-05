@@ -5,6 +5,7 @@ import time
 import atexit
 import signal
 import socket
+import select
 from flask import Flask, render_template, request
 
 app = Flask(__name__)
@@ -97,7 +98,7 @@ def build():
 
     # Befehl zusammenbauen
     command = [
-        "python3", 
+        "python3", "-u", 
         MC_PATH,
         "--dir", WORKSPACE_DIR,
         "--yes",
@@ -109,32 +110,71 @@ def build():
     ]
 
     try:
-        # Ausführung von mc.py mit Timeout von 900s
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=900
-        )
-        # Kombinierte stdout/stderr Ausgabe
-        output = result.stdout + "\n" + result.stderr
-        
-        # Nach dem Bauen sicherstellen, dass der Vite-Server wieder läuft (falls er durch mc.py beendet wurde)
-        ensure_vite_running()
+        from flask import stream_with_context, Response
 
-        # Verlauf speichern
-        summary = output[-500:] if len(output) > 500 else output
-        BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
-        
-        return output
-    except subprocess.TimeoutExpired:
-        error_msg = "Fehler: Bauprozess hat das Timeout von 900 Sekunden überschritten."
-        BUILD_HISTORY.append({"instruction": instruction, "result_summary": error_msg})
-        return error_msg
+        def generate():
+            nonlocal output
+            output_lines = []
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            start_time = time.time()
+            timeout_duration = 900
+
+            try:
+                while True:
+                    if time.time() - start_time > timeout_duration:
+                        proc.terminate()
+                        yield "\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n"
+                        break
+                    
+                    # Prüfe mit select, ob Daten verfügbar sind, um Blockieren zu vermeiden
+                    ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                    if ready:
+                        line = proc.stdout.readline()
+                        if line:
+                            output_lines.append(line)
+                            yield line
+                        elif proc.poll() is not None:
+                            remaining = proc.stdout.read()
+                            if remaining:
+                                output_lines.append(remaining)
+                            break
+                    elif proc.poll() is not None:
+                        # Falls kein Input bereit ist, aber der Prozess beendet wurde
+                        remaining = proc.stdout.read()
+                        if remaining:
+                            output_lines.append(remaining)
+                        break
+                    else:
+                        # Falls kein Input bereit ist und Prozess noch läuft, kurz warten
+                        time.sleep(0.1)
+            except Exception as e:
+                yield f"\nFehler während des Prozesses: {str(e)}"
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                
+                ensure_vite_running()
+                full_output = "".join(output_lines)
+                output = full_output
+                summary = full_output[-500:] if len(full_output) > 500 else full_output
+                BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
+
+            yield ""
+
+        output = ""
+        return Response(stream_with_context(generate()), mimetype='text/plain')
+
     except Exception as e:
-        error_msg = f"Fehler beim Ausführen von mc.py: {str(e)}"
-        BUILD_HISTORY.append({"instruction": instruction, "result_summary": error_msg})
-        return error_msg
+        output = str(e)
+        BUILD_HISTORY.append({"instruction": instruction, "result_summary": output})
+        return output
 
 @app.route('/reset', methods=['POST'])
 def reset():
