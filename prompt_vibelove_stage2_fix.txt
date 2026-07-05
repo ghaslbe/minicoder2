@@ -1,0 +1,9 @@
+In templates/index.html referenziert das JavaScript einen Button mit der ID 'resetButton' (document.getElementById('resetButton')), aber im HTML-Markup existiert dieser Button gar nicht - dadurch wirft das Skript beim Laden der Seite einen Fehler (Cannot set properties of null), und die 'Verlauf zuruecksetzen'-Funktion ist komplett unbenutzbar.
+
+Repariere das: fuege im body, sinnvoll platziert (z.B. zwischen dem 'Bauen'-Button und dem Log-Bereich, oder direkt ueber dem Log-Bereich), einen Button mit genau id="resetButton" und dem Text 'Verlauf zuruecksetzen' hinzu, passend zum bestehenden Tailwind-Stil der Seite (z.B. kleiner, dezenter Button, andere Farbe als der Bauen-Button).
+
+PRUEFE danach WIRKLICH:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" (server.py sollte durch diese Aenderung nicht betroffen sein, aber sicherheitshalber pruefen).
+2. Starte server.py kurz im Hintergrund (VIBELOVE_BASE_URL=http://192.168.178.191:1234/v1 VIBELOVE_MODEL=gemma-4-26b-a4b-it@mxfp4), lade die Seite per curl http://localhost:5050 und pruefe, dass die Antwort jetzt id="resetButton" enthaelt.
+3. server.py danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
