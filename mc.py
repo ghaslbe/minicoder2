@@ -65,6 +65,7 @@ MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 VALIDATE = True            # nach dem Schreiben bekannte Dateitypen pruefen
 GIT_ROLLBACK = False       # nur True, wenn git installiert + sauberes Repo (in main gesetzt)
 TOUCHED = []               # von mc geschriebene/geaenderte Pfade (fuer Rollback)
+CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/Prosa-Ende)
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
 
 # Robustheit (aus dem GPU-Benchmark gelernt):
@@ -1380,9 +1381,29 @@ def git_rollback():
           f"{len(removed)} neu angelegte geloescht.{C.RESET}")
 
 
+def git_commit_run(summary):
+    """Committet die von mc beruehrten Dateien als EINEN Sicherungspunkt — nur
+    nach einem SAUBEREN finish (nicht bei Schrittlimit/Prosa-Ende), damit die
+    Historie nicht mit Zwischenstaenden eines gescheiterten Laufs vollmuellt.
+    Das ist der Fall, der bei --yes bisher komplett ungesichert war: kein
+    Rollback-Angebot (interaktiv), aber auch kein Commit — Aenderungen waren
+    schlicht weder rueckholbar noch nachvollziehbar."""
+    paths = sorted(p for p in set(TOUCHED) if os.path.isfile(p))
+    if not paths:
+        return
+    _git("add", "--", *paths)
+    rc, out = _git("commit", "-m", f"mc: {summary[:72]}")
+    if rc == 0:
+        print(f"{C.GREEN}Git-Commit erstellt ({len(paths)} Datei(en)) — "
+              f"Sicherungspunkt fuer diesen Lauf.{C.RESET}")
+    else:
+        print(f"{C.DIM}Kein Git-Commit (evtl. keine Aenderungen): {out.strip()[:100]}{C.RESET}")
+
+
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
-    global RAN_SINCE_WRITE
+    global RAN_SINCE_WRITE, CLEAN_FINISH
+    CLEAN_FINISH = False
     finish_rejects = 0
     for step in range(1, MAX_STEPS + 1):
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
@@ -1459,6 +1480,8 @@ def run_task(messages, model):
             if missing or still_bad:
                 print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
                       f"(fehlend: {len(missing)}, ungueltig: {len(still_bad)}).{C.RESET}")
+            else:
+                CLEAN_FINISH = True  # nur OHNE offene Probleme gilt der Lauf als "sauber"
             summary = action.get("summary", "Fertig.")
             print(f"\n{C.GREEN}{C.BOLD}✓ {summary}{C.RESET}")
             return summary
@@ -1611,14 +1634,16 @@ def main():
         info("Check-Modus aktiv: finish erst nach echter Ausfuehrung (run mit exit=0).")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
 
-    # Git-Rollback nur, wenn gefahrlos moeglich (git da + Repo + sauberer Baum).
-    if not AUTO_YES:
-        ok, why = git_usable()
-        GIT_ROLLBACK = ok
-        if ok:
-            info("Git-Rollback verfuegbar: Aenderungen koennen am Ende verworfen werden.")
-        else:
-            info(f"Git-Rollback nicht verfuegbar ({why}) — Aenderungen sind dann endgueltig.")
+    # Git-Sicherung: unabhaengig von --yes pruefen (frueher nur interaktiv, damit
+    # war bei --yes-Laeufen JEDE Git-Absicherung aus — genau die Laeufe, die sie
+    # am noetigsten haben). Nur moeglich, wenn git installiert + sauberer Baum.
+    ok, why = git_usable()
+    GIT_ROLLBACK = ok
+    if ok:
+        info("Git verfuegbar: sauberer finish wird committet, unfertiger Stand "
+             "kann verworfen werden.")
+    else:
+        info(f"Git-Absicherung nicht verfuegbar ({why}) — Aenderungen sind endgueltig.")
     if VALIDATE:
         info("Validierung aktiv: py/json/yaml/php werden nach dem Schreiben geprueft.")
     if PRUNE:
@@ -1655,9 +1680,13 @@ def main():
     # vertraeglicher.
     messages = [{"role": "system", "content": system_prompt(FENCE) + "\n\n" + context_msg}]
 
-    def after_run():
-        """Am Ende einer Aufgabe: noch ungueltige Dateien melden und (falls
-        moeglich) Git-Rollback anbieten."""
+    def after_run(summary=""):
+        """Am Ende einer Aufgabe: noch ungueltige Dateien melden, dann je nach
+        Ausgang sichern. Sauberer finish -> committen (Sicherungspunkt, auch
+        unbeaufsichtigt bei --yes). Schrittlimit/offene Probleme -> wie bisher
+        Rollback anbieten (interaktiv) bzw. bei --yes unangetastet lassen —
+        automatisches VERWERFEN ohne Rueckfrage waere riskanter als das
+        automatische SICHERN eines sauberen Ergebnisses."""
         print_usage_summary()
         if not TOUCHED:
             return
@@ -1666,10 +1695,16 @@ def main():
         if still_bad:
             print(f"{C.RED}Achtung: {len(still_bad)} Datei(en) sind weiterhin "
                   f"ungueltig:{C.RESET} " + ", ".join(still_bad))
-        if GIT_ROLLBACK and not AUTO_YES:
+        if GIT_ROLLBACK and CLEAN_FINISH and not still_bad:
+            if AUTO_YES:
+                git_commit_run(summary or "Fertig.")
+            elif confirm("Sauberer Abschluss — Aenderungen per Git committen?"):
+                git_commit_run(summary or "Fertig.")
+        elif GIT_ROLLBACK and not AUTO_YES:
             frage = ("Es sind ungueltige Dateien uebrig. Alle Aenderungen dieses Laufs "
                      "per Git verwerfen?" if still_bad
-                     else "Alle Aenderungen dieses Laufs per Git verwerfen (Rollback)?")
+                     else "Lauf nicht sauber abgeschlossen. Alle Aenderungen per Git "
+                          "verwerfen (Rollback)?")
             if confirm(frage):
                 git_rollback()
         TOUCHED.clear()
@@ -1684,8 +1719,8 @@ def main():
         messages.append({"role": "user", "content": task_text})
         if plan_mode and not plan_phase(messages, args.model):
             return
-        run_task(messages, args.model)
-        after_run()
+        result = run_task(messages, args.model)
+        after_run(result if isinstance(result, str) else "")
         return
 
     # Interaktiver Modus
@@ -1706,8 +1741,8 @@ def main():
         messages.append({"role": "user", "content": user})
         if plan_mode and not plan_phase(messages, args.model):
             continue
-        run_task(messages, args.model)
-        after_run()
+        result = run_task(messages, args.model)
+        after_run(result if isinstance(result, str) else "")
 
 
 if __name__ == "__main__":
