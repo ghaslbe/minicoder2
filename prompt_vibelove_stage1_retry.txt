@@ -1,0 +1,17 @@
+Ein vorheriger Versuch, server.py fuer die Anwendung 'Vibelove' zu bauen, ist gescheitert: Beim Reparieren eines Syntaxfehlers hat sich das Modell in einer Wiederholungsschleife verfangen und server.py mehrfach fast identisch komplett neu geschrieben, dabei aber immer wieder denselben Fehler (verschmolzene Zeilen am Dateiende, u.a. "if __name__n@app.run(...)" statt eines korrekten "if __name__ == '__main__':"-Blocks) reproduziert. WICHTIG: Wiederhole diesen Fehler NICHT. Falls du beim Reparieren feststellst, dass ein weiterer kompletter Neuschrieb denselben Fehler erzeugen wuerde: STOPPE, lies die Datei zuerst genau mit read_file, benenne die exakte fehlerhafte Zeile in einem Satz, und nutze DANACH gezielt edit_file nur fuer diese eine Stelle statt die ganze Datei neu zu schreiben.
+
+templates/index.html UND workspace/frontend/ sind bereits fertig und korrekt (Vite+React-Grundgerüst mit Tailwind per CDN, npm install bereits ausgefuehrt) - NICHT anfassen oder neu erstellen, nur server.py fehlt/ist kaputt.
+
+Repariere server.py so, dass es GENAU folgende Architektur hat:
+- Flask-Server, fest auf Port 5050.
+- Route '/' rendert templates/index.html (bereits vorhanden).
+- Route POST '/build' nimmt Formularfeld 'instruction' entgegen, haengt automatisch folgenden Zusatztext an (wortwoertlich): "Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst." und startet dann mc.py per subprocess.run: python3 <absoluter Pfad ueber os.path.dirname(__file__) + '/../mc.py'> --dir workspace --yes --check --max-steps 60 "<ANWEISUNG+ZUSATZTEXT>", Timeout 900s, gibt die kombinierte stdout/stderr-Ausgabe als Text zurueck.
+- Eine Funktion, die EINMALIG (beim Start von server.py UND nach jedem erfolgreichen /build-Aufruf) prueft ob Port 5173 belegt ist, und falls nicht, per subprocess.Popen mit start_new_session=True einen Vite-Dev-Server fuer workspace/frontend startet (npm run dev -- --port 5173) - unabhaengig vom Lebenszyklus des mc.py-Subprozesses, damit die Vorschau nach einem Bauvorgang weiterlaeuft.
+- Sauberer if __name__ == '__main__': Block, der app.run(port=5050, debug=False) aufruft, sowie atexit.register() fuer den Vite-Server-Cleanup.
+
+PRUEFE, bevor du finish aufrufst:
+1. python3 -c "import ast; ast.parse(open('server.py').read())" muss fehlerfrei durchlaufen.
+2. server.py kurz im Hintergrund starten, curl auf http://localhost:5050 muss die Seite mit <form> und <iframe> liefern.
+3. curl -I auf http://localhost:5173 muss nach dem Start von server.py antworten (Vite-Server laeuft).
+4. server.py danach wieder beenden (kill).
+Behebe alle Fehler, bevor du finish aufrufst.
