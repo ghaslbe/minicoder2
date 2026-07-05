@@ -1483,6 +1483,7 @@ def run_task(messages, model):
     global RAN_SINCE_WRITE, CLEAN_FINISH
     CLEAN_FINISH = False
     finish_rejects = 0
+    parse_error_streak = 0
     for step in range(1, MAX_STEPS + 1):
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
@@ -1495,11 +1496,29 @@ def run_task(messages, model):
             return reply
 
         if "_parse_error" in action:
-            obs = (f"FEHLER: dein action-JSON war ungueltig ({action['_parse_error']}). "
-                   f"Bitte gib einen einzelnen validen ```action``` Block aus.")
+            parse_error_streak += 1
+            if parse_error_streak >= 2:
+                # Wiederholtes JSON-Escaping-Problem (in der Praxis beobachtet:
+                # dasselbe falsche '\>' o.ae. wird trotz eigener Korrektur-
+                # Ankuendigung im Text identisch wiederholt). Der generische
+                # Hinweis allein loest das nicht — eine konkrete Ausweich-
+                # strategie schon: kuerzerer/simplerer Ausschnitt oder ganz
+                # andere Aktion (write_file/--fence) statt derselben JSON-
+                # Formulierung erneut zu versuchen.
+                obs = (f"FEHLER: dein action-JSON ist jetzt {parse_error_streak}x in Folge "
+                       f"ungueltig ({action['_parse_error']}), vermutlich wegen eines "
+                       f"Escaping-Problems (z.B. ueberfluessiges '\\' vor einem Zeichen). "
+                       f"Wiederhole NICHT denselben Text — waehle einen KUERZEREN, "
+                       f"einfacheren Ausschnitt ohne Sonderzeichen wie < > \" \\ fuer "
+                       f"'old'/'new', oder nutze stattdessen write_file mit dem "
+                       f"kompletten neuen Dateiinhalt.")
+            else:
+                obs = (f"FEHLER: dein action-JSON war ungueltig ({action['_parse_error']}). "
+                       f"Bitte gib einen einzelnen validen ```action``` Block aus.")
             print(f"{C.RED}{obs}{C.RESET}")
             messages.append({"role": "user", "content": obs})
             continue
+        parse_error_streak = 0
 
         if "_fence_error" in action:
             obs = f"FEHLER: {action.pop('_fence_error')} Sende die Aktion bitte erneut."
