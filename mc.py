@@ -83,6 +83,11 @@ EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Chec
 CHECK = os.environ.get("MC_CHECK", "") not in ("", "0", "false")
 RAN_SINCE_WRITE = False    # seit letztem Schreiben ein run mit exit=0?
 BG_PROCS = []              # Hintergrundprozesse (Dev-Server); Ende: aufgeraeumt
+# Selbst genanntes Pruefprogramm aus der Plan-Phase (--plan --check): wird bei
+# einem verfruehten finish woertlich zurueckgespielt, statt nur generisch an
+# "irgendwas ausfuehren" zu erinnern — das Modell soll an seinem EIGENEN
+# Versprechen gemessen werden, nicht an einer abstrakten Regel.
+CHECK_PLAN = ""
 # Notbremse fuer run mit --yes: offensichtlich destruktive Kommandos ablehnen.
 DANGEROUS_RUN = re.compile(
     r"\b(sudo|shutdown|reboot|halt|mkfs\S*)\b"
@@ -1162,13 +1167,24 @@ def plan_phase(messages, model):
     """Deterministische Plan-Phase: holt zuerst einen Plan vom Modell, zeigt ihn
     und laesst den Nutzer bestaetigen/anpassen — BEVOR Dateien geaendert werden.
     Gibt False zurueck, wenn der Nutzer abbricht."""
-    messages.append({"role": "user", "content":
-        "Bevor du handelst: Erstelle einen KNAPPEN, nummerierten Plan fuer diese "
-        "Aufgabe — geplante Dateien/Verzeichnisse, Schritte und wichtige Annahmen. "
-        "Gib NUR den Plan als Text aus, KEINEN action-Block."})
+    ask = ("Bevor du handelst: Erstelle einen KNAPPEN, nummerierten Plan fuer diese "
+           "Aufgabe — geplante Dateien/Verzeichnisse, Schritte und wichtige Annahmen. "
+           "Gib NUR den Plan als Text aus, KEINEN action-Block.")
+    if CHECK:
+        ask += ("\nErstelle ZUSAETZLICH einen eigenen Abschnitt \"Pruefschritte:\" mit "
+                "den KONKRETEN Kommandos, mit denen du JEDEN Teil der Aufgabe (Backend "
+                "UND Frontend/Build getrennt, inkl. Fehlerfaellen wie unbekannte IDs) "
+                "wirklich verifizieren wirst — nicht nur 'ich teste es', sondern die "
+                "Kommandos selbst (z.B. 'npm run build', 'curl -X DELETE .../999').")
+    messages.append({"role": "user", "content": ask})
     print(f"\n{C.CYAN}{C.BOLD}── Plan ─────────────────────────────────{C.RESET}")
     plan = chat_stream(messages, model)
     messages.append({"role": "assistant", "content": plan})
+
+    if CHECK:
+        global CHECK_PLAN
+        m = re.search(r"pr(?:[üu]f|uef)schritte:?\s*(.+)", plan, re.IGNORECASE | re.DOTALL)
+        CHECK_PLAN = (m.group(1) if m else plan).strip()[:1500]
     try:
         fb = input(f"\n{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
                    f"n=abbrechen> {C.RESET}").strip()
@@ -1393,12 +1409,21 @@ def run_task(messages, model):
             # Feldnamen-Fehler nicht bemerkt haben.
             if CHECK and not RAN_SINCE_WRITE and finish_rejects < MAX_FINISH_REJECTS:
                 finish_rejects += 1
-                obs = ("FINISH ABGELEHNT (Check-Modus) — du hast deine Arbeit seit der "
-                       "letzten Aenderung nicht ausgefuehrt. Pruefe sie jetzt real mit "
-                       "run: 1) Abhaengigkeiten installieren, 2) Syntax/Build pruefen, "
-                       "3) Dienste mit \"background\":true starten und per curl testen "
-                       "(auch Fehlerfaelle wie unbekannte IDs), 4) Fehler beheben. "
-                       "Gib erst dann wieder finish aus.")
+                if CHECK_PLAN:
+                    obs = ("FINISH ABGELEHNT (Check-Modus) — du hast deine Arbeit seit "
+                           "der letzten Aenderung nicht ausgefuehrt. Das sind DEINE "
+                           "EIGENEN Pruefschritte aus deinem Plan:\n" + CHECK_PLAN +
+                           "\nHast du WIRKLICH JEDEN davon ausgefuehrt (nicht nur einen "
+                           "Teil, z.B. nur das Backend)? Fuehre alle fehlenden jetzt "
+                           "nach, behebe was dabei auffaellt, und gib erst dann wieder "
+                           "finish aus.")
+                else:
+                    obs = ("FINISH ABGELEHNT (Check-Modus) — du hast deine Arbeit seit "
+                           "der letzten Aenderung nicht ausgefuehrt. Pruefe sie jetzt "
+                           "real mit run: 1) Abhaengigkeiten installieren, 2) Syntax/"
+                           "Build pruefen, 3) Dienste mit \"background\":true starten "
+                           "und per curl testen (auch Fehlerfaelle wie unbekannte IDs), "
+                           "4) Fehler beheben. Gib erst dann wieder finish aus.")
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
