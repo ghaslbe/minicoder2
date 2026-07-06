@@ -66,6 +66,7 @@ MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 VALIDATE = True            # nach dem Schreiben bekannte Dateitypen pruefen
 GIT_ROLLBACK = False       # nur True, wenn git installiert + sauberes Repo (in main gesetzt)
 TOUCHED = []               # von mc geschriebene/geaenderte Pfade (fuer Rollback)
+READ_FILES = set()         # in diesem Lauf per read_file gelesene Pfade (normpath)
 CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/Prosa-Ende)
 WRITE_HISTORY = {}         # Pfad -> (letzter Inhalt, Anzahl fast identischer Wiederholungen)
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
@@ -98,13 +99,15 @@ DANGEROUS_RUN = re.compile(
     r"|dd\s+.*of=/dev/")
 SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
 FETCH_URL_RE = re.compile(r"\b(curl|wget)\b[^\n]*https?://", re.IGNORECASE)
-FETCH_ANALYSIS_MAX_CHARS = 20000  # grosszuegig ggue. MAX_OUTPUT_CHARS, aber
-# vorsichtig gewaehlt: viele lokale Server laden Modelle mit kleinerem
-# Kontextfenster als deren theoretisches Maximum (z.B. 8192 statt 262144
-# Token) - bei Ueberschreitung kommt keine Fehlermeldung, sondern eine LEERE
-# Antwort. summarize_large_fetch() faengt das zusaetzlich mit einem
-# automatischen Rueckfall auf die Haelfte ab.
+FETCH_ANALYSIS_MAX_CHARS = 20000  # Fallback-Wert, falls das GELADENE
+# Kontextfenster nicht abfragbar ist (siehe loaded_context_chars): viele
+# lokale Server laden Modelle mit kleinerem Kontextfenster als deren
+# theoretisches Maximum (z.B. 8192 statt 262144 Token) - bei Ueberschreitung
+# kommt keine Fehlermeldung, sondern eine LEERE Antwort.
+# summarize_large_fetch() faengt das zusaetzlich mit einem automatischen
+# Rueckfall auf die Haelfte ab.
 CURRENT_MODEL = ""  # von run_task() gesetzt, fuer isolierte Sub-Calls in do_run()
+_LOADED_CTX_CACHE = {}  # model -> ermitteltes Zeichen-Limit (einmal pro Lauf abgefragt)
 
 # Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
 # Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
@@ -721,9 +724,52 @@ def prune_messages(messages):
 # --------------------------- Tool-Ausfuehrung ------------------------------
 
 def truncate(s):
-    if len(s) > MAX_OUTPUT_CHARS:
-        return s[:MAX_OUTPUT_CHARS] + f"\n...[gekuerzt, {len(s) - MAX_OUTPUT_CHARS} Zeichen ausgelassen]"
-    return s
+    """Kuerzt lange Tool-Ausgaben — zeigt KOPF UND ENDE statt nur den Kopf.
+    Grund (real beobachtet): bei Build-Fehlern (npm run build, Compiler)
+    steht die eigentliche Fehlermeldung fast immer am ENDE der Ausgabe;
+    eine reine Kopf-Kuerzung liefert dem Modell dann 8000 Zeichen
+    erfolgreicher Zwischenmeldungen, aber nie den Fehler selbst."""
+    if len(s) <= MAX_OUTPUT_CHARS:
+        return s
+    head = int(MAX_OUTPUT_CHARS * 0.6)
+    tail = MAX_OUTPUT_CHARS - head
+    cut = len(s) - head - tail
+    return (s[:head] + f"\n...[{cut} Zeichen in der MITTE ausgelassen — Anfang und Ende bleiben]...\n"
+            + s[-tail:])
+
+
+def loaded_context_chars(model):
+    """Ermittelt ein sicheres Zeichen-Limit fuer den isolierten Analyse-Aufruf,
+    indem das TATSAECHLICH GELADENE Kontextfenster des Modells abgefragt wird
+    (LM Studios /api/v0/models liefert loaded_context_length getrennt vom
+    theoretischen max_context_length). Real beobachtet: das Modell hatte
+    262144 Token Maximum, war aber nur mit 8192 geladen — ein zu grosser
+    Prompt lieferte dann eine stillschweigend LEERE Antwort statt eines
+    Fehlers. Umrechnung bewusst konservativ (~1.8 Zeichen/Token nach Abzug
+    einer Reserve fuer Prompt-Text und Antwort), kalibriert am beobachteten
+    Fall: bei 8192 Token geladen scheiterten 20000 Zeichen, 10000 gingen.
+    Nicht-LM-Studio-Server (z.B. Ollama) haben den Endpunkt nicht — dann
+    greift der Fallback FETCH_ANALYSIS_MAX_CHARS samt Halbierungs-Retry."""
+    if model in _LOADED_CTX_CACHE:
+        return _LOADED_CTX_CACHE[model]
+    limit = FETCH_ANALYSIS_MAX_CHARS
+    try:
+        base = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+        req = urllib.request.Request(base + "/api/v0/models")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        for m in data.get("data", []):
+            if m.get("id") == model:
+                ctx = m.get("loaded_context_length") or 0
+                if ctx > 2000:
+                    limit = max(4000, int((ctx - 1700) * 1.8))
+                    info(f"Geladenes Kontextfenster: {ctx} Token -> "
+                         f"Analyse-Limit {limit} Zeichen.")
+                break
+    except Exception:
+        pass  # kein LM Studio / nicht erreichbar -> Fallback-Wert behalten
+    _LOADED_CTX_CACHE[model] = limit
+    return limit
 
 
 def summarize_large_fetch(raw_output, model):
@@ -762,13 +808,14 @@ def summarize_large_fetch(raw_output, model):
 
     print(f"{C.DIM}(Große Abrufausgabe erkannt — analysiere in einem separaten, "
           f"isolierten Aufruf statt sie in den Verlauf zu uebernehmen …){C.RESET}")
+    limit = loaded_context_chars(model)
     try:
-        summary = ask_for(FETCH_ANALYSIS_MAX_CHARS)
+        summary = ask_for(limit)
         if not summary.strip():
             print(f"{C.DIM}(Leere Antwort — vermutlich reicht das GELADENE "
                   f"Kontextfenster des Modells nicht, versuche mit der Haelfte "
                   f"erneut …){C.RESET}")
-            summary = ask_for(FETCH_ANALYSIS_MAX_CHARS // 2)
+            summary = ask_for(limit // 2)
     except Exception as e:
         return f"FEHLER bei der Analyse der grossen Abrufausgabe: {e}"
     if not summary.strip():
@@ -798,9 +845,31 @@ def do_read_file(args):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
+        READ_FILES.add(os.path.normpath(path))
         return True, f"Inhalt von {path} ({len(content)} Zeichen):\n{truncate(content)}"
     except Exception as e:
         return False, f"FEHLER beim Lesen von {path}: {e}"
+
+
+def _blind_overwrite_warning(path):
+    """Warnt, wenn eine BEREITS EXISTIERENDE Datei komplett ueberschrieben
+    wird, die in diesem Lauf weder gelesen noch selbst angelegt wurde. Zwei
+    real beobachtete Fehlerklassen haben genau dieses Muster: (1) Datenverlust,
+    weil write_file versehentlich statt read_file benutzt wurde, und (2)
+    Scope-Creep, bei dem eine nicht zur Aufgabe gehoerende Datei (index.html)
+    ungefragt komplett neu geschrieben und dabei Bestandsfunktionalitaet
+    zerstoert wurde. Kein Blocker — nur eine Rueckmeldung, auf die das Modell
+    im naechsten Schritt reagieren kann."""
+    norm = os.path.normpath(path)
+    if not os.path.isfile(norm):
+        return ""  # neue Datei — unkritisch
+    if norm in READ_FILES or norm in {os.path.normpath(p) for p in TOUCHED}:
+        return ""  # Inhalt bekannt (gelesen) oder in diesem Lauf selbst geschrieben
+    return (f"\nACHTUNG: {path} existierte bereits, wurde in diesem Lauf aber NIE "
+            f"mit read_file gelesen — du hast den alten Inhalt ueberschrieben, ohne "
+            f"ihn zu kennen. Falls die Datei nicht Teil deiner Aufgabe war oder "
+            f"Funktionalitaet enthielt: pruefe mit git diff, was verloren ging, und "
+            f"stelle Noetiges wieder her.")
 
 
 def _shrink_warning(path, new_len):
@@ -859,7 +928,8 @@ def do_write_file(args):
     print(f"{C.DIM}{preview}{C.RESET}")
     if not confirm(f"Datei '{path}' schreiben?"):
         return False, "Abgelehnt durch den Benutzer."
-    warn = _shrink_warning(path, len(content)) + _check_repetition(path, content)
+    warn = (_shrink_warning(path, len(content)) + _check_repetition(path, content)
+            + _blind_overwrite_warning(path))
     try:
         d = os.path.dirname(path)
         if d:
@@ -897,7 +967,8 @@ def do_write_files(args):
         if not path:
             errors.append("(Eintrag ohne 'path' uebersprungen)")
             continue
-        warn = _shrink_warning(path, len(content)) + _check_repetition(path, content)
+        warn = (_shrink_warning(path, len(content)) + _check_repetition(path, content)
+                + _blind_overwrite_warning(path))
         try:
             d = os.path.dirname(path)
             if d:
@@ -1241,6 +1312,11 @@ Regeln:
   python -c "import x; print(dir(x))"). Ein API-Endpunkt laesst sich mit
   run + curl direkt testen. Was du nachgeschlagen hast, kann nicht halluziniert
   sein.
+- PORTWAHL fuer Server/Dienste: meide Port 5000 (auf macOS oft durch AirPlay
+  belegt) sowie Ports, die Browser als "unsafe" blockieren und NIE ansprechen,
+  egal ob dort ein Server lauscht (u.a. 5060/5061 SIP, 6000 X11, 6665-6669 IRC
+  -> im Browser ERR_UNSAFE_PORT, obwohl curl funktioniert). Sichere Wahl:
+  5010-5059, 5065-5099, 8000-8999.
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -1557,6 +1633,7 @@ def run_task(messages, model):
     CURRENT_MODEL = model
     finish_rejects = 0
     parse_error_streak = 0
+    check_probe_done = False
     for step in range(1, MAX_STEPS + 1):
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
@@ -1592,16 +1669,26 @@ def run_task(messages, model):
                 # dasselbe falsche '\>' o.ae. wird trotz eigener Korrektur-
                 # Ankuendigung im Text identisch wiederholt). Der generische
                 # Hinweis allein loest das nicht — eine konkrete Ausweich-
-                # strategie schon: kuerzerer/simplerer Ausschnitt oder ganz
-                # andere Aktion (write_file/--fence) statt derselben JSON-
-                # Formulierung erneut zu versuchen.
+                # strategie schon. Der Parser versteht das Fence-Format IMMER
+                # (unabhaengig vom --fence-Flag), aber das Modell kennt es nur,
+                # wenn der System-Prompt es lehrt — deshalb hier das Format
+                # konkret VORFUEHREN statt nur darauf zu verweisen: damit
+                # entfaellt das JSON-Escaping des Dateiinhalts komplett, was
+                # genau die Fehlerquelle ist.
                 obs = (f"FEHLER: dein action-JSON ist jetzt {parse_error_streak}x in Folge "
                        f"ungueltig ({action['_parse_error']}), vermutlich wegen eines "
-                       f"Escaping-Problems (z.B. ueberfluessiges '\\' vor einem Zeichen). "
-                       f"Wiederhole NICHT denselben Text — waehle einen KUERZEREN, "
-                       f"einfacheren Ausschnitt ohne Sonderzeichen wie < > \" \\ fuer "
-                       f"'old'/'new', oder nutze stattdessen write_file mit dem "
-                       f"kompletten neuen Dateiinhalt.")
+                       f"Escaping-Problems. Wiederhole NICHT denselben Text. BESSERE "
+                       f"ALTERNATIVE: lass das 'content'-Feld im JSON komplett weg und "
+                       f"liefere den Dateiinhalt ROH (ohne jedes Escaping) in einem "
+                       f"separaten ```content Block direkt dahinter — so:\n"
+                       f"```action\n"
+                       f"{{\"action\":\"write_file\",\"path\":\"datei.txt\"}}\n"
+                       f"```\n"
+                       f"```content\n"
+                       f"hier der komplette Dateiinhalt, roh, ohne Escaping\n"
+                       f"```\n"
+                       f"Das funktioniert auch fuer write_files (je Datei ein "
+                       f"```content Block, in derselben Reihenfolge wie die Pfade).")
             else:
                 obs = (f"FEHLER: dein action-JSON war ungueltig ({action['_parse_error']}). "
                        f"Bitte gib einen einzelnen validen ```action``` Block aus.")
@@ -1669,6 +1756,27 @@ def run_task(messages, model):
                            "und per curl testen (auch Fehlerfaelle wie unbekannte IDs), "
                            "4) Fehler beheben. Gib erst dann wieder finish aus.")
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+            # Ohne Plan-Phase gibt es keine selbst genannten Pruefschritte, an
+            # denen sich das Modell messen laesst — dann genuegte dem Gate
+            # bisher EIN beliebiger erfolgreicher run (real beobachtet: ein
+            # einziger ast.parse-Syntaxcheck, waehrend die im Prompt verlangten
+            # funktionalen curl-Tests nie liefen). Einmalige Nachfrage: das
+            # Modell muss pro Aufgabenteil benennen, WAS es real ausgefuehrt
+            # hat, und Fehlendes nachholen. Kostet maximal einen Umlauf.
+            if CHECK and not CHECK_PLAN and not check_probe_done:
+                check_probe_done = True
+                obs = ("FINISH-NACHFRAGE (Check-Modus) — bevor ich das finish "
+                       "akzeptiere: Liste kurz auf, (1) aus welchen Teilen die "
+                       "Aufgabe besteht (z.B. Backend, Frontend/Build) und "
+                       "(2) welches Kommando du fuer JEDEN dieser Teile real "
+                       "ausgefuehrt hast und was dabei herauskam. Ein reiner "
+                       "Syntax-Check zaehlt nicht als Funktionstest. Fehlt fuer "
+                       "einen Teil die echte Pruefung (z.B. Frontend nie gebaut, "
+                       "Endpunkt nie per curl getestet), fuehre sie JETZT aus und "
+                       "behebe, was auffaellt. Danach gib erneut finish aus.")
+                print(f"{C.YELLOW}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
             if missing or still_bad:
