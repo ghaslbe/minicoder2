@@ -21,7 +21,7 @@ function App() {
     formData.append('image', file);
 
     try {
-      const response = await fetch('http://localhost:5060/api/analyze', {
+      const response = await fetch('http://localhost:5065/api/analyze', {
         method: 'POST',
         body: formData,
       });

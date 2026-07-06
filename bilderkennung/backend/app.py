@@ -11,7 +11,7 @@ CORS(app)
 # Konfiguration über Umgebungsvariablen mit Fallbacks
 BASE_URL = os.environ.get('BILDERKENNUNG_BASE_URL', 'http://192.168.178.191:1234/v1')
 MODEL_NAME = os.environ.get('BILDERKENNUNG_MODEL', 'gemma-4-26b-a4b-it@mxfp4')
-PORT = 5060
+PORT = 5065  # 5060 ist SIP-Standardport, wird von Chrome als "unsafe port" blockiert (ERR_UNSAFE_PORT)
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_image():
