@@ -2509,6 +2509,65 @@ Sperrliste im Hinterkopf behalten — u. a. 5060/5061 (SIP), 6000 (X11),
 6665–6669 (IRC). Ein `curl`-Test allein reicht bei browserbasierten Apps
 nicht aus, um das zu erkennen.
 
+## 12. Die Ernte: sechs `mc.py`-Verbesserungen aus den gesammelten Lektionen
+
+Zum Abschluss die Frage: Was lässt sich aus allen Fehlschlägen der
+Testtage noch ins Werkzeug zurückspielen? Sechs Verbesserungen, jede
+direkt auf einen real beobachteten Vorfall zurückführbar — keine
+theoretischen Features:
+
+**1. `truncate()` zeigt Kopf UND Ende** (60/40 statt nur die ersten 8000
+Zeichen). Auslöser: Bei `npm run build`-Fehlern steht die eigentliche
+Fehlermeldung fast immer am **Ende** der Ausgabe — genau dem Teil, den
+die bisherige Kürzung abschnitt. Das Modell sah 8000 Zeichen erfolgreicher
+Zwischenmeldungen, aber nie den Fehler.
+
+**2. Warnung bei blindem Überschreiben.** Ein neues `READ_FILES`-Set
+merkt sich, welche Dateien im Lauf gelesen wurden. Überschreibt
+`write_file` eine existierende Datei, die weder gelesen noch im Lauf
+selbst angelegt wurde, gibt es eine deutliche Warnung. Deckt **zwei**
+beobachtete Fehlerklassen mit einem Mechanismus ab: den Datenverlust aus
+Vibelove-Etappe 1 (`write_files` versehentlich statt `read_file`) und den
+Scope-Creep aus Etappe 3 (`index.html` ungefragt komplett neu geschrieben,
+Vorschau-iframe dabei zerstört).
+
+**3. Fence-Format wird bei Parse-Fehler-Eskalation konkret vorgeführt.**
+Der Parser versteht das ```content-Blockformat schon immer — aber das
+Modell kannte es nur, wenn `--fence` gesetzt war. Ab dem 2. Parse-Fehler
+in Folge zeigt die Fehlermeldung jetzt das komplette Format als Beispiel
+(action-JSON ohne `content`-Feld, Inhalt roh im Block dahinter). Hätte
+den 28-Schritte-Hänger beim Neurawork-Nachbau (große `App.jsx`, immer
+derselbe JSON-Escaping-Fehler) vermutlich im 3. Schritt aufgelöst.
+
+**4. Geladenes Kontextfenster wird abgefragt statt geraten.**
+`loaded_context_chars()` holt einmal pro Lauf LM Studios
+`loaded_context_length` (via `/api/v0/models`) und leitet daraus das
+Limit für die isolierte Fetch-Analyse ab. Kalibriert am beobachteten
+Fall: 8192 Token geladen → Formel liefert 11685 Zeichen (damals
+scheiterten 20000 still, 10000 gingen). Live gegen die M4 Pro bestätigt.
+Bei Servern ohne den Endpunkt (Ollama) greift der bisherige Fallback.
+
+**5. Portwahl-Wissen im System-Prompt.** Ein Absatz warnt jetzt vor Port
+5000 (macOS AirPlay) und Browser-Sperrlisten-Ports (5060/5061, 6000,
+6665–6669 → `ERR_UNSAFE_PORT` trotz funktionierendem `curl`) und nennt
+sichere Bereiche. Beide Fälle kosteten real Zeit — der AirPlay-Konflikt
+mehrfach, der SIP-Port produzierte einen erst am Folgetag entdeckten Bug.
+
+**6. Check-Probe, wenn `--check` ohne `--plan` läuft.** Die beobachtete
+Schwäche: ohne Plan-Phase genügte dem Finish-Gate ein einziger
+erfolgreicher `run` — real war das einmal nur ein `ast.parse`-Syntaxcheck,
+während die verlangten funktionalen Tests nie liefen. Jetzt stellt das
+Gate beim ersten `finish` genau eine Nachfrage: pro Aufgabenteil benennen,
+welches Kommando real lief („ein reiner Syntax-Check zählt nicht als
+Funktionstest"), Fehlendes nachholen. Kostet maximal einen Umlauf und
+entfällt, wenn Prüfschritte aus der Plan-Phase existieren.
+
+Alle sechs isoliert getestet (u. a. vier Blind-Overwrite-Szenarien,
+Check-Probe mit und ohne Plan, Kontextfenster-Abfrage live inkl. Cache)
+plus ein End-to-End-Smoke-Test über die echte CLI. Damit fließt jede
+größere Lektion der Testtage dauerhaft ins Werkzeug zurück — unabhängig
+von Vibelove, Bilderkennung oder dem konkreten Modell.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
