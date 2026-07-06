@@ -2466,7 +2466,48 @@ python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
 ```
 
 Vollständiger Prompt: [`prompt_bilderkennung.txt`](prompt_bilderkennung.txt).
-Lauf gestartet, Ergebnis folgt.
+
+### 11.1 Ergebnis: Vision-App gebaut — und ein Chrome-Sicherheitsdetail entdeckt
+
+**Bauverlauf** (417 s, `--plan --check`): löste unterwegs selbstständig
+einen echten Port-Konflikt (verwaister Prozess von einem vorherigen
+Testversuch gefunden per `lsof`, beendet, neu gestartet) — keine
+Wiederholungsschleifen, keine Parse-Fehler.
+
+**Code-Review bestanden:** `backend/app.py` nutzt exakt das vorgegebene
+OpenAI-Vision-Multimodalformat (`content`-Array mit `text`- und
+`image_url`-Eintrag, Base64-Bild mit korrekt ermitteltem MIME-Typ,
+großzügiger 120s-Timeout). `frontend/App.jsx` löst die Analyse automatisch
+beim Datei-Upload aus und setzt bei einem neuen Bild Beschreibung/Fehler
+sauber zurück, bevor die neue Anfrage startet.
+
+**Live verifiziert (per `curl`):** Ein selbst erstelltes Testbild (Himmel,
+Sonne, Wiese, Haus-Silhouette) lieferte eine echte, detaillierte und
+korrekte Beschreibung zurück — Farben, Formen, Anordnung, sogar der Stil
+("Flat Design") wurden richtig erkannt. Zu diesem Zeitpunkt: Läuft
+scheinbar einwandfrei.
+
+**Am nächsten Tag meldete der Nutzer im echten Browser einen Fehler:**
+„Failed to fetch", später präzisiert zu `net::ERR_UNSAFE_PORT`. Der
+Grund: **Backend-Port 5060 ist der SIP-Standardport** (Telefonie-Protokoll)
+und steht auf einer fest einprogrammierten Sperrliste „unsicherer" Ports,
+die Chrome aus Sicherheitsgründen (Schutz vor Cross-Protocol-Angriffen)
+grundsätzlich nie anfasst — unabhängig davon, ob der Server dort real
+lauscht. **`curl` kennt diese Beschränkung nicht**, weshalb meine eigene
+Verifikation während des Baus fälschlich als vollständig erfolgreich galt
+— ein blinder Fleck rein browserbasierter Fehlerklassen, den reines
+Kommandozeilen-Testen strukturell nicht aufdecken kann.
+
+**Fix:** Port 5060 → **5065** (nicht auf der Sperrliste), sowohl im
+Backend als auch in der Frontend-Fetch-URL. Vite übernahm die Änderung
+automatisch per Hot-Reload, kein Neustart nötig. Live erneut bestätigt:
+CORS-Preflight und Requests funktionieren auf dem neuen Port einwandfrei.
+
+**Lektion für künftige Portwahl bei browserbasierten Tools:** Neben Port
+5000 (macOS AirPlay, schon oft heute aufgetaucht) jetzt auch Chromes feste
+Sperrliste im Hinterkopf behalten — u. a. 5060/5061 (SIP), 6000 (X11),
+6665–6669 (IRC). Ein `curl`-Test allein reicht bei browserbasierten Apps
+nicht aus, um das zu erkennen.
 
 ---
 
