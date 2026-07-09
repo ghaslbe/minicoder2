@@ -409,17 +409,45 @@ def _chat_once(messages, model):
         body = e.read().decode("utf-8", "replace")[:300]
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body}")
     except NET_ERRORS as e:
-        raise SystemExit(net_error(getattr(e, "reason", e)))
+        if parts:
+            # Mitten im Stream abgerissen: das Vorhandene zurueckgeben —
+            # die Truncation-Logik in chat_stream fordert die Fortsetzung an
+            # (das eigene finish_reason stellt sicher, dass auch abgerissene
+            # Prosa OHNE offenen Fence als unvollstaendig gilt).
+            return "".join(parts), "net_abort"
+        raise NetRetryError(net_error(getattr(e, "reason", e)))
     finally:
         spin.__exit__()  # Spinner-Thread immer beenden (auch bei Fehler)
     return "".join(parts), finish_reason
+
+
+class NetRetryError(Exception):
+    """Netzwerkfehler VOR den ersten Antwort-Bytes — transient und gefahrlos
+    wiederholbar (es wurde noch nichts verarbeitet). Real beobachtet: ein
+    einzelner Read-Timeout beim allerersten Request hat sonst den kompletten
+    Lauf beendet, obwohl der Endpoint Sekunden spaeter wieder da war
+    (LM Studio laedt z.B. gerade ein Modell)."""
+
+
+def _chat_once_retry(messages, model, attempts=3):
+    for attempt in range(1, attempts + 1):
+        try:
+            return _chat_once(messages, model)
+        except NetRetryError as e:
+            if attempt == attempts:
+                raise SystemExit(str(e))
+            wait = 10 * attempt
+            print(f"\n{C.YELLOW}⚠ Netzwerkfehler vor Antwortbeginn (Versuch "
+                  f"{attempt}/{attempts}) — neuer Versuch in {wait}s … "
+                  f"(Endpoint evtl. kurz ueberlastet/Modell laedt){C.RESET}")
+            time.sleep(wait)
 
 
 def _looks_truncated(text, finish_reason):
     """Heuristik: wurde die Antwort abgeschnitten? Zwei unabhaengige Signale —
     das offizielle finish_reason und ein Strukturcheck auf einen nicht
     geschlossenen ```action```-Block."""
-    if finish_reason == "length":
+    if finish_reason in ("length", "net_abort"):
         return True
     # Strukturcheck: LETZTER oeffnender ```action/```content-Fence ohne
     # schliessendes ``` danach — faengt auch Proxy-Abbrueche mitten im Block.
@@ -435,7 +463,7 @@ def chat_stream(messages, model):
     """Wie _chat_once, aber faengt abgeschnittene Antworten ab: bei Truncation
     wird das Modell automatisch um Fortsetzung gebeten und der Text zusammengefuegt
     — modell- und groessenunabhaengig, ohne kaputtes JSON zu flicken."""
-    text, fr = _chat_once(messages, model)
+    text, fr = _chat_once_retry(messages, model)
     cont = 0
     while _looks_truncated(text, fr) and cont < MAX_CONTINUATIONS:
         cont += 1
@@ -444,6 +472,8 @@ def chat_stream(messages, model):
         # erkennt, ob ein Token-Limit oder ein Verbindungs-/Proxy-Abbruch vorliegt.
         if fr == "length":
             grund = "Token-Limit (Ausgabe gekappt)"
+        elif fr == "net_abort":
+            grund = "Netzwerk/Proxy hat den Stream mittendrin abgerissen"
         elif fr is None:
             grund = ("Verbindung/Proxy hat den Stream abgebrochen — ggf. "
                      "Proxy-/Netzwerk-Timeout erhoehen")
@@ -458,7 +488,7 @@ def chat_stream(messages, model):
                 "abgebrochenen Stelle fort — gib NUR die Fortsetzung aus, ohne "
                 "Wiederholung, ohne Einleitung, ohne den bereits gesendeten Teil "
                 "zu erneut zu schreiben."}]
-        more, fr = _chat_once(cont_msgs, model)
+        more, fr = _chat_once_retry(cont_msgs, model)
         text += more
     print()
     log(f"Antwort vollstaendig ({len(text)} Zeichen"
