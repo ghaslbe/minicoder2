@@ -1896,7 +1896,27 @@ def run_task(messages, model):
     check_probe_done = False
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
+    budget_warned = False
     for step in range(1, MAX_STEPS + 1):
+        # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
+        # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
+        # 15 Schritten fertig, dann 35 Schritte Verifikations-Perfektionismus
+        # bis zum harten Abbruch OHNE finish — ein sauberes finish nach dem
+        # Wichtigsten waere besser gewesen). Der Hinweis wird an die letzte
+        # user-Nachricht angehaengt statt als eigene Message (zwei user-Rollen
+        # hintereinander vertragen manche Chat-Templates nicht).
+        remaining = MAX_STEPS - step + 1
+        if (not budget_warned and remaining <= 5
+                and messages and messages[-1]["role"] == "user"):
+            budget_warned = True
+            messages[-1]["content"] += (
+                f"\n\n[BUDGET-HINWEIS VOM TOOL] Dir bleiben nur noch {remaining} "
+                f"Schritte, danach wird der Lauf HART abgebrochen (ohne finish, "
+                f"unfertig). Bringe die Aufgabe JETZT zum Abschluss: erledige nur "
+                f"noch das wichtigste Fehlende, fang nichts Neues mehr an, und "
+                f"gib dann finish mit einer ehrlichen Zusammenfassung aus (offen "
+                f"Gebliebenes darin benennen).")
+            print(f"{C.YELLOW}⚠ Budget-Hinweis: noch {remaining} Schritte.{C.RESET}")
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         reply = chat_stream(messages, model)
