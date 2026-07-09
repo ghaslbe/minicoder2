@@ -264,6 +264,42 @@ def test_prune_kuerzt_alte_schritte_und_laesst_neue():
     assert msgs[0]["content"] == "S"                  # System-Prompt: nie
 
 
+# --------------------------- JSX/TSX-Validierung ----------------------------
+
+def _fake_checker(tmpdir, exit_code, message=""):
+    """Legt eine gefaelschte node_modules/.bin/esbuild an (Shell-Skript)."""
+    bindir = os.path.join(tmpdir, "node_modules", ".bin")
+    os.makedirs(bindir, exist_ok=True)
+    p = os.path.join(bindir, "esbuild")
+    with open(p, "w") as f:
+        f.write(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
+    os.chmod(p, 0o755)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Shell-Skript-Fake")
+def test_jsx_validierung_meldet_parse_fehler(tmp_path):
+    _fake_checker(str(tmp_path), 1, "error: Adjacent JSX elements")
+    with open("App.jsx", "w") as f:
+        f.write("kaputt")
+    status, msg = mc.validate_path("App.jsx")
+    assert status == "bad"
+    assert "Adjacent JSX" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Shell-Skript-Fake")
+def test_jsx_validierung_ok_bei_exit_0(tmp_path):
+    _fake_checker(str(tmp_path), 0)
+    with open("App.jsx", "w") as f:
+        f.write("export default 1")
+    assert mc.validate_path("App.jsx")[0] == "ok"
+
+
+def test_jsx_validierung_skip_ohne_checker():
+    with open("App.jsx", "w") as f:
+        f.write("egal")
+    assert mc.validate_path("App.jsx")[0] == "skip"
+
+
 # ------------------------ Prozess-/Port-Bewusstsein -------------------------
 
 @pytest.mark.parametrize("out", [

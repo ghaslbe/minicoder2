@@ -1933,6 +1933,25 @@ def git_auto_init():
     return True, "ok"
 
 
+def _find_js_checker(path):
+    """Sucht projektlokal (node_modules/.bin, vom Dateiverzeichnis aufwaerts)
+    einen Syntax-Pruefer fuer JSX/TSX: esbuild bevorzugt (reiner Parser),
+    sonst oxlint (bringt Vite 7+ mit; Warnungen lassen den Exit-Code bei 0,
+    Parse-Fehler nicht). Nichts gefunden -> Validierung wird uebersprungen."""
+    d = os.path.dirname(os.path.abspath(path))
+    for _ in range(6):
+        for name in ("esbuild", "oxlint"):
+            for suffix in ("", ".cmd"):
+                cand = os.path.join(d, "node_modules", ".bin", name + suffix)
+                if os.path.isfile(cand):
+                    return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return ""
+
+
 def validate_path(path):
     """Validiert eine Datei nach Typ. Gibt (status, meldung) zurueck, wobei status
     'ok' | 'bad' | 'skip' ist. Unbekannte/nachsichtige Typen -> 'skip'."""
@@ -1970,6 +1989,25 @@ def validate_path(path):
         if p.returncode == 0:
             return "ok", ""
         return "bad", f"PHP-Lint: {((p.stdout or '')+(p.stderr or '')).strip()[:200]}"
+    if ext in (".jsx", ".tsx"):
+        # Real beobachtet: ein edit_file setzte ein ueberzaehliges </div> in
+        # eine React-Komponente — Vite lieferte nur noch die Fehler-Overlay-
+        # Seite, aber das finish ging durch, weil .jsx nie geprueft wurde.
+        checker = _find_js_checker(path)
+        if not checker:
+            return "skip", ""
+        try:
+            p = subprocess.run(f'"{checker}" "{os.path.abspath(path)}"',
+                               shell=True, capture_output=True, text=True,
+                               timeout=30)
+        except Exception:
+            return "skip", ""
+        if p.returncode == 0:
+            return "ok", ""
+        err = ((p.stdout or "") + (p.stderr or "")).strip()
+        lines = [l for l in err.splitlines() if "error" in l.lower()]
+        return "bad", ("JSX/TSX-Fehler: "
+                       + " | ".join((lines or err.splitlines())[:3])[:300])
     return "skip", ""
 
 
