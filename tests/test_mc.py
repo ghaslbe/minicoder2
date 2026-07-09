@@ -300,6 +300,34 @@ def test_jsx_validierung_skip_ohne_checker():
     assert mc.validate_path("App.jsx")[0] == "skip"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Shell-Skript-Fake")
+def test_jsx_warnungen_als_nicht_blockierender_hinweis(tmp_path):
+    _fake_checker(str(tmp_path), 0, "warning eslint(no-unused-vars): 'setSortOrder' never used")
+    with open("App.jsx", "w") as f:
+        f.write("export default 1")
+    status, msg = mc.validate_path("App.jsx")
+    assert status == "ok" and "setSortOrder" in msg
+    out = mc.validate_written(["App.jsx"])
+    assert "nicht blockierend" in out and "setSortOrder" in out
+
+
+def test_resolve_project_file_suffix():
+    os.makedirs("frontend/src")
+    with open("frontend/src/App.jsx", "w") as f:
+        f.write("x")
+    assert mc._resolve_project_file("src/App.jsx") == os.path.normpath("frontend/src/App.jsx")
+    assert mc._resolve_project_file("frontend/src/App.jsx") == "frontend/src/App.jsx"
+    assert mc._resolve_project_file("gibtsnicht/App.jsx") is None
+
+
+def test_resolve_project_file_mehrdeutig_gibt_none():
+    os.makedirs("a/src"); os.makedirs("b/src")
+    for d in ("a", "b"):
+        with open(f"{d}/src/App.jsx", "w") as f:
+            f.write("x")
+    assert mc._resolve_project_file("src/App.jsx") is None
+
+
 # ------------------------ Prozess-/Port-Bewusstsein -------------------------
 
 @pytest.mark.parametrize("out", [

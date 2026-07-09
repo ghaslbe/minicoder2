@@ -1800,6 +1800,28 @@ def expected_files_from_task(task):
     return out
 
 
+def _resolve_project_file(p):
+    """Loest einen in der Aufgabe genannten Pfad gegen den Projektbaum auf.
+    Existiert er nicht woertlich, wird per SUFFIX gesucht (real beobachtet:
+    der Prompt nannte 'src/App.jsx' relativ zum Frontend-Ordner, die Datei
+    liegt unter 'frontend/src/App.jsx' — der Finish-Check meldete faelschlich
+    'fehlt'). Eindeutiger Treffer -> aufgeloester Pfad, sonst None."""
+    if os.path.isfile(p):
+        return p
+    target = p.replace("\\", "/").lstrip("./")
+    hits = []
+    for dirpath, dirnames, filenames in os.walk("."):
+        dirnames[:] = [d for d in dirnames
+                       if d not in IGNORE_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn).replace("\\", "/").lstrip("./")
+            if full == target or full.endswith("/" + target):
+                hits.append(os.path.normpath(os.path.join(dirpath, fn)))
+                if len(hits) > 1:
+                    return None  # mehrdeutig -> lieber nicht raten
+    return hits[0] if len(hits) == 1 else None
+
+
 # Marker-Dateien, an denen ein BESTEHENDES Projekt erkannt wird (fuer die
 # deterministische Task-Anreicherung beim Start).
 PROJECT_MARKERS = ("package.json", "vite.config.js", "vite.config.ts",
@@ -2002,12 +2024,16 @@ def validate_path(path):
                                timeout=30)
         except Exception:
             return "skip", ""
+        out = ((p.stdout or "") + (p.stderr or "")).strip()
         if p.returncode == 0:
-            return "ok", ""
-        err = ((p.stdout or "") + (p.stderr or "")).strip()
-        lines = [l for l in err.splitlines() if "error" in l.lower()]
+            # Warnungen blockieren nicht, werden aber als Hinweis durchgereicht
+            # (real beobachtet: 'setSortOrder is declared but never used' —
+            # sprich: das Sortier-Feature wurde nie fertig verdrahtet).
+            warns = [l for l in out.splitlines() if "warning" in l.lower()]
+            return "ok", " | ".join(warns[:3])[:300]
+        lines = [l for l in out.splitlines() if "error" in l.lower()]
         return "bad", ("JSX/TSX-Fehler: "
-                       + " | ".join((lines or err.splitlines())[:3])[:300])
+                       + " | ".join((lines or out.splitlines())[:3])[:300])
     return "skip", ""
 
 
@@ -2023,21 +2049,28 @@ def written_paths(name, action):
 
 def validate_written(paths):
     """Validiert die geschriebenen Pfade. Gibt eine Fehlermeldung zurueck, wenn
-    welche ungueltig sind (sonst leerer String)."""
+    welche ungueltig sind; sonst ggf. nicht-blockierende Hinweise (Warnungen
+    des Checkers), sonst leerer String."""
     if not VALIDATE:
         return ""
-    bad = []
+    bad, notes = [], []
     for p in paths:
         if not p or not os.path.isfile(p):
             continue
         status, msg = validate_path(p)
         if status == "bad":
             bad.append(f"  {p}: {msg}")
+        elif status == "ok" and msg:
+            notes.append(f"  {p}: {msg}")
     if bad:
         return ("VALIDIERUNG FEHLGESCHLAGEN — folgende Dateien sind ungueltig und "
                 "muessen korrigiert werden:\n" + "\n".join(bad) +
                 "\nKorrigiere NUR diese Datei(en) (am besten mit edit_file oder einer "
                 "neuen, validen write_file).")
+    if notes:
+        return ("HINWEIS aus der Validierung (nicht blockierend, aber pruefen — "
+                "z.B. deutet eine nie benutzte Variable auf ein halb verdrahtetes "
+                "Feature hin):\n" + "\n".join(notes))
     return ""
 
 
@@ -2226,8 +2259,17 @@ def run_task(messages, model):
             # muessen existieren, geschriebene muessen valide sein. Sonst wird
             # das finish zurueckgewiesen (max. MAX_FINISH_REJECTS mal), damit
             # ein "Prosa-fertig" ohne geschriebene Dateien nicht durchrutscht.
-            missing = [p for p in EXPECTED_FILES if not os.path.isfile(p)]
-            still_bad = [p for p in sorted(set(TOUCHED))
+            # Genannte Pfade per Suffix aufloesen ('src/App.jsx' findet
+            # 'frontend/src/App.jsx') und beim finish MITVALIDIEREN — sonst
+            # kann ein Reparatur-Lauf 'fertig' melden, waehrend die in der
+            # Aufgabe genannte Datei weiterhin kaputt ist (nur GESCHRIEBENE
+            # Dateien wurden bisher geprueft, und die Reparatur kann ja auch
+            # an der falschen Stelle erfolgt sein).
+            resolved = {p: _resolve_project_file(p) for p in EXPECTED_FILES}
+            missing = [p for p, rp in resolved.items() if rp is None]
+            to_check = sorted(set(TOUCHED)
+                              | {rp for rp in resolved.values() if rp})
+            still_bad = [p for p in to_check
                          if os.path.isfile(p) and validate_path(p)[0] == "bad"]
             if (missing or still_bad) and finish_rejects < MAX_FINISH_REJECTS:
                 finish_rejects += 1
