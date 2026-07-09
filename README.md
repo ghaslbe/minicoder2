@@ -131,15 +131,8 @@ python3 mc.py "schreib fizzbuzz.py und führ es aus"   # Prompt direkt mitgeben
 python3 mc.py --model qwen3-coder:30b "..."     # anderes Modell
 python3 mc.py --base-url http://server:11434/v1 "..."  # anderer Server
 python3 mc.py --list-models                      # Modelle des Servers auflisten
-python3 mc.py --file=index.html "modernisiere das Layout"  # Datei in den Kontext
 python3 mc.py --yes "..."                        # ohne Rückfragen (Vorsicht!)
 ```
-
-**Datei mitgeben:** `--file=PFAD` liest die Datei und legt ihren Inhalt direkt in
-den Kontext — der Agent „sieht" sie sofort, ohne erst `read_file` aufzurufen.
-Mehrfach angebbar (`--file=a.py --file=b.json`); Windows-Pfade wie
-`--file=C:/projekt/seite.html` funktionieren. Praktisch für „schau dir die an
-und …".
 
 ### `mc` getrennt vom Projekt betreiben (empfohlen)
 
@@ -174,18 +167,6 @@ alias mc='python3 ~/tools/mc.py'
 # danach z.B.:  mc --dir ~/code/website "füge eine Kontaktseite hinzu"
 ```
 
-**Externe Vorlage einbeziehen:** `--file`-Pfade werden **vor** dem Wechsel ins
-Zielverzeichnis aufgelöst — du kannst also eine Datei von *außerhalb* des Projekts
-als Vorlage mitgeben:
-
-```bash
-mc --dir ~/code/website --file ~/Desktop/entwurf.html \
-   "bau die Startseite nach dieser Vorlage um"
-```
-
-So bleibt das Werkzeug sauber getrennt: `mc.py` an einem Ort, das Projekt woanders,
-eine Vorlage ggf. von einem dritten Ort.
-
 **Prompt mitgeben:** alles nach den Optionen wird als Aufgabe genommen
 (`python3 mc.py "deine aufgabe"`). Ohne Prompt startet der interaktive Modus —
 dort beendet `exit`, `quit` oder `Ctrl-D` die Sitzung.
@@ -209,12 +190,11 @@ Ollama gibt es keine Preise → nur die IDs.
 | `--list-models`  | Verfügbare Modelle des Servers anzeigen und beenden   |
 | `--max-steps N`  | Max. Agenten-Schritte pro Aufgabe (Default 40)        |
 | `--dir`, `-C PFAD` | Zielverzeichnis, in dem gearbeitet wird (statt cwd) |
-| `--file PFAD`    | Datei(en) gleich in den Kontext laden (mehrfach möglich) |
 | `--plan`         | Erst Plan zeigen + bestätigen lassen, dann umsetzen   |
 | `--no-validate`  | Validierung geschriebener Dateien abschalten          |
 | `--keep-context N` | Letzte N Schritte bleiben voll im Kontext (Default 3) |
 | `--no-prune`     | Kontext-Beschneidung abschalten (volle Historie)      |
-| `--fence`        | Dateiinhalte als rohe ```content-Blöcke (kein Escaping) |
+| `--no-fence`     | Fence-Modus abschalten → Dateiinhalte als JSON-Strings (Fence ist **Default**) |
 | `--check`        | Selbsttest-Modus: `finish` erst nach echter Ausführung/Prüfung (s. u.) |
 | `--proxy URL`    | HTTP(S)-Proxy (z. B. Zscaler/Firmennetz)              |
 | `--ca-bundle P`  | Pfad zu eigenem CA-Zertifikat (z. B. Zscaler-Root)    |
@@ -379,6 +359,27 @@ python3 mc.py --proxy socks5h://127.0.0.1:9001 --base-url https://server/v1 -v -
 Namen nicht selbst auflösen kann (das war die Ursache von `getaddrinfo failed`).
 Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 
+### Konfig-Datei (`~/.mc.json`) — empfohlen für den Alltag
+
+Statt vor jedem Aufruf Env-Variablen zu setzen (unter Windows besonders
+lästig), stehen die Einstellungen einmal in `~/.mc.json` — danach reicht
+`python mc.py "aufgabe"`:
+
+```json
+{
+  "base_url": "https://dein-endpoint.example/v1",
+  "model": "gemma-4-26b-a4b-it@mxfp4",
+  "headers": {"X-Trace-Id": "abc123"},
+  "check": true,
+  "max_steps": 60
+}
+```
+
+Unterstützte Schlüssel: `base_url`, `model`, `api_key`, `headers` (Objekt oder
+String), `proxy`, `ca_bundle`, `check`, `fence`, `verbose`, `max_steps`,
+`keep_context`. Ein anderer Ort geht per `MC_CONFIG=<pfad>`. **Rangfolge
+überall: CLI-Flag > Env-Variable > Konfig-Datei > eingebauter Default.**
+
 ### Umgebungsvariablen
 
 | Variable        | Default                     | Zweck                                  |
@@ -387,12 +388,13 @@ Unterstützt: `socks5://`, `socks5h://`, `socks4://`, `socks4a://`.
 | `MC_MODEL`      | `gemma-4-26b-a4b-it@mxfp4`  | Default-Modell                         |
 | `MC_API_KEY`    | *(leer)*                    | Optionaler Bearer-Token, falls nötig   |
 | `MC_HEADERS`    | *(leer)*                    | Zusätzliche HTTP-Header pro Request     |
+| `MC_CONFIG`     | `~/.mc.json`                | Pfad zur Konfig-Datei (siehe oben)     |
 | `MC_PROXY`      | *(leer)*                    | HTTP(S)-Proxy (Zscaler/Firmennetz)     |
 | `MC_CA_BUNDLE`  | *(leer)*                    | Pfad zu eigenem CA-Zertifikat          |
 | `MC_VERBOSE`    | *(leer)*                    | `1` = passive Statuszeilen einschalten |
 | `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
 | `MC_KEEP_CONTEXT` | `3`                       | Letzte N Schritte voll im Kontext (Beschneidung) |
-| `MC_FENCE`      | *(leer)*                    | `1` = Fence-Modus für Dateiinhalte |
+| `MC_FENCE`      | `1` (an)                    | `0` = Fence-Modus abschalten (JSON-Strings) |
 
 **Eigene HTTP-Header:** `MC_HEADERS` sendet zusätzliche Header bei jedem Request
 mit (Chat *und* `--list-models`). Mehrere durch `;` oder Zeilenumbruch trennen,
@@ -407,9 +409,9 @@ export MC_HEADERS="X-Trace-Id: abc123; X-App: minicoder"
 | Aktion       | JSON                                                            | Rückfrage |
 |--------------|----------------------------------------------------------------|-----------|
 | `read_file`   | `{"action":"read_file","path":"..."}`                         | nein      |
-| `write_file`  | `{"action":"write_file","path":"...","content":"..."}`        | **ja**    |
+| `write_file`  | `{"action":"write_file","path":"...","content":"...","overwrite":false}` | **ja**    |
 | `write_files` | `{"action":"write_files","files":[{"path":"...","content":"..."}, ...]}` | **ja** |
-| `edit_file`   | `{"action":"edit_file","path":"...","old":"...","new":"..."}` | **ja**    |
+| `edit_file`   | `{"action":"edit_file","path":"...","old":"...","new":"...","replace_all":false}` | **ja**    |
 | `list_dir`    | `{"action":"list_dir","path":"..."}`                          | nein      |
 | `find`        | `{"action":"find","pattern":"..."}`                           | nein      |
 | `grep`        | `{"action":"grep","pattern":"..."}`                           | nein      |
@@ -419,19 +421,38 @@ export MC_HEADERS="X-Trace-Id: abc123; X-App: minicoder"
 
 `run` akzeptiert zwei optionale Felder: `"background":true` startet einen
 Dauerläufer (Dev-Server o. ä.) nicht-blockierend im Hintergrund — alle so
-gestarteten Prozesse werden beim Programmende automatisch beendet;
+gestarteten Prozesse werden beim Programmende automatisch beendet (POSIX
+über die Prozessgruppe, Windows über `taskkill /T`, jeweils samt
+Kindprozessen);
 `"timeout"` (Sekunden, max. 300, Default 120) begrenzt normale, blockierende
 Kommandos. Offensichtlich destruktive Kommandos (`sudo`, `rm -rf /` o. ä.)
 werden unabhängig von `--yes` immer abgelehnt.
+
+**Overwrite-Gate:** `write_file`/`write_files` auf eine **bereits existierende
+Datei, die in diesem Lauf nie mit `read_file` gelesen wurde**, wird
+**abgelehnt** — blindes Überschreiben würde den bestehenden Inhalt vernichten
+(der klassische Fall: derselbe Prompt wird ein zweites Mal im selben
+Projektordner ausgeführt, und das Modell hält alles für „neu"). Die
+Fehlermeldung leitet das Modell an: erst `read_file`, dann gezielt
+`edit_file` — oder, wenn der komplette Neuschrieb wirklich beabsichtigt ist,
+die Aktion mit `"overwrite":true` wiederholen. Nach 2 Ablehnungen pro Pfad
+greift ein Notausgang gegen Endlosschleifen (dann warnen die nachgelagerten
+Checks wie bisher).
+
+`edit_file` ist bewusst fehlertolerant gebaut, weil kleine Modelle den
+exakten Text selten perfekt treffen: Weicht `old` **nur bei Leerraum am
+Zeilenende** ab, wird automatisch der exakte Datei-Text übernommen. Wird
+`old` gar nicht gefunden, liefert die Fehlermeldung die **ähnlichste Stelle
+wörtlich aus der Datei** (ab Zeile N, mit Ähnlichkeits-Prozent) — das Modell
+kann sie dann kopieren statt erneut zu raten. Für **Umbenennungen** (derselbe
+Name an vielen Stellen) lehrt der System-Prompt: pro Datei **ein** `edit_file`
+mit dem kurzen Namen und `"replace_all":true` statt vieler Einzel-Edits.
 
 Schreibt eine Aktion eine **bereits bestehende, nicht-triviale** Datei auf
 unter 40 % ihrer bisherigen Größe, gibt `mc` eine deutliche Warnung im
 Ergebnis zurück (`ACHTUNG: ... hatte vorher X Zeichen, jetzt nur Y ...`) —
 der häufigste Fall ist ein Modell, das versehentlich `write_file` statt
-`read_file` nutzt und dabei den Inhalt zerstört. Der Schreibvorgang selbst
-wird nicht blockiert (manchmal ist drastisches Kürzen gewollt), aber das
-Modell bekommt die Chance, den Fehler im nächsten Schritt selbst zu
-bemerken und zu beheben.
+`read_file` nutzt und dabei den Inhalt zerstört.
 
 ### Projektkontext & Datei-Erkennung
 
@@ -451,6 +472,39 @@ Damit der Agent nicht ins Leere rät, bekommt er:
 
 (Ordner wie `.git`, `__pycache__`, `node_modules`, `venv` werden dabei übersprungen.)
 
+### Weiterentwicklung bestehender Projekte
+
+Der wichtigste Praxisfall nach dem ersten Wurf: **denselben oder einen neuen
+Prompt im selben Projektordner ausführen**. Kleine Modelle behandeln dabei
+gern alles als „neu" — sie überschreiben Bestehendes oder starten Generatoren
+neu. `mc` fängt das an mehreren Stellen **deterministisch im Tool** ab (nicht
+per Hoffnung auf Modell-Disziplin):
+
+- **Ist-Zustand-Hinweise:** Vor dem ersten Modell-Aufruf prüft `mc` selbst,
+  ob im Arbeitsverzeichnis schon ein Projekt liegt (Marker wie `package.json`,
+  `requirements.txt`, `vite.config.js` …) und ob in der Aufgabe genannte
+  Dateien bereits existieren. Wenn ja, wird der Aufgabe ein Hinweis angehängt:
+  *„Das ist eine WEITERENTWICKLUNG, kein Neubau — erst lesen, dann gezielt
+  ändern, keinen Generator erneut ausführen."* Konkrete Hinweise direkt in
+  der Aufgabe wirken bei kleinen Modellen deutlich besser als Regeln im
+  System-Prompt. (Kein zusätzlicher LLM-Aufruf — reiner Dateisystem-Check.)
+- **Overwrite-Gate** (siehe oben): blindes Überschreiben nie gelesener
+  Dateien wird abgelehnt statt nur bedauert.
+- **Generator-Konflikt-Check:** `npm create …`/`npx create-…` & Co. auf ein
+  **existierendes, nicht-leeres Zielverzeichnis** wird vorab abgelehnt —
+  solche Scaffolder fragen sonst interaktiv „Overwrite?" und hängen bis zum
+  Timeout.
+- **Kein stilles Warten auf Eingaben:** `run`-Kommandos laufen mit
+  geschlossenem stdin. Ein Kommando, das interaktiv fragt (npm, pip u. a.),
+  bekommt sofort EOF und scheitert mit lesbarer Meldung, statt den
+  Timeout auszusitzen; die Timeout-Meldung erklärt zusätzlich beide
+  möglichen Ursachen (Dauerläufer → `"background":true`, wartende Eingabe →
+  non-interaktive Flags wie `-y`/`CI=true`).
+
+Im Praxistest heißt das: Der **zweite Lauf desselben CRUD-Prompts** im selben
+Ordner liest nur noch (list_dir/read_file), verifiziert per curl und beendet
+sauber — **null Überschreibungen**, 17 statt 32 Schritte, halber Token-Verbrauch.
+
 ### Größere Projekte (viele Dateien / Verzeichnisse)
 
 Für Projekte wie ein React-Frontend mit Flask-Backend:
@@ -465,7 +519,7 @@ Für Projekte wie ein React-Frontend mit Flask-Backend:
   zu nutzen (z. B. `npm create vite@latest frontend -- --template react`) und
   danach gezielt einzelne Dateien anzupassen.
 
-#### Fence-Modus: Dateiinhalte ohne JSON-Escaping (`--fence`)
+#### Fence-Modus: Dateiinhalte ohne JSON-Escaping (Default; `--no-fence` schaltet ab)
 
 Die häufigste Fehlerklasse im Benchmark waren **Escaping-Fehler**: Modelle
 müssen ganze Code-Dateien als JSON-Strings verpacken (jedes `"` und jeder
@@ -473,7 +527,9 @@ Zeilenumbruch escaped) — daran zerbrachen qwopus (fehlendes `}`), gemma4
 (überzählige `]`) und die fable-Finetunes (`\\n`/single-quotes), obwohl der
 Code selbst gut war. Der Fence-Modus behebt das an der Wurzel: **Metadaten als
 JSON, Inhalte roh in ```content-Blöcken** — das Format, auf das Modelle am
-besten trainiert sind:
+besten trainiert sind. Nach den durchweg besseren Messwerten ist er inzwischen
+**der Default** (`--no-fence` bzw. `MC_FENCE=0` stellt das alte
+JSON-String-Verhalten wieder her):
 
     ```action
     {"action":"write_file","path":"hello.py"}
@@ -483,11 +539,17 @@ besten trainiert sind:
     ```
 
 - `write_files`: je Datei ein Block, in derselben Reihenfolge wie die Pfade.
+- **`edit_file` genauso:** `old`/`new` gehören im Fence-Modus **nicht** als
+  JSON-Strings ins Action-JSON, sondern als rohe ```old- und ```new-Blöcke
+  dahinter. Das war in den Weiterentwicklungs-Tests die mit Abstand größte
+  Fehlerquelle (rohe Zeilenumbrüche in JSON-Strings → „Invalid control
+  character"/„Unterminated string" in Serie); mit den Blöcken sank die
+  JSON-Fehlerrate der betroffenen Läufe auf **0**.
 - Enthält ein Inhalt selbst ```-Zeilen (z. B. Markdown): längerer Zaun
   (````content), schließender Zaun muss mindestens so lang sein (CommonMark).
 - **Der Parser versteht immer beide Formate** — explizites `content` im JSON
-  hat Vorrang, Fences füllen nur Lücken. Das Flag (`--fence` / `MC_FENCE=1`)
-  ändert nur, was der System-Prompt dem Modell beibringt.
+  hat Vorrang, Fences füllen nur Lücken. Das Flag ändert nur, was der
+  System-Prompt dem Modell beibringt.
 - Fehlende Blöcke oder Anzahl-Mismatch werden als präziser Fehler
   zurückgespeist; die Auto-Continuation erkennt auch abgerissene
   ```content-Blöcke.
@@ -541,6 +603,35 @@ damit man Gegenmaßnahmen treffen kann:
 So sieht man, ob ein **Token-Limit** (Modell/Server-Seite) oder ein
 **Proxy-/Verbindungsabbruch** vorlag — im zweiten Fall hilft es, den Proxy- bzw.
 Netzwerk-Timeout zu erhöhen.
+
+#### Weitere Robustheits-Netze
+
+Vier weitere Mechanismen, jeder auf einen real beobachteten Vorfall
+zurückführbar:
+
+- **Netzwerk-Retry:** Ein Fehler **vor** den ersten Antwort-Bytes (z. B.
+  Read-Timeout, weil der Endpoint gerade ein Modell lädt) bricht den Lauf
+  nicht mehr ab, sondern wird bis zu 3× mit Backoff (10 s/20 s) wiederholt.
+  Reißt der Stream **mittendrin** ab, wird das Teilstück behalten und über
+  die Auto-Continuation vervollständigt — auch abgerissene Prosa ohne
+  offenen Fence gilt dabei als unvollständig.
+- **Leere Antworten:** Lokale Server liefern bei überschrittenem
+  **geladenem** Kontextfenster keinen Fehler, sondern schlicht nichts.
+  Früher galt das als „Textantwort = fertig" und der Lauf endete
+  stillschweigend mitten in der Aufgabe. Jetzt: Kontext hart auf den letzten
+  Schritt beschneiden, bis zu 2× neu anfragen, danach sauberer Abbruch mit
+  Erklärung (Modell mit größerem Kontext laden / `--keep-context` senken).
+- **Lese-Schleifen-Erkennung:** Exakt dieselbe Lese-Aktion (read_file,
+  list_dir, find, grep) direkt hintereinander wird abgefangen — beobachtet
+  wurde dreimal `read_file` derselben 7-KB-Datei in Folge, was den Kontext
+  vollpumpt und kleine Kontextfenster in genau den stillen Overflow von oben
+  treibt.
+- **Schrittbudget-Hinweis:** Bei ≤ 5 verbleibenden Schritten bekommt das
+  Modell einen Hinweis, dass der Lauf gleich hart endet: Aufgabe **jetzt**
+  abschließen, nichts Neues anfangen, `finish` mit ehrlicher Zusammenfassung
+  (inkl. offener Punkte). Beobachteter Auslöser: die eigentliche Arbeit war
+  nach 15 Schritten fertig, dann folgten 35 Schritte
+  Verifikations-Perfektionismus bis zum Abbruch **ohne** finish.
 
 Beispiel:
 
@@ -858,14 +949,18 @@ manuellen `git init` vorher.
 - **Validierung** geschriebener Dateien (py/json/yaml/php) + automatische
   **Git-Absicherung** (Auto-Init, Auto-Commit bei sauberem `finish`,
   Rollback-Angebot sonst — siehe oben).
+- **Overwrite-Gate**: das Überschreiben einer existierenden, im Lauf nie
+  gelesenen Datei wird abgelehnt (erst lesen, dann `edit_file` — bewusster
+  Neuschrieb nur per `"overwrite":true`).
 - **Warnung bei drastischem Dateischrumpfen**: überschreibt eine Aktion eine
   bestehende, nicht-triviale Datei mit unter 40 % ihrer bisherigen Größe
   (typischer Fall: `write_file` versehentlich statt `read_file` benutzt),
   bekommt das Modell das im Ergebnis explizit mitgeteilt.
 - **Destruktive Kommandos werden abgelehnt**: `run` prüft jedes Kommando
-  gegen ein Muster für offensichtlich gefährliche Aufrufe (`sudo`,
-  `rm -rf /` bzw. `~`, `dd ... of=/dev/`, `shutdown`/`reboot` u. ä.) — auch
-  mit `--yes`.
+  gegen ein Muster für offensichtlich gefährliche Aufrufe — Unix (`sudo`,
+  `rm -rf /` bzw. `~`, `dd ... of=/dev/`, `shutdown`/`reboot`, `mkfs`)
+  **und Windows** (`del /s`, `rmdir /s`, `format c:`, `reg delete`,
+  `diskpart`) — auch mit `--yes`.
 - Schrittlimit pro Aufgabe (Default **40**, via `--max-steps` / `MC_MAX_STEPS`).
 - **120 s** Timeout pro Shell-Kommando (bis **300 s** einstellbar über
   `"timeout"` in der `run`-Aktion); Dauerläufer gehören mit
@@ -918,6 +1013,7 @@ oder Kosten. Details im Haftungsausschluss in der `LICENSE`-Datei.
 | Datei              | Inhalt                                       |
 |--------------------|----------------------------------------------|
 | `mc.py`            | Das komplette Tool                           |
+| `tests/test_mc.py` | pytest-Suite für die deterministischen Teile (`python3 -m pytest tests/`) |
 | `README.md`        | Diese Datei                                  |
 | `requirements.txt` | Abhängigkeiten (keine — nur Stdlib-Hinweis)  |
 | `LICENSE`          | MIT-Lizenz + Haftungsausschluss              |

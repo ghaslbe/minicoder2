@@ -2570,6 +2570,142 @@ von Vibelove, Bilderkennung oder dem konkreten Modell.
 
 ---
 
+## 13. Der Weiterentwicklungs-Testtag: vom Neubau-Reflex zum echten Iterieren
+
+Bisher drehte sich fast alles um den **ersten Wurf**: leeres Verzeichnis,
+Prompt rein, App raus. Der Alltag sieht anders aus — man führt denselben
+oder einen neuen Prompt **im selben Projektordner** noch einmal aus. Und
+genau da zeigte `mc` zwei hässliche Verhaltensweisen: Bestehende Dateien
+wurden **teilweise blind überschrieben**, ohne den alten Inhalt je gesehen
+zu haben. Oder der Lauf **hing endlos**, weil `npm create vite` beim
+zweiten Mal interaktiv „Overwrite?" fragte — eine Frage, die im
+`capture_output`-Betrieb niemand je sieht und niemand je beantwortet.
+Die Diagnose in einem Satz: **Das Tool ging immer davon aus, dass alles
+„neu" ist.**
+
+### Runde 1: Drei Abfangnetze vor dem Schaden
+
+Die bestehende `_blind_overwrite_warning` kam erst **nach** dem
+Überschreiben — eine Beileidsbekundung, kein Schutz. Drei neue Mechanismen
+setzen **davor** an:
+
+**1. Ist-Zustand-Hinweise an der Aufgabe.** Vor dem ersten Modell-Aufruf
+prüft das Tool selbst (reiner Dateisystem-Check, kein LLM-Aufruf), ob
+Projekt-Marker wie `package.json` oder `requirements.txt` existieren und ob
+in der Aufgabe genannte Dateien schon da sind. Wenn ja, wird der Aufgabe
+ein Hinweis angehängt: *„Das ist eine WEITERENTWICKLUNG, kein Neubau —
+erst lesen, dann gezielt ändern, keinen Generator erneut ausführen."*
+Der Projektüberblick im System-Prompt existierte zwar längst, aber kleine
+Modelle ignorieren passive Listen zuverlässig — konkrete Anweisungen
+direkt in der User-Message wirken.
+
+**2. Overwrite-Gate.** `write_file` auf eine existierende, im Lauf nie
+gelesene Datei wird **abgelehnt** statt beklagt — mit Anleitung (erst
+`read_file`, dann `edit_file`; bewusster Neuschrieb per `"overwrite":true`)
+und Notausgang nach 2 Ablehnungen pro Pfad.
+
+**3. Generator-Konflikt-Check + geschlossenes stdin.** Scaffolder auf ein
+nicht-leeres Zielverzeichnis werden vorab abgefangen. Und `run` läuft
+jetzt mit `stdin=DEVNULL`: Wer interaktiv fragt, bekommt sofort EOF und
+scheitert **lesbar** — statt 120 Sekunden still auf eine Antwort zu warten,
+die nie kommt.
+
+Das Ergebnis war eindeutig. Erstlauf des CRUD-Prompts: alle drei Netze
+feuerten schon mittendrin (das Modell wollte tatsächlich mitten im Lauf
+`npm create vite` **erneut** ausführen — es hatte sein eigenes Scaffolding
+vergessen). **Zweitlauf desselben Prompts im selben Ordner:** das Modell
+las nur noch (list_dir, read_file), verifizierte per curl, sauberes finish
+— **null Überschreibungen, 17 statt 32 Schritte, 84k statt 175k Tokens.**
+Das Ausgangsproblem war damit gelöst.
+
+### Runde 2: Die Erweiterungsstufen finden die nächste Schicht
+
+Dann der eigentliche Härtetest: die fertige App in Stufen erweitern, mit
+kurzen Prompts („Hilfe-Button", „E-Mail + Geburtstag", „Sortierung",
+„Suchfeld", „Geburtstags-Ansicht"). Stufe 1 lief sauber — die Stufen 2, 4
+und 5 liefen ins Schrittlimit, Stufe 3 endete **stillschweigend ohne
+finish**. Die Logs zeigten vier klare Muster:
+
+1. **edit_file war vom Fence-Modus ausgeschlossen.** Für Änderungen an
+   bestehenden Dateien nutzt das Modell (richtigerweise!) `edit_file` —
+   aber `old`/`new` mussten als JSON-Strings escaped werden. Ergebnis in
+   Stufe 4: **neun** „Unterminated string"/„Invalid control
+   character"-Fehler in Serie. Genau die Fehlerklasse, die der Fence-Modus
+   bei `write_file` längst gelöst hatte.
+2. **„old nicht gefunden" ohne jede Hilfe.** Das Modell riet, scheiterte,
+   riet identisch erneut — dreimal in Folge.
+3. **Leere Antwort = stilles Ende.** Stufe 3 starb daran: Kontextfenster
+   des geladenen Modells überschritten → leere Antwort → das Tool wertete
+   das als „Textantwort, fertig". Lauf beendet, Aufgabe halb erledigt,
+   keine Fehlermeldung.
+4. **Lese-Schleifen.** Vorher hatte das Modell dieselbe 7-KB-Datei dreimal
+   hintereinander gelesen und so den Kontext selbst vollgepumpt.
+
+Vier Fixes: ```old/```new-**Fence-Blöcke für edit_file** (Parser versteht
+sie immer, der Fence-System-Prompt lehrt sie, die Parse-Fehler-Eskalation
+führt sie vor); **Whitespace-Toleranz** am Zeilenende plus — bei echtem
+Fehltreffer — die **ähnlichste Stelle wörtlich aus der Datei** in der
+Fehlermeldung (kopieren statt raten); **leere Antworten** → Kontext hart
+beschneiden, begrenzt neu anfragen, sonst sauberer Abbruch mit Diagnose;
+**identische Lese-Aktionen** direkt hintereinander abfangen.
+
+Die Retries sprachen für sich: Stufe 2 fiel von *50 Schritten ohne finish,
+251k Tokens* auf **22 Schritte, sauberes finish, 118k Tokens, 0
+JSON-Fehler**. Stufe 3 von *stillem Abbruch* auf **15 Schritte, sauber**.
+Stufe 4 von *50 Schritten, 9 JSON-Fehlern* auf **20 Schritte, 0 Fehler**.
+Und der Ähnlichkeits-Hinweis wirkte wörtlich nachweisbar — das Modell
+schrieb: *„nutze ich den exakten Block, der vom Tool als Übereinstimmung
+vorgeschlagen wurde"*.
+
+### Runde 3: Umbenennen, die Zwei-Datenbanken-Falle und das Schrittbudget
+
+Ein Wartungs-Task deckte die nächste Schicht auf: Das Modell hatte beim
+Erweitern einen konsistenten Tippfehler eingebaut (`geburstag` statt
+`geburtstag` — konsistent falsch, die App lief trotzdem). Der Auftrag
+„benenne das überall um" scheiterte zunächst: ~15 Vorkommen über zwei
+Dateien, und das Modell versuchte, **jede Stelle einzeln** mit großen
+edit_file-Blöcken zu treffen — 14 Fehltreffer bis zum Schrittlimit. Für
+Umbenennungen ist das Werkzeug so schlicht falsch gehalten. Der Fix:
+System-Prompt-Regel plus Fehlermeldungs-Hinweis — *pro Datei EIN
+`edit_file` mit dem kurzen Namen und `"replace_all":true`*. Im Retest
+stieg das Modell nach dem ersten Mehrdeutigkeits-Fehler sofort um: 5
+Stellen in App.jsx, 11 in app.py, in **je einem Schritt**.
+
+Dass der Retest trotzdem das Limit riss, lag an einer Falle, die der
+allererste Lauf gelegt hatte: `DB_PATH = 'personen.db'` — ein **relativer
+Pfad**. Je nach Startverzeichnis des Backends entstanden **zwei
+verschiedene Datenbanken**, und die Verifikation traf mal die eine, mal
+die andere: widersprüchliche Ergebnisse, 35 Schritte Prüf-Kreisverkehr.
+Ein App-Bug, kein Tool-Bug — aber er offenbarte ein Tool-Defizit: Die
+Arbeit war nach 15 Schritten fertig, doch **das Modell wusste nicht, dass
+ihm die Schritte ausgehen.** Daher der **Schrittbudget-Hinweis**: Bei ≤ 5
+verbleibenden Schritten wird der letzten user-Nachricht angehängt, dass
+der Lauf gleich hart endet — Aufgabe jetzt abschließen, nichts Neues
+anfangen, finish mit ehrlicher Zusammenfassung. Im Test (DB_PATH-Fix als
+echte Aufgabe, bewusst knappes Budget von 15): Hinweis bei Schritt 11,
+sauberes finish bei Schritt 12, DB-Pfad absolut, überflüssige DB gelöscht.
+
+Nebenbei fiel noch ein Klassiker: Ein einzelner **Read-Timeout beim
+allerersten Request** (der Endpoint lud gerade ein Modell) beendete den
+kompletten Lauf. Jetzt gilt: Fehler **vor** den ersten Antwort-Bytes werden
+bis zu 3× mit Backoff wiederholt; reißt der Stream **mittendrin** ab, wird
+das Teilstück behalten und über die Auto-Continuation vervollständigt.
+
+### Die Bilanz des Tages
+
+Elf Verbesserungen, jede auf einen real beobachteten Vorfall
+zurückführbar: Ist-Zustand-Hinweise, Overwrite-Gate,
+Generator-Konflikt-Check, stdin=DEVNULL mit erklärender Timeout-Meldung,
+```old/```new-Fences, Whitespace-Toleranz + Ähnlichkeits-Vorschlag,
+Leere-Antwort-Behandlung, Lese-Schleifen-Erkennung, replace_all-Regel,
+Netzwerk-Retry, Schrittbudget-Hinweis. Der Muster-Wechsel dahinter: von
+*„das Modell möge sich bitte richtig verhalten"* zu *„das Tool macht
+falsches Verhalten mechanisch unmöglich oder teuer und richtiges billig"*.
+Kleine Modelle folgen keinem Regelwerk — aber sie folgen sehr zuverlässig
+einer konkreten Fehlermeldung, die ihnen den nächsten Schritt vorschreibt.
+
+---
+
 ## Anhang: Die `mc`-Aufrufe & Prompts
 
 Zur Nachvollziehbarkeit die tatsächlich verwendeten Aufrufe. `$BASE` steht für die
