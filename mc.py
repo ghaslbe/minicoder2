@@ -98,6 +98,11 @@ DANGEROUS_RUN = re.compile(
     r"|rm\s+(-\w+\s+)*(/|~)(\s|$)"
     r"|dd\s+.*of=/dev/")
 SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
+# Projekt-Generatoren (Scaffolder): fragen interaktiv nach 'Overwrite?', wenn das
+# Zielverzeichnis schon existiert — und haengen dann bis zum Timeout.
+GENERATOR_RE = re.compile(
+    r"\b(npm\s+create|npx\s+create-|yarn\s+create|pnpm\s+create|npm\s+init\s+\S)",
+    re.IGNORECASE)
 FETCH_URL_RE = re.compile(r"\b(curl|wget)\b[^\n]*https?://", re.IGNORECASE)
 FETCH_ANALYSIS_MAX_CHARS = 20000  # Fallback-Wert, falls das GELADENE
 # Kontextfenster nicht abfragbar ist (siehe loaded_context_chars): viele
@@ -594,23 +599,40 @@ def debug_net():
 ACTION_RE = re.compile(r"```action\s*(.*?)```", re.DOTALL)
 
 
-# Roher Dateiinhalt in einem ```content-Block nach dem action-Block. Laengere
-# Zaeune (````content) sind erlaubt, falls der Inhalt selbst ```-Zeilen hat;
+# Rohe Textbloecke nach dem action-Block: ```content (Dateiinhalt fuer
+# write_file/write_files) sowie ```old / ```new (fuer edit_file — JSON-Escaping
+# mehrzeiliger old/new-Strings ist die mit Abstand haeufigste Fehlerquelle
+# kleiner Modelle bei Aenderungen an BESTEHENDEN Dateien). Laengere Zaeune
+# (````content) sind erlaubt, falls der Inhalt selbst ```-Zeilen hat;
 # der schliessende Zaun muss mindestens so lang sein wie der oeffnende
 # (CommonMark-Regel) — kuerzere Backtick-Zeilen im Inhalt schliessen nicht.
 CONTENT_FENCE_RE = re.compile(
-    r"^(`{3,})content[ \t]*\n(.*?)\n\1`*[ \t]*$", re.DOTALL | re.MULTILINE)
+    r"^(`{3,})(content|old|new)[ \t]*\n(.*?)\n\1`*[ \t]*$", re.DOTALL | re.MULTILINE)
 
 
 def _attach_fence_contents(action, tail):
-    """Ergaenzt write_file/write_files um Inhalte aus ```content Bloecken
-    hinter dem action-Block (Fence-Modus). Gibt eine Fehlermeldung zurueck,
-    wenn Bloecke fehlen oder die Anzahl nicht passt (sonst leerer String).
-    Explizite "content"-Felder im JSON haben Vorrang (Abwaertskompatibilitaet)."""
+    """Ergaenzt write_file/write_files um Inhalte aus ```content Bloecken und
+    edit_file um old/new aus ```old / ```new Bloecken hinter dem action-Block
+    (Fence-Modus). Gibt eine Fehlermeldung zurueck, wenn Bloecke fehlen oder
+    die Anzahl nicht passt (sonst leerer String). Explizite Felder im JSON
+    haben Vorrang (Abwaertskompatibilitaet)."""
     name = action.get("action")
-    if name not in ("write_file", "write_files"):
+    if name not in ("write_file", "write_files", "edit_file"):
         return ""
-    fences = [mm.group(2) + "\n" for mm in CONTENT_FENCE_RE.finditer(tail)]
+    blocks = [(mm.group(2), mm.group(3)) for mm in CONTENT_FENCE_RE.finditer(tail)]
+    if name == "edit_file":
+        # old/new OHNE angehaengten Zeilenumbruch uebernehmen: die Bloecke sind
+        # zeilenbasiert, der Ausschnitt endet in der Datei praktisch immer vor
+        # einem '\n' — ein erzwungenes Traileding-\n wuerde das Matching aber
+        # brechen, wenn der Treffer am Dateiende ohne Newline liegt.
+        for key in ("old", "new"):
+            if key in action:
+                continue
+            vals = [body for lab, body in blocks if lab == key]
+            if vals:
+                action[key] = vals[0]
+        return ""  # fehlende Pflichtfelder meldet der edit_file-Handler selbst
+    fences = [body + "\n" for lab, body in blocks if lab == "content"]
     if name == "write_file":
         if "content" in action:
             return ""
@@ -693,17 +715,20 @@ def _shrink_action(content):
     return (prose[:200] + "\n" if prose else "") + summary
 
 
-def prune_messages(messages):
+def prune_messages(messages, keep=None):
     """Reduziert AELTERE Schritte auf Kurzfassungen; die letzten KEEP_CONTEXT
     Schritte bleiben vollstaendig. System-Prompt und Aufgabentext werden nie
     angetastet (matchen die Muster nicht). Idempotent: bereits gekuerzte
-    Nachrichten sind klein genug und werden uebersprungen."""
-    if not PRUNE:
+    Nachrichten sind klein genug und werden uebersprungen. Mit keep=N laesst
+    sich haerter beschneiden als KEEP_CONTEXT (Notfall bei Kontext-Overflow —
+    dann auch bei --no-prune)."""
+    if not PRUNE and keep is None:
         return
     idx = [i for i, msg in enumerate(messages)
            if (msg["role"] == "assistant" and "```action" in msg.get("content", ""))
            or (msg["role"] == "user" and RESULT_RE.match(msg.get("content", "")))]
-    cutoff = len(idx) - 2 * max(KEEP_CONTEXT, 0)  # 1 Schritt = assistant + ergebnis
+    k = KEEP_CONTEXT if keep is None else keep
+    cutoff = len(idx) - 2 * max(k, 0)  # 1 Schritt = assistant + ergebnis
     saved = 0
     for j, i in enumerate(idx):
         if j >= cutoff:
@@ -851,6 +876,40 @@ def do_read_file(args):
         return False, f"FEHLER beim Lesen von {path}: {e}"
 
 
+OVERWRITE_REJECTS = {}      # Pfad -> Anzahl abgelehnter blinder Ueberschreib-Versuche
+MAX_OVERWRITE_REJECTS = 2   # danach Notausgang (Warnungen greifen weiter), sonst Endlosschleife
+
+
+def _overwrite_gate(path, force=False):
+    """Lehnt das komplette Ueberschreiben einer BEREITS EXISTIERENDEN Datei ab,
+    die in diesem Lauf weder gelesen noch selbst geschrieben wurde — BEVOR etwas
+    kaputt geht (die _blind_overwrite_warning kam bisher erst NACH dem Schaden).
+    Hintergrund: bei einem erneuten Lauf im selben Projektverzeichnis startet
+    das Modell mit leerem Wissen (READ_FILES ist pro Lauf leer) und haelt alles
+    fuer 'neu'. Die Ablehnung zwingt es, erst read_file zu nutzen — dasselbe
+    Zwangs-Muster wie bei finish-Rejects, auf das auch kleine Modelle
+    zuverlaessig reagieren. Bewusstes Neuschreiben bleibt per "overwrite":true
+    moeglich; nach MAX_OVERWRITE_REJECTS Ablehnungen je Pfad greift ein
+    Notausgang gegen Endlosschleifen (dann warnen die bestehenden Checks)."""
+    if force:
+        return ""
+    norm = os.path.normpath(path)
+    if not os.path.isfile(norm):
+        return ""  # neue Datei — unkritisch
+    if norm in READ_FILES or norm in {os.path.normpath(p) for p in TOUCHED}:
+        return ""  # Inhalt bekannt (gelesen) oder in diesem Lauf selbst geschrieben
+    n = OVERWRITE_REJECTS.get(norm, 0)
+    if n >= MAX_OVERWRITE_REJECTS:
+        return ""
+    OVERWRITE_REJECTS[norm] = n + 1
+    return (f"ABGELEHNT: {path} existiert bereits, wurde in diesem Lauf aber noch "
+            f"NICHT mit read_file gelesen — blindes Ueberschreiben wuerde den "
+            f"bestehenden Inhalt vernichten. Lies die Datei zuerst mit read_file "
+            f"und aendere sie dann GEZIELT mit edit_file. Nur wenn ein kompletter "
+            f"Neuschrieb wirklich beabsichtigt ist, wiederhole die Schreib-Aktion "
+            f"mit dem zusaetzlichen Feld \"overwrite\":true.")
+
+
 def _blind_overwrite_warning(path):
     """Warnt, wenn eine BEREITS EXISTIERENDE Datei komplett ueberschrieben
     wird, die in diesem Lauf weder gelesen noch selbst angelegt wurde. Zwei
@@ -923,6 +982,10 @@ def _check_repetition(path, new_content):
 def do_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
+    gate = _overwrite_gate(path, force=bool(args.get("overwrite")))
+    if gate:
+        print(f"{C.RED}✗ Overwrite-Gate: {path} (existiert, nie gelesen){C.RESET}")
+        return False, gate
     print(f"{C.YELLOW}» write_file{C.RESET} {C.BOLD}{path}{C.RESET} ({len(content)} Zeichen)")
     preview = content if len(content) < 600 else content[:600] + "\n..."
     print(f"{C.DIM}{preview}{C.RESET}")
@@ -956,6 +1019,14 @@ def do_write_files(args):
                        f"maximal {MAX_WRITE_FILES_BATCH} erlaubt (Schutz vor abgeschnittenen "
                        f"Antworten). Teile auf MEHRERE write_files-Schritte auf "
                        f"(z.B. erst backend/, dann frontend/) und fahre fort.")
+    force = bool(args.get("overwrite"))
+    gated = [g for g in (_overwrite_gate(f.get("path", ""), force=force)
+                         for f in files if isinstance(f, dict) and f.get("path"))
+             if g]
+    if gated:
+        print(f"{C.RED}✗ Overwrite-Gate: {len(gated)} existierende, nie gelesene "
+              f"Datei(en){C.RESET}")
+        return False, "\n".join(gated)
     print(f"{C.YELLOW}» write_files{C.RESET} {C.BOLD}{len(files)}{C.RESET} Datei(en):")
     for f in files:
         print(f"   {f.get('path','?')} ({len(f.get('content',''))} Zeichen)")
@@ -989,6 +1060,32 @@ def do_write_files(args):
     return (not errors), msg
 
 
+def _closest_snippet(content, old, min_ratio=0.5):
+    """Sucht die dem verfehlten 'old' AEHNLICHSTE Stelle in der Datei und gibt
+    sie woertlich zurueck — damit das Modell den exakten Text KOPIEREN kann,
+    statt beim naechsten Versuch erneut zu raten (real beobachtet: drei
+    identische 'nicht gefunden'-Fehlschlaege in Folge, weil die Rueckmeldung
+    keinerlei Anhaltspunkt bot, WAS am geratenen Ausschnitt falsch war)."""
+    lines = content.split("\n")[:4000]
+    o_lines = old.split("\n")
+    n = max(len(o_lines), 1)
+    best, best_i = 0.0, -1
+    for i in range(max(len(lines) - n + 1, 1)):
+        cand = "\n".join(lines[i:i + n])
+        sm = difflib.SequenceMatcher(None, cand, old)
+        if sm.quick_ratio() <= best:
+            continue
+        r = sm.ratio()
+        if r > best:
+            best, best_i = r, i
+    if best_i < 0 or best < min_ratio:
+        return ""
+    snippet = "\n".join(lines[best_i:best_i + n])[:700]
+    return (f"\nAEHNLICHSTE Stelle in der Datei (ab Zeile {best_i + 1}, "
+            f"Aehnlichkeit {best:.0%}) — verwende fuer 'old' EXAKT diesen Text:\n"
+            f"{snippet}")
+
+
 def do_edit_file(args):
     """Ersetzt in einer bestehenden Datei einen exakten Textausschnitt durch einen
     neuen — es wandert nur die Aenderung ueber die Leitung, nicht die ganze Datei.
@@ -998,7 +1095,9 @@ def do_edit_file(args):
     new = args.get("new", "")
     replace_all = bool(args.get("replace_all", False))
     if not path or old == "":
-        return False, "FEHLER: 'path' und 'old' sind erforderlich."
+        return False, ("FEHLER: 'path' und 'old' sind erforderlich. Tipp: gib "
+                       "old/new nicht als JSON-Strings an, sondern als rohe "
+                       "```old und ```new Bloecke direkt nach dem action-Block.")
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -1007,13 +1106,36 @@ def do_edit_file(args):
 
     count = content.count(old)
     if count == 0:
-        return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht gefunden. "
-                       f"Gib 'old' exakt wie im Datei-Inhalt an (Whitespace zaehlt). "
-                       f"Lies die Datei ggf. erneut mit read_file.")
+        # Whitespace-Toleranz: NUR \r und Leerraum am ZEILENENDE duerfen
+        # abweichen (Einrueckung am Zeilenanfang bleibt signifikant) — das
+        # deckt die haeufigsten Fehltreffer kleiner Modelle ab, ohne falsche
+        # Stellen zu treffen.
+        pat = r"\r?\n".join(re.escape(l.rstrip()) + r"[ \t]*"
+                            for l in old.replace("\r\n", "\n").split("\n"))
+        try:
+            hits = list(re.finditer(pat, content))
+        except re.error:
+            hits = []
+        if len(hits) == 1:
+            old = hits[0].group(0)  # exakten Datei-Text uebernehmen
+            count = 1
+            print(f"{C.DIM}(old nur mit Zeilenende-Whitespace-Toleranz gefunden "
+                  f"— uebernehme den exakten Datei-Text){C.RESET}")
+        elif len(hits) > 1:
+            return False, (f"FEHLER: 'old' kommt (mit Whitespace-Toleranz) {len(hits)}x "
+                           f"in {path} vor — nicht eindeutig. Mache den Ausschnitt "
+                           f"groesser/eindeutiger.")
+        else:
+            return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
+                           f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
+                           f"(Whitespace zaehlt)." + _closest_snippet(content, old))
     if count > 1 and not replace_all:
         return False, (f"FEHLER: 'old' kommt {count}x in {path} vor — nicht eindeutig. "
-                       f"Mache den Ausschnitt groesser/eindeutiger oder setze "
-                       f"replace_all=true.")
+                       f"Entweder den Ausschnitt groesser/eindeutiger machen, ODER — "
+                       f"wenn du ALLE Vorkommen ersetzen willst (z.B. bei einer "
+                       f"Umbenennung) — dieselbe Aktion mit \"replace_all\":true und "
+                       f"NUR dem kurzen Namen als 'old' wiederholen (ein Schritt pro "
+                       f"Datei statt vieler Einzel-Edits).")
 
     print(f"{C.YELLOW}» edit_file{C.RESET} {C.BOLD}{path}{C.RESET} "
           f"({count}x ersetzen)" if replace_all else
@@ -1159,6 +1281,30 @@ def do_ask(args):
     return True, f"Antwort des Nutzers: {ans}"
 
 
+def _generator_conflict(cmd):
+    """Faengt Scaffolder-Aufrufe (npm create …) ab, deren Zielverzeichnis bereits
+    existiert und Inhalt hat: die fragen dann interaktiv 'Overwrite?' und haengen
+    bis zum Timeout (real beobachtet beim zweiten Lauf im selben Projektordner).
+    Heuristik: jedes flaglose Kommando-Token, das ein nicht-leeres Verzeichnis
+    benennt, gilt als Konflikt."""
+    if not GENERATOR_RE.search(cmd):
+        return ""
+    skip = {"npm", "npx", "yarn", "pnpm", "create", "init", "--", "&&", ";", "."}
+    for t in re.split(r"\s+", cmd):
+        if not t or t.startswith("-") or "@" in t or "/" in t or t in skip:
+            continue
+        try:
+            if os.path.isdir(t) and os.listdir(t):
+                return (f"ABGELEHNT: das Zielverzeichnis '{t}' existiert bereits und "
+                        f"ist nicht leer — der Generator wuerde interaktiv nach "
+                        f"'Overwrite?' fragen und haengen. Das Projekt ist also schon "
+                        f"angelegt: arbeite direkt an den bestehenden Dateien weiter "
+                        f"(list_dir/read_file/edit_file) statt neu zu generieren.")
+        except OSError:
+            continue
+    return ""
+
+
 def do_run(args):
     cmd = args.get("command", "")
     bg = bool(args.get("background"))
@@ -1171,6 +1317,10 @@ def do_run(args):
     if DANGEROUS_RUN.search(cmd):
         return False, ("ABGELEHNT: das Kommando sieht destruktiv aus (sudo/rm auf "
                        "Wurzelpfade/etc.). Waehle ein harmloses, projektlokales Kommando.")
+    conflict = _generator_conflict(cmd)
+    if conflict:
+        print(f"{C.RED}✗ Generator-Konflikt erkannt{C.RESET}")
+        return False, conflict
     if not confirm("Kommando ausfuehren?"):
         return False, "Abgelehnt durch den Benutzer."
     if bg:
@@ -1182,6 +1332,7 @@ def do_run(args):
         try:
             proc = subprocess.Popen(cmd, shell=True, stdout=logf,
                                     stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL,
                                     start_new_session=True)
         except Exception as e:
             return False, f"FEHLER beim Start: {e}"
@@ -1200,8 +1351,12 @@ def do_run(args):
                       "Pruefe den Dienst jetzt mit einem normalen run (z.B. curl). "
                       "Hintergrundprozesse werden am Ende automatisch beendet.")
     try:
+        # stdin geschlossen: ein Kommando, das interaktiv fragt (z.B. npm-Scaffolder
+        # bei 'Overwrite?'), bekommt sofort EOF und scheitert mit lesbarer Meldung,
+        # statt still bis zum Timeout auf eine Eingabe zu warten.
         proc = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL
         )
         out = proc.stdout + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
         out = out.strip() or "(keine Ausgabe)"
@@ -1221,8 +1376,12 @@ def do_run(args):
             body = truncate(out)
         return True, f"exit={proc.returncode}\n{body}" + warn
     except subprocess.TimeoutExpired:
-        return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Dauerlaeufer wie "
-                       "Dev-Server bitte mit \"background\":true starten.")
+        return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Moegliche Ursachen: "
+                       "(1) es ist ein Dauerlaeufer (Dev-Server) — dann mit "
+                       "\"background\":true starten; (2) es hat auf eine INTERAKTIVE "
+                       "Eingabe gewartet (z.B. eine Ja/Nein- oder Overwrite-Frage) — "
+                       "dann mit non-interaktiven Flags erneut ausfuehren "
+                       "(-y/--yes bzw. CI=true als Umgebungsvariable).")
     except Exception as e:
         return False, f"FEHLER bei Ausfuehrung: {e}"
 
@@ -1266,7 +1425,7 @@ das Ergebnis und faehrst fort.
 Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}
 @@WRITE_SPEC@@
-  edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}
+@@EDIT_SPEC@@
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
   find        -> {"action":"find","pattern":"<namensteil>"}
   grep        -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
@@ -1286,6 +1445,10 @@ Regeln:
   dem aktuellen Dateiinhalt entsprechen (inkl. Whitespace/Einrueckung); waehle
   genug Kontext, damit der Ausschnitt nur einmal vorkommt. write_file nur fuer
   NEUE Dateien oder komplette Neufassungen.
+- Das Ueberschreiben einer BEREITS EXISTIERENDEN Datei per write_file/write_files
+  wird vom Tool ABGELEHNT, solange du sie in diesem Lauf nicht mit read_file
+  gelesen hast. Also: erst lesen, dann gezielt mit edit_file aendern. Nur wenn
+  ein kompletter Neuschrieb wirklich gewollt ist: "overwrite":true mitgeben.
 - WICHTIG: Wenn der Nutzer eine bestehende Datei AENDERN will, lege NIEMALS einfach
   eine neue an. Suche sie zuerst mit find/list_dir. Nutzer benennen Dateien oft
   ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
@@ -1301,6 +1464,11 @@ Regeln:
 - Fuer Aenderungen an BESTEHENDEM Code: finde die Stelle zuerst mit grep
   (Inhaltssuche, liefert Datei:Zeile), dann gezielt read_file + edit_file —
   statt viele Dateien komplett zu lesen.
+- UMBENENNUNGEN (derselbe Name kommt an VIELEN Stellen vor, z.B. ein Feld- oder
+  Funktionsname): NICHT viele einzelne edit_file-Schritte mit grossen Bloecken!
+  Stattdessen pro betroffener Datei genau EIN edit_file mit dem kurzen Namen
+  als "old", dem neuen Namen als "new" und "replace_all":true. Die betroffenen
+  Dateien findest du vorher mit grep.
 - finish wird vom Tool GEPRUEFT: alle in der Aufgabe woertlich genannten
   Dateien muessen existieren und valide sein, sonst wird finish abgelehnt.
   Gib finish erst aus, wenn wirklich alles geschrieben ist.
@@ -1334,6 +1502,10 @@ WRITE_SPEC_JSON = """  write_file  -> {"action":"write_file","path":"<pfad>","co
 
 WRITE_SPEC_FENCE = """  write_file  -> {"action":"write_file","path":"<pfad>"}  + danach EIN ```content Block mit dem ROHEN Dateiinhalt
   write_files -> {"action":"write_files","files":[{"path":"a"},{"path":"b/c"}]}  + danach JE Datei ein ```content Block (gleiche Reihenfolge)"""
+
+EDIT_SPEC_JSON = """  edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}"""
+
+EDIT_SPEC_FENCE = """  edit_file   -> {"action":"edit_file","path":"<pfad>"}  + danach EIN ```old Block (exakter bestehender Ausschnitt, ROH) und EIN ```new Block (Ersatz, ROH) — old/new NIE als JSON-Strings"""
 
 CONTENT_RULE_JSON = 'Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.'
 
@@ -1378,6 +1550,7 @@ def system_prompt(fence):
     """Baut den System-Prompt fuer den gewaehlten Modus zusammen."""
     sp = SYSTEM_PROMPT_TEMPLATE
     sp = sp.replace("@@WRITE_SPEC@@", WRITE_SPEC_FENCE if fence else WRITE_SPEC_JSON)
+    sp = sp.replace("@@EDIT_SPEC@@", EDIT_SPEC_FENCE if fence else EDIT_SPEC_JSON)
     sp = sp.replace("@@CONTENT_RULE@@", CONTENT_RULE_FENCE if fence else CONTENT_RULE_JSON)
     sp = sp.replace("@@EXAMPLE@@", EXAMPLE_FENCE if fence else EXAMPLE_JSON)
     if CHECK:
@@ -1457,6 +1630,63 @@ def expected_files_from_task(task):
         if os.path.splitext(p)[1].lower() in SRC_EXTS and p not in out:
             out.append(p)
     return out
+
+
+# Marker-Dateien, an denen ein BESTEHENDES Projekt erkannt wird (fuer die
+# deterministische Task-Anreicherung beim Start).
+PROJECT_MARKERS = ("package.json", "vite.config.js", "vite.config.ts",
+                   "requirements.txt", "pyproject.toml", "composer.json")
+
+
+def existing_project_dirs(max_depth=2):
+    """Findet Verzeichnisse (inkl. '.'), die einen Projekt-Marker enthalten —
+    flach gehalten (max. 2 Ebenen), es geht nur um den Startueberblick."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk("."):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in IGNORE_DIRS and not d.startswith("."))
+        if dirpath.count(os.sep) >= max_depth:
+            dirnames[:] = []
+        for mk in PROJECT_MARKERS:
+            if mk in filenames:
+                found.append((os.path.normpath(dirpath), mk))
+                break
+    return found
+
+
+def task_hints(task):
+    """Deterministische Ist-Zustand-Hinweise, die VOR dem ersten Modell-Call an
+    die Aufgabe angehaengt werden (kein LLM-Aufruf, reiner Dateisystem-Check).
+    Hintergrund: der Projektueberblick im System-Prompt ist eine passive Liste,
+    die kleine Modelle zuverlaessig ignorieren — beim ZWEITEN Lauf im selben
+    Verzeichnis behandeln sie alles als 'neu', ueberschreiben Bestehendes oder
+    starten Generatoren, die interaktiv nach 'Overwrite?' fragen und haengen.
+    Konkrete, aufgabenbezogene Anweisungen direkt in der User-Message wirken
+    bei kleinen Modellen deutlich besser als eine Regel im System-Prompt."""
+    hints = []
+    existing = [p for p in expected_files_from_task(task) if os.path.isfile(p)]
+    projs = existing_project_dirs()
+    if projs:
+        desc = ", ".join(f"{d}/ ({mk} vorhanden)" for d, mk in projs[:8])
+        hints.append(
+            f"In diesem Arbeitsverzeichnis existiert BEREITS ein Projekt: {desc}. "
+            f"Die Aufgabe ist daher eine WEITERENTWICKLUNG des Bestehenden, kein "
+            f"Neubau. Verschaffe dir zuerst mit list_dir/read_file einen Ueberblick "
+            f"und aendere bestehende Dateien gezielt mit edit_file.")
+        hints.append(
+            "Fuehre KEINEN Projekt-Generator erneut aus (npm create …, npx "
+            "create-… o.ae.) — der wuerde interaktiv nach Ueberschreiben fragen "
+            "und haengen. Abhaengigkeiten sind ggf. schon installiert.")
+    if existing:
+        hints.append(
+            "Diese in der Aufgabe genannten Dateien existieren BEREITS: "
+            + ", ".join(existing[:12]) +
+            ". Lies sie mit read_file, bevor du sie aenderst — blindes "
+            "Ueberschreiben wird vom Tool abgelehnt.")
+    if not hints:
+        return ""
+    return ("\n\n[HINWEISE VOM TOOL — automatisch ermittelter Ist-Zustand]\n- "
+            + "\n- ".join(hints))
 
 
 # --------------------- Validierung & Git-Rollback --------------------------
@@ -1634,10 +1864,33 @@ def run_task(messages, model):
     finish_rejects = 0
     parse_error_streak = 0
     check_probe_done = False
+    empty_replies = 0
+    last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     for step in range(1, MAX_STEPS + 1):
         prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         reply = chat_stream(messages, model)
+
+        if not reply.strip():
+            # LEERE Antwort heisst bei lokalen Servern fast immer: das GELADENE
+            # Kontextfenster ist ueberschritten (kein Fehler, einfach nichts) —
+            # real beobachtet, nachdem dieselbe Datei mehrfach gelesen wurde.
+            # Bisher galt das als "Textantwort = fertig" und der Lauf endete
+            # stillschweigend mitten in der Aufgabe. Stattdessen: Kontext hart
+            # beschneiden und (begrenzt) erneut anfragen.
+            empty_replies += 1
+            if empty_replies > 2:
+                print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
+                      f"das geladene Kontextfenster des Modells reicht fuer diese "
+                      f"Historie nicht. Modell mit groesserem Kontext laden oder "
+                      f"--keep-context verkleinern.{C.RESET}")
+                return None
+            print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
+                  f"geladenen Modells ueberschritten) — beschneide aeltere "
+                  f"Schritte hart und versuche es erneut …{C.RESET}")
+            prune_messages(messages, keep=1)
+            continue
+        empty_replies = 0
         messages.append({"role": "assistant", "content": reply})
 
         action, raw = extract_action(reply)
@@ -1688,7 +1941,10 @@ def run_task(messages, model):
                        f"hier der komplette Dateiinhalt, roh, ohne Escaping\n"
                        f"```\n"
                        f"Das funktioniert auch fuer write_files (je Datei ein "
-                       f"```content Block, in derselben Reihenfolge wie die Pfade).")
+                       f"```content Block, in derselben Reihenfolge wie die Pfade) "
+                       f"und fuer edit_file — dort 'old'/'new' weglassen und statt-"
+                       f"dessen einen ```old und einen ```new Block (roh, ohne "
+                       f"Escaping) hinter den action-Block setzen.")
             else:
                 obs = (f"FEHLER: dein action-JSON war ungueltig ({action['_parse_error']}). "
                        f"Bitte gib einen einzelnen validen ```action``` Block aus.")
@@ -1794,6 +2050,26 @@ def run_task(messages, model):
             print(f"{C.RED}{obs}{C.RESET}")
             messages.append({"role": "user", "content": obs})
             continue
+
+        # Schleifen-Erkennung fuer NUR-LESE-Aktionen: dieselbe Aktion direkt
+        # hintereinander (real beobachtet: dreimal read_file derselben Datei)
+        # pumpt jedes Mal den kompletten Inhalt erneut in den Kontext und
+        # treibt kleine Kontextfenster in den stillen Overflow. Schreib-/run-
+        # Aktionen sind ausgenommen (ein wiederholter curl nach einem Fix ist
+        # legitim).
+        if name in ("read_file", "list_dir", "find", "grep"):
+            if raw and raw == last_ro_raw:
+                obs = (f"HINWEIS: exakt diese {name}-Aktion hast du im vorigen "
+                       f"Schritt bereits ausgefuehrt — das Ergebnis steht oben "
+                       f"und hat sich nicht geaendert. Nutze es und mache jetzt "
+                       f"den NAECHSTEN Schritt (z.B. die konkrete Aenderung per "
+                       f"edit_file).")
+                print(f"{C.YELLOW}⚠ Wiederholte Lese-Aktion abgefangen.{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+            last_ro_raw = raw
+        else:
+            last_ro_raw = None
 
         ok, result = handler(action)
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
@@ -2029,7 +2305,11 @@ def main():
         if EXPECTED_FILES:
             info(f"Finish-Check aktiv: {len(EXPECTED_FILES)} in der Aufgabe "
                  f"genannte Datei(en) werden am Ende geprueft.")
-        messages.append({"role": "user", "content": task_text})
+        hints = task_hints(task_text)
+        if hints:
+            info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
+                 "an die Aufgabe angehaengt.")
+        messages.append({"role": "user", "content": task_text + hints})
         if plan_mode and not plan_phase(messages, args.model):
             return
         result = run_task(messages, args.model)
@@ -2051,7 +2331,11 @@ def main():
         if user.lower() in ("exit", "quit", "q"):
             break
         EXPECTED_FILES[:] = expected_files_from_task(user)
-        messages.append({"role": "user", "content": user})
+        hints = task_hints(user)
+        if hints:
+            info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
+                 "an die Aufgabe angehaengt.")
+        messages.append({"role": "user", "content": user + hints})
         if plan_mode and not plan_phase(messages, args.model):
             continue
         result = run_task(messages, args.model)
