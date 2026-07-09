@@ -2062,6 +2062,7 @@ def run_task(messages, model):
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     budget_warned = False
+    notes_probe_done = False
     for step in range(1, MAX_STEPS + 1):
         # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
         # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
@@ -2250,6 +2251,26 @@ def run_task(messages, model):
                 print(f"{C.YELLOW}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
+            # Notizen-Nachfrage (einmalig, nur wenn Code geschrieben wurde und
+            # die Projekt-Notizen NICHT angefasst wurden): die Selbstpflege-
+            # Regel im System-Prompt allein greift unzuverlaessig — real
+            # beobachtet beim CSV-Export, wo der neue Endpunkt nie in den
+            # Notizen landete. Kostet maximal einen Umlauf.
+            if (TOUCHED and not notes_probe_done
+                    and os.path.normpath(MC_NOTES) not in
+                    {os.path.normpath(p) for p in TOUCHED}):
+                notes_probe_done = True
+                obs = ("FINISH-NACHFRAGE — bevor ich abschliesse: Hast du in "
+                       "diesem Lauf FESTLEGUNGEN getroffen oder geaendert, die "
+                       "spaetere Laeufe kennen muessen (neue Endpunkte, feste "
+                       "Ports, Feld-/Spaltennamen, Startkommandos, gewaehlte "
+                       f"Bibliotheken)? Falls ja: ergaenze sie JETZT stichpunkt"
+                       f"artig in {MC_NOTES} (edit_file bzw. write_file, kurz "
+                       "halten) und gib danach erneut finish aus. Falls nein: "
+                       "gib einfach erneut finish aus.")
+                print(f"{C.YELLOW}⚠ Notizen-Nachfrage vor dem finish.{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
             if missing or still_bad:
                 print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
                       f"(fehlend: {len(missing)}, ungueltig: {len(still_bad)}).{C.RESET}")
@@ -2299,8 +2320,13 @@ def run_task(messages, model):
         # Geschriebene Dateien fuer Rollback merken und (bekannte Typen) validieren.
         valed = ""
         if ok and name in ("write_file", "write_files", "edit_file"):
-            RAN_SINCE_WRITE = False
             paths = written_paths(name, action)
+            # Reine Notizen-Pflege (MC-NOTIZEN.md nach der Finish-Nachfrage)
+            # ist kein Code — sie soll den Check-Modus nicht erneut scharf
+            # schalten (sonst: Notiz ergaenzt -> finish wird wieder abgelehnt).
+            if any(os.path.normpath(p) != os.path.normpath(MC_NOTES)
+                   for p in paths):
+                RAN_SINCE_WRITE = False
             for p in paths:
                 if p not in TOUCHED:
                     TOUCHED.append(p)
