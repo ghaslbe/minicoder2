@@ -2134,6 +2134,7 @@ def run_task(messages, model):
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     budget_warned = False
     notes_probe_done = False
+    check_finish_pending = False  # finish wurde nur mangels Pruefung abgelehnt
     for step in range(1, MAX_STEPS + 1):
         # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
         # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
@@ -2292,6 +2293,7 @@ def run_task(messages, model):
             # Feldnamen-Fehler nicht bemerkt haben.
             if CHECK and not RAN_SINCE_WRITE and finish_rejects < MAX_FINISH_REJECTS:
                 finish_rejects += 1
+                check_finish_pending = True
                 if CHECK_PLAN:
                     obs = ("FINISH ABGELEHNT (Check-Modus) — du hast deine Arbeit seit "
                            "der letzten Aenderung nicht ausgefuehrt. Das sind DEINE "
@@ -2396,6 +2398,18 @@ def run_task(messages, model):
         # curl-Test ist dann der Vordergrund-run).
         if name == "run" and ok and result.startswith("exit=0"):
             RAN_SINCE_WRITE = True
+            if check_finish_pending:
+                # Finish-Wiedervorlage: ohne diesen Anstoss verlor das Modell
+                # nach der Check-Zurueckweisung den Faden (real beobachtet:
+                # Pruefung laengst erfolgt, aber statt finish begann es, das
+                # Projekt 'zuerst zu untersuchen' — bis ins Schrittlimit).
+                check_finish_pending = False
+                result += ("\n[HINWEIS VOM TOOL] Dein frueheres finish wurde nur "
+                           "wegen fehlender Pruefung zurueckgewiesen — jetzt gab "
+                           "es einen erfolgreichen run (exit=0). Fehlt noch eine "
+                           "konkrete Pruefung, fuehre GENAU DIE noch aus; sonst "
+                           "gib JETZT finish aus. Beginne NICHT, das Projekt neu "
+                           "zu erkunden.")
 
         # Geschriebene Dateien fuer Rollback merken und (bekannte Typen) validieren.
         valed = ""
