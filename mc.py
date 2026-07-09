@@ -27,6 +27,10 @@ Env-Variablen:
   MC_BASE_URL  (default http://localhost:1234/v1 — lokales LM Studio)
   MC_MODEL     (default gemma-4-26b-a4b-it@mxfp4)
   MC_API_KEY   (optional, falls der Endpoint einen Key verlangt)
+
+Konfig-Datei (fuer den Alltag): ~/.mc.json bzw. MC_CONFIG=<pfad> — Schluessel
+base_url, model, api_key, headers, proxy, ca_bundle, check, fence, verbose,
+max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
 """
 
 import argparse
@@ -45,21 +49,65 @@ import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
 
-BASE_URL = os.environ.get("MC_BASE_URL", "http://localhost:1234/v1").rstrip("/")
-DEFAULT_MODEL = os.environ.get("MC_MODEL", "gemma-4-26b-a4b-it@mxfp4")
-API_KEY = os.environ.get("MC_API_KEY", "")
+def _load_config():
+    """Laedt eine optionale Konfig-Datei: ~/.mc.json (oder MC_CONFIG=<pfad>).
+    Fuer Menschen gedacht, die das Tool taeglich benutzen: statt vor jedem
+    Aufruf Env-Variablen zu setzen (unter Windows besonders laestig), stehen
+    base_url, model, headers & Co. einmal in der Datei — der Aufruf ist dann
+    nur noch 'python mc.py "aufgabe"'. Rangfolge ueberall:
+    CLI-Flag > Env-Variable > Konfig-Datei > eingebauter Default."""
+    path = os.environ.get("MC_CONFIG") or os.path.join(
+        os.path.expanduser("~"), ".mc.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("Inhalt ist kein JSON-Objekt")
+        cfg["_path"] = path
+        return cfg
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Warnung: Konfig-Datei {path} unlesbar ({e}) — wird ignoriert.",
+              file=sys.stderr)
+        return {}
+
+
+CONFIG = _load_config()
+
+
+def _truthy(val):
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() not in ("", "0", "false", "no", "nein")
+
+
+def _setting(env, key, default):
+    """Ein Einstellwert: Env-Variable schlaegt Konfig-Datei schlaegt Default."""
+    v = os.environ.get(env)
+    if v:
+        return v
+    if key in CONFIG:
+        return CONFIG[key]
+    return default
+
+
+BASE_URL = str(_setting("MC_BASE_URL", "base_url", "http://localhost:1234/v1")).rstrip("/")
+DEFAULT_MODEL = str(_setting("MC_MODEL", "model", "gemma-4-26b-a4b-it@mxfp4"))
+API_KEY = str(_setting("MC_API_KEY", "api_key", ""))
 # Zusaetzliche HTTP-Header pro Request, z.B. MC_HEADERS="X-Foo: bar; X-Baz: qux"
-# (mehrere durch ';' oder Zeilenumbruch getrennt, je 'Name: Wert').
+# (mehrere durch ';' oder Zeilenumbruch getrennt, je 'Name: Wert'). In der
+# Konfig-Datei alternativ als Objekt: "headers": {"X-Foo": "bar"}.
 EXTRA_HEADERS_RAW = os.environ.get("MC_HEADERS", "")
 
 # Netzwerk: in Firmenumgebungen (z.B. Zscaler) muss der Traffic durch einen Proxy,
 # und das TLS wird oft mit einem eigenen CA-Zertifikat aufgebrochen.
-PROXY = os.environ.get("MC_PROXY", "")              # z.B. http://proxy:8080
-CA_BUNDLE = os.environ.get("MC_CA_BUNDLE", "")       # Pfad zur Zscaler-CA (.pem)
+PROXY = str(_setting("MC_PROXY", "proxy", ""))       # z.B. http://proxy:8080
+CA_BUNDLE = str(_setting("MC_CA_BUNDLE", "ca_bundle", ""))  # Pfad zur Zscaler-CA (.pem)
 INSECURE = False                                     # TLS-Pruefung abschalten (Notnagel)
-VERBOSE = os.environ.get("MC_VERBOSE", "") not in ("", "0", "false")  # passive Logausgaben
+VERBOSE = _truthy(_setting("MC_VERBOSE", "verbose", False))  # passive Logausgaben
 
-MAX_STEPS = int(os.environ.get("MC_MAX_STEPS", "40"))  # Sicherheitslimit pro Aufgabe
+MAX_STEPS = int(_setting("MC_MAX_STEPS", "max_steps", 40))  # Sicherheitslimit pro Aufgabe
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 
 # Validierung geschriebener Dateien (bekannte Typen) + Git-Rollback.
@@ -84,7 +132,7 @@ EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Chec
 # Arbeit nach der letzten Aenderung per run WIRKLICH ausgefuehrt hat (exit=0).
 # Hintergrund: Syntax-Validierung findet keine falschen API-Annahmen,
 # Feldnamen-Verwechslungen oder kaputte Dependencies — echte Ausfuehrung schon.
-CHECK = os.environ.get("MC_CHECK", "") not in ("", "0", "false")
+CHECK = _truthy(_setting("MC_CHECK", "check", False))
 RAN_SINCE_WRITE = False    # seit letztem Schreiben ein run mit exit=0?
 BG_PROCS = []              # Hintergrundprozesse (Dev-Server); Ende: aufgeraeumt
 # Selbst genanntes Pruefprogramm aus der Plan-Phase (--plan --check): wird bei
@@ -92,11 +140,17 @@ BG_PROCS = []              # Hintergrundprozesse (Dev-Server); Ende: aufgeraeumt
 # "irgendwas ausfuehren" zu erinnern — das Modell soll an seinem EIGENEN
 # Versprechen gemessen werden, nicht an einer abstrakten Regel.
 CHECK_PLAN = ""
-# Notbremse fuer run mit --yes: offensichtlich destruktive Kommandos ablehnen.
+# Notbremse fuer run mit --yes: offensichtlich destruktive Kommandos ablehnen —
+# inkl. der Windows-Pendants (del /s, rmdir /s, format, reg delete, diskpart),
+# die vorher komplett durchgerutscht waeren.
 DANGEROUS_RUN = re.compile(
-    r"\b(sudo|shutdown|reboot|halt|mkfs\S*)\b"
+    r"\b(sudo|shutdown|reboot|halt|mkfs\S*|diskpart)\b"
     r"|rm\s+(-\w+\s+)*(/|~)(\s|$)"
-    r"|dd\s+.*of=/dev/")
+    r"|dd\s+.*of=/dev/"
+    r"|\b(del|erase)\s+(/\w\s+)*/[sq]\b"
+    r"|\b(rmdir|rd)\s+(/\w\s+)*/s\b"
+    r"|\bformat\s+[a-z]:"
+    r"|\breg\s+delete\b", re.IGNORECASE)
 SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
 # Projekt-Generatoren (Scaffolder): fragen interaktiv nach 'Overwrite?', wenn das
 # Zielverzeichnis schon existiert — und haengen dann bis zum Timeout.
@@ -119,13 +173,15 @@ _LOADED_CTX_CACHE = {}  # model -> ermitteltes Zeichen-Limit (einmal pro Lauf ab
 # mitgeschickt wird. Auf lokalen Maschinen ist Prompt-Processing der
 # Flaschenhals -> aeltere Schritte werden auf Kurzfassungen reduziert; die
 # Dateien liegen ja auf der Platte und sind per read_file/grep erreichbar.
-KEEP_CONTEXT = int(os.environ.get("MC_KEEP_CONTEXT", "3"))  # letzte N Schritte bleiben voll
+KEEP_CONTEXT = int(_setting("MC_KEEP_CONTEXT", "keep_context", 3))  # letzte N Schritte bleiben voll
 PRUNE = True               # Kontext-Beschneidung an (--no-prune schaltet ab)
 
-# Fence-Modus: Dateiinhalte als rohe ```content Bloecke statt als escapte
-# JSON-Strings (--fence / MC_FENCE=1). Betrifft nur, was der System-Prompt dem
+# Fence-Modus: Dateiinhalte (und edit_file-old/new) als rohe ```-Bloecke statt
+# als escapte JSON-Strings. Seit den Weiterentwicklungs-Tests DEFAULT AN —
+# die JSON-Fehlerrate der betroffenen Laeufe fiel damit auf 0 (--no-fence /
+# MC_FENCE=0 schaltet zurueck). Betrifft nur, was der System-Prompt dem
 # Modell beibringt — der Parser versteht IMMER beide Formate.
-FENCE = os.environ.get("MC_FENCE", "") not in ("", "0", "false")
+FENCE = _truthy(_setting("MC_FENCE", "fence", True))
 
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
@@ -150,6 +206,9 @@ class C:
             if k.isupper():
                 setattr(cls, k, "")
 
+
+if sys.platform == "win32" and sys.stdout.isatty():
+    os.system("")  # aktiviert die VT-Escape-Verarbeitung in cmd.exe/PowerShell
 
 if not sys.stdout.isatty():
     C.disable()
@@ -283,10 +342,16 @@ def print_usage_summary():
 
 
 def extra_headers():
-    """Parst MC_HEADERS ('Name: Wert' je Eintrag, getrennt durch ';' oder Zeilen-
-    umbruch) in ein Dict, das jedem Request beigefuegt wird."""
+    """Header aus Konfig-Datei ('headers' als Objekt ODER String) und MC_HEADERS
+    ('Name: Wert' je Eintrag, getrennt durch ';' oder Zeilenumbruch) in ein Dict,
+    das jedem Request beigefuegt wird. Env-Eintraege ueberschreiben die Konfig."""
     out = {}
-    for part in re.split(r"[;\n]", EXTRA_HEADERS_RAW):
+    cfg = CONFIG.get("headers")
+    if isinstance(cfg, dict):
+        out.update({str(k): str(v) for k, v in cfg.items()})
+    raw = (cfg if isinstance(cfg, str) else "")
+    raw = (raw + "\n" + EXTRA_HEADERS_RAW) if raw else EXTRA_HEADERS_RAW
+    for part in re.split(r"[;\n]", raw):
         part = part.strip()
         if not part or ":" not in part:
             continue
@@ -1049,10 +1114,11 @@ def do_write_files(args):
                        f"maximal {MAX_WRITE_FILES_BATCH} erlaubt (Schutz vor abgeschnittenen "
                        f"Antworten). Teile auf MEHRERE write_files-Schritte auf "
                        f"(z.B. erst backend/, dann frontend/) und fahre fort.")
-    force = bool(args.get("overwrite"))
-    gated = [g for g in (_overwrite_gate(f.get("path", ""), force=force)
+    force = bool(args.get("overwrite"))  # gilt fuer den ganzen Block …
+    gated = [g for g in (_overwrite_gate(f.get("path", ""),
+                                         force=force or bool(f.get("overwrite")))
                          for f in files if isinstance(f, dict) and f.get("path"))
-             if g]
+             if g]  # … oder pro Datei via "overwrite":true am Datei-Eintrag
     if gated:
         print(f"{C.RED}✗ Overwrite-Gate: {len(gated)} existierende, nie gelesene "
               f"Datei(en){C.RESET}")
@@ -1359,11 +1425,16 @@ def do_run(args):
         import tempfile
         logf = tempfile.NamedTemporaryFile(prefix="mc_bg_", suffix=".log",
                                            delete=False, mode="w")
+        kwargs = dict(shell=True, stdout=logf, stderr=subprocess.STDOUT,
+                      stdin=subprocess.DEVNULL)
+        if sys.platform == "win32":
+            # start_new_session ist POSIX-only; unter Windows braucht der
+            # spaetere Kill des ganzen Prozessbaums eine eigene Prozessgruppe.
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
         try:
-            proc = subprocess.Popen(cmd, shell=True, stdout=logf,
-                                    stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL,
-                                    start_new_session=True)
+            proc = subprocess.Popen(cmd, **kwargs)
         except Exception as e:
             return False, f"FEHLER beim Start: {e}"
         BG_PROCS.append(proc)
@@ -1417,13 +1488,19 @@ def do_run(args):
 
 
 def kill_bg_procs():
-    """Beendet alle vom Modell gestarteten Hintergrundprozesse (samt Kindern,
-    dank start_new_session=True ueber die Prozessgruppe)."""
+    """Beendet alle vom Modell gestarteten Hintergrundprozesse samt Kindern —
+    POSIX ueber die Prozessgruppe (start_new_session), Windows ueber
+    'taskkill /T' (os.killpg existiert dort nicht; vorher wurde die Exception
+    still geschluckt und jeder Dev-Server blieb als Zombie zurueck)."""
     import signal
     for p in BG_PROCS:
         if p.poll() is None:
             try:
-                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                                   capture_output=True, timeout=10)
+                else:
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
             except Exception:
                 pass
     if BG_PROCS:
@@ -1646,7 +1723,9 @@ def expected_files_from_task(task):
     bekannte Quelltext-Endung). Grundlage fuer den deterministischen
     Finish-Check: ein Modell kann sich dann nicht mehr in Prosa fuer 'fertig'
     erklaeren, waehrend geforderte Dateien fehlen."""
-    task = task or ""
+    # Backslashes normalisieren: Windows-Nutzer schreiben Pfade wie
+    # backend\app.py — os-Funktionen akzeptieren auf Windows auch '/'.
+    task = (task or "").replace("\\", "/")
     out = []
     for m in re.finditer(r"[A-Za-z0-9_](?:[A-Za-z0-9_./-]*[A-Za-z0-9_])?\.[A-Za-z0-9]{1,6}",
                          task):
@@ -1891,6 +1970,14 @@ def run_task(messages, model):
     global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL
     CLEAN_FINISH = False
     CURRENT_MODEL = model
+    # Aufgaben-lokalen Zustand zuruecksetzen: im interaktiven Modus galten
+    # READ_FILES & Co. bisher fuer die GANZE Sitzung — eine in Aufgabe 1
+    # gelesene Datei durfte in Aufgabe 5 noch blind ueberschrieben werden,
+    # obwohl ihr Inhalt laengst veraltet sein konnte.
+    READ_FILES.clear()
+    OVERWRITE_REJECTS.clear()
+    WRITE_HISTORY.clear()
+    RAN_SINCE_WRITE = False
     finish_rejects = 0
     parse_error_streak = 0
     check_probe_done = False
@@ -2179,9 +2266,6 @@ def main():
     ap.add_argument("--dir", "-C", metavar="PFAD",
                     help="Zielverzeichnis, in dem gearbeitet wird (statt des aktuellen). "
                          "So kann mc.py getrennt vom bearbeiteten Projekt liegen.")
-    ap.add_argument("--file", action="append", default=[], metavar="PFAD",
-                    help="Datei(en) gleich in den Kontext laden (mehrfach angebbar), "
-                         "z.B. --file=index.html — der Agent 'sieht' sie dann sofort")
     ap.add_argument("--no-validate", action="store_true",
                     help="Validierung geschriebener Dateien (py/json/yaml/php) abschalten")
     ap.add_argument("--keep-context", type=int, default=KEEP_CONTEXT, metavar="N",
@@ -2191,9 +2275,12 @@ def main():
     ap.add_argument("--no-prune", action="store_true",
                     help="Kontext-Beschneidung abschalten (volle Historie senden)")
     ap.add_argument("--fence", action="store_true",
-                    help="Fence-Modus: Dateiinhalte als rohe ```content Bloecke statt "
-                         "als JSON-Strings (vermeidet Escaping-Fehler); der Parser "
-                         "versteht unabhaengig davon immer beide Formate")
+                    help="Fence-Modus erzwingen (ist bereits der Default): Datei-"
+                         "inhalte und edit_file-old/new als rohe ```-Bloecke statt "
+                         "als JSON-Strings (vermeidet Escaping-Fehler)")
+    ap.add_argument("--no-fence", action="store_true",
+                    help="Fence-Modus abschalten (Dateiinhalte als JSON-Strings); "
+                         "der Parser versteht unabhaengig davon immer beide Formate")
     ap.add_argument("--check", action="store_true",
                     help="Selbsttest-Modus: finish wird erst akzeptiert, wenn das "
                          "Modell seine Arbeit per run real ausgefuehrt/geprueft hat "
@@ -2207,7 +2294,10 @@ def main():
     CHECK = CHECK or args.check
     KEEP_CONTEXT = args.keep_context
     PRUNE = not args.no_prune
-    FENCE = FENCE or args.fence
+    if args.no_fence:
+        FENCE = False
+    elif args.fence:
+        FENCE = True
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
     # --plan funktioniert jetzt auch zusammen mit --yes: plan_phase() nutzt
     # input() direkt (nicht confirm()) und behandelt EOF bereits als "Plan
@@ -2222,10 +2312,7 @@ def main():
 
     # Ins Zielverzeichnis wechseln, damit mc.py raeumlich getrennt vom Projekt
     # liegen kann. Alles Weitere (Projektueberblick, find, Schreiben, Git) bezieht
-    # sich dann auf dieses Verzeichnis. --file-Pfade werden VOR dem Wechsel relativ
-    # zum Aufrufort aufgeloest, damit auch eine Datei von ausserhalb mitgegeben
-    # werden kann.
-    args.file = [os.path.abspath(f) for f in args.file]
+    # sich dann auf dieses Verzeichnis.
     if args.dir:
         try:
             os.chdir(args.dir)
@@ -2302,17 +2389,6 @@ def main():
         f"Wenn der Nutzer eine Datei ungenau benennt, ordne sie einer dieser Dateien "
         f"zu (find hilft beim unscharfen Suchen), statt blind eine neue anzulegen.")
 
-    # Mit --file uebergebene Dateien direkt in den Kontext legen (der Agent 'sieht'
-    # sie sofort, ohne erst read_file aufrufen zu muessen).
-    for fp in args.file:
-        try:
-            with open(fp, "r", encoding="utf-8", errors="replace") as fh:
-                fcontent = fh.read()
-            info(f"Datei in Kontext geladen: {fp} ({len(fcontent)} Zeichen)")
-            context_msg += (f"\n\n--- Mitgelieferte Datei: {fp} "
-                            f"({len(fcontent)} Zeichen) ---\n{truncate(fcontent)}")
-        except Exception as e:
-            print(f"{C.RED}--file: {fp} konnte nicht gelesen werden: {e}{C.RESET}")
     # System-Prompt und Projektueberblick in EINER system-Message buendeln.
     # Manche Chat-Templates (z.B. Ornith-GGUF) brechen bei zwei aufeinander-
     # folgenden system-Rollen sofort leer ab — eine kombinierte ist universell
