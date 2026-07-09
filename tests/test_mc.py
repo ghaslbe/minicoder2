@@ -237,6 +237,18 @@ def test_task_hints_leer_bei_leerem_verzeichnis():
     assert mc.task_hints("bau mir eine app") == ""
 
 
+def test_task_hints_liest_projekt_notizen():
+    with open(mc.MC_NOTES, "w") as f:
+        f.write("- Backend-Port: 5010 (FEST)\n- Feld heisst 'geburtstag'\n")
+    hints = mc.task_hints("mach irgendwas")
+    assert "Backend-Port: 5010" in hints
+    assert "HALTE DICH DARAN" in hints
+
+
+def test_system_prompt_lehrt_notizen():
+    assert "MC-NOTIZEN.md" in mc.system_prompt(True)
+
+
 # --------------------------- Kontext-Beschneidung ---------------------------
 
 def test_prune_kuerzt_alte_schritte_und_laesst_neue():
@@ -250,6 +262,44 @@ def test_prune_kuerzt_alte_schritte_und_laesst_neue():
     assert len(msgs[1]["content"]) < alt_len          # alt: gekuerzt
     assert len(msgs[-1]["content"]) > 600             # juengst: unangetastet
     assert msgs[0]["content"] == "S"                  # System-Prompt: nie
+
+
+# ------------------------ Prozess-/Port-Bewusstsein -------------------------
+
+@pytest.mark.parametrize("out", [
+    "OSError: [Errno 48] Address already in use",
+    "Error: listen EADDRINUSE: address already in use :::5010",
+    "OSError: [WinError 10048] Normalerweise darf jede Socketadresse ...",
+    "[Errno 98] Address already in use",
+])
+def test_addr_in_use_erkannt(out):
+    hint = mc._addr_in_use_hint(out)
+    assert "Port" in hint and "NICHT den Port" in hint
+
+
+def test_addr_in_use_nennt_laufende_bg_prozesse():
+    import subprocess as sp
+    p = sp.Popen("sleep 3", shell=True)
+    mc.BG_PROCS.append(p)
+    try:
+        hint = mc._addr_in_use_hint("EADDRINUSE")
+        assert f"pid={p.pid}" in hint
+        assert "sleep 3" in hint
+    finally:
+        p.kill()
+        mc.BG_PROCS.remove(p)
+
+
+def test_harmlose_ausgabe_ohne_hint():
+    assert mc._addr_in_use_hint("Server laeuft auf Port 5010") == ""
+
+
+def test_kill_hint_plattform():
+    hint = mc._kill_hint(1234)
+    if sys.platform == "win32":
+        assert "taskkill" in hint
+    else:
+        assert hint == "kill 1234"
 
 
 # ------------------------------ Konfiguration -------------------------------

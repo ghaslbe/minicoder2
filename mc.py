@@ -152,6 +152,13 @@ DANGEROUS_RUN = re.compile(
     r"|\bformat\s+[a-z]:"
     r"|\breg\s+delete\b", re.IGNORECASE)
 SHELL_BG = re.compile(r"(?<!&)&\s*$")  # trailiges einzelnes '&' (nicht '&&')
+# Port-belegt-Fehler aller gaengigen Plattformen/Runtimes: der haeufigste Grund
+# ist der EIGENE, frueher gestartete Hintergrundprozess. Ohne Hinweis wechseln
+# Modelle dann den Port (real beobachtet: 5010 -> 5050 -> 8888 -> 8000) und
+# hinterlassen eine App, deren Frontend ins Leere zeigt.
+ADDR_IN_USE = re.compile(
+    r"address already in use|EADDRINUSE|WinError\s+10048|Errno\s+(48|98)",
+    re.IGNORECASE)
 # Projekt-Generatoren (Scaffolder): fragen interaktiv nach 'Overwrite?', wenn das
 # Zielverzeichnis schon existiert — und haengen dann bis zum Timeout.
 GENERATOR_RE = re.compile(
@@ -1401,6 +1408,39 @@ def _generator_conflict(cmd):
     return ""
 
 
+def bg_status():
+    """Laufende, von mc gestartete Hintergrundprozesse als (pid, kommando)."""
+    return [(p.pid, p.args if isinstance(p.args, str) else " ".join(p.args))
+            for p in BG_PROCS if p.poll() is None]
+
+
+def _kill_hint(pid):
+    """Plattformrichtiges Kommando, um einen Prozess(baum) zu beenden."""
+    if sys.platform == "win32":
+        return f"taskkill /F /T /PID {pid}"
+    return f"kill {pid}"
+
+
+def _addr_in_use_hint(output):
+    """Erkennt 'Port belegt'-Fehler und benennt die wahrscheinliche Ursache:
+    den eigenen, frueher gestarteten Hintergrundprozess — mit konkretem
+    Kill-Kommando. WICHTIG dabei: den Port NICHT wechseln (das Frontend/
+    andere Teile referenzieren ihn bereits)."""
+    if not ADDR_IN_USE.search(output):
+        return ""
+    running = bg_status()
+    hint = ("\nHINWEIS: Der Port ist bereits belegt — sehr wahrscheinlich durch "
+            "deinen EIGENEN, frueher gestarteten Hintergrundprozess. Beende den "
+            "alten Prozess und starte dann ERNEUT AUF DEMSELBEN PORT. Wechsle "
+            "NICHT den Port — andere Teile des Projekts (z.B. das Frontend) "
+            "referenzieren ihn bereits.")
+    if running:
+        hint += "\nLaufende Hintergrundprozesse:"
+        for pid, cmd in running:
+            hint += f"\n  pid={pid}: {cmd}\n    beenden mit: {_kill_hint(pid)}"
+    return hint
+
+
 def do_run(args):
     cmd = args.get("command", "")
     bg = bool(args.get("background"))
@@ -1446,11 +1486,23 @@ def do_run(args):
             head = ""
         if proc.poll() is not None:
             return False, (f"Prozess hat sich sofort beendet (exit={proc.returncode}). "
-                           f"Ausgabe:\n{truncate(head or '(keine)')}")
-        return True, (f"laeuft im Hintergrund (pid={proc.pid}). Erste Ausgabe:\n"
-                      f"{truncate(head or '(noch keine)')}\n"
-                      "Pruefe den Dienst jetzt mit einem normalen run (z.B. curl). "
-                      "Hintergrundprozesse werden am Ende automatisch beendet.")
+                           f"Ausgabe:\n{truncate(head or '(keine)')}"
+                           + _addr_in_use_hint(head))
+        msg = (f"laeuft im Hintergrund (pid={proc.pid}). Erste Ausgabe:\n"
+               f"{truncate(head or '(noch keine)')}\n"
+               "Pruefe den Dienst jetzt mit einem normalen run (z.B. curl). "
+               "Hintergrundprozesse werden am Ende automatisch beendet.")
+        # Doppelstart-Schutzhinweis: laufende Geschwister-Prozesse benennen —
+        # sonst startet das Modell denselben Dienst mehrfach, der Port ist
+        # belegt, und es "loest" das per Port-Wechsel (siehe ADDR_IN_USE).
+        others = [(pid, c) for pid, c in bg_status() if pid != proc.pid]
+        if others:
+            msg += "\nACHTUNG: es laufen bereits weitere Hintergrundprozesse von dir:"
+            for pid, c in others:
+                msg += f"\n  pid={pid}: {c}  (beenden: {_kill_hint(pid)})"
+            msg += ("\nStarte denselben Dienst NICHT doppelt — beende zuerst den "
+                    "alten Prozess, falls das ein Neustart sein sollte.")
+        return True, msg
     try:
         # stdin geschlossen: ein Kommando, das interaktiv fragt (z.B. npm-Scaffolder
         # bei 'Overwrite?'), bekommt sofort EOF und scheitert mit lesbarer Meldung,
@@ -1467,6 +1519,7 @@ def do_run(args):
                     "ein so gestarteter Prozess wird von mc NICHT verfolgt und beim "
                     "Programmende NICHT automatisch beendet (verwaist danach). Nutze "
                     "fuer Dauerlaeufer stattdessen \"background\":true.")
+        warn += _addr_in_use_hint(out)
         if len(out) > MAX_OUTPUT_CHARS and FETCH_URL_RE.search(cmd):
             # Grosser curl/wget-Abruf (z.B. eine ganze Webseite): statt blind
             # auf MAX_OUTPUT_CHARS zu kuerzen (haengt bei HTML oft nur im
@@ -1592,6 +1645,12 @@ Regeln:
   egal ob dort ein Server lauscht (u.a. 5060/5061 SIP, 6000 X11, 6665-6669 IRC
   -> im Browser ERR_UNSAFE_PORT, obwohl curl funktioniert). Sichere Wahl:
   5010-5059, 5065-5099, 8000-8999.
+- PROJEKT-NOTIZEN: Triffst du eine FESTLEGUNG, die spaetere Laeufe kennen
+  muessen (fester Port, Feld-/Spaltennamen, gewaehlte Bibliothek, Start-
+  Kommandos), halte sie STICHPUNKTARTIG in der Datei MC-NOTIZEN.md fest
+  (anlegen bzw. per edit_file ergaenzen — kurz halten, keine Prosa). Steht
+  in den Projekt-Notizen bereits eine Festlegung (z.B. ein fester Port),
+  aendere sie NICHT, sondern passe abweichenden Code an die Festlegung an.
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -1745,6 +1804,9 @@ def expected_files_from_task(task):
 # deterministische Task-Anreicherung beim Start).
 PROJECT_MARKERS = ("package.json", "vite.config.js", "vite.config.ts",
                    "requirements.txt", "pyproject.toml", "composer.json")
+# Projekt-Gedaechtnis: Invarianten (feste Ports, Feldnamen, Konventionen), die
+# Laeufe ueberdauern muessen. Wird beim Start in die Task-Hinweise eingespeist.
+MC_NOTES = "MC-NOTIZEN.md"
 
 
 def existing_project_dirs(max_depth=2):
@@ -1773,6 +1835,22 @@ def task_hints(task):
     Konkrete, aufgabenbezogene Anweisungen direkt in der User-Message wirken
     bei kleinen Modellen deutlich besser als eine Regel im System-Prompt."""
     hints = []
+    # Projekt-Notizen: Invarianten und Festlegungen frueherer Laeufe (feste
+    # Ports, Feldnamen, Konventionen). Jeder Lauf startet ohne Gedaechtnis —
+    # real beobachtet: ein Reparatur-Lauf bog das Frontend auf den falschen
+    # Backend-Port um, weil er die Festlegung "Port 5010" nicht kennen KONNTE.
+    # Die Datei pflegt das Modell selbst (System-Prompt-Regel); hier wird sie
+    # nur deterministisch eingelesen.
+    if os.path.isfile(MC_NOTES):
+        try:
+            with open(MC_NOTES, "r", encoding="utf-8", errors="replace") as f:
+                notes = f.read().strip()
+            if notes:
+                hints.append(f"Projekt-Notizen aus {MC_NOTES} (Festlegungen "
+                             f"frueherer Laeufe — HALTE DICH DARAN):\n"
+                             + notes[:2000])
+        except OSError:
+            pass
     existing = [p for p in expected_files_from_task(task) if os.path.isfile(p)]
     projs = existing_project_dirs()
     if projs:
