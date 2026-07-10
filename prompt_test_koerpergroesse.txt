@@ -1,0 +1,16 @@
+Erweitere die BESTEHENDE Personenverwaltung in diesem Projektordner (backend/ mit Flask+SQLite, frontend/ mit React+Vite) um ein neues Feld und eine Sortierung. Das ist eine WEITERENTWICKLUNG, kein Neubau - lies bestehende Dateien zuerst und aendere gezielt.
+
+NEUES FELD 'koerpergroesse' (Koerpergroesse in cm, ganze Zahl, optional/nullable):
+1. Backend: Spalte in der SQLite-Tabelle ergaenzen. WICHTIG: die Datenbank personen.db enthaelt BESTEHENDE Daten, die erhalten bleiben muessen - nutze ALTER TABLE ... ADD COLUMN (idempotent, z.B. beim Start pruefen ob die Spalte schon existiert), NICHT die Tabelle loeschen/neu anlegen. GET/POST/PUT muessen das Feld liefern bzw. akzeptieren; auch der CSV-Export soll die Spalte enthalten.
+2. Frontend: Eingabefeld im Formular (Anlegen UND Bearbeiten), Anzeige des Werts in der Personenliste (mit Einheit 'cm', leer wenn nicht gesetzt).
+
+SORTIERUNG:
+3. Die Personenliste im Frontend soll nach Koerpergroesse sortierbar sein - ein klickbares Bedienelement (z.B. Button oder Spaltenkopf), das zwischen aufsteigend/absteigend umschaltet und den aktuellen Zustand anzeigt. Personen ohne Koerpergroesse ans Ende der Liste, unabhaengig von der Richtung.
+
+WICHTIGER KONTEXT ZU LAUFENDEN PROZESSEN: Das Backend laeuft BEREITS auf Port 5010 (Flask im Debug-Modus mit Auto-Reload - deine Aenderungen an backend/app.py werden automatisch uebernommen). Der Vite-Dev-Server laeuft BEREITS auf Port 8095. Starte KEINE eigenen Server-Instanzen - teste direkt gegen die laufenden (curl auf http://localhost:5010).
+
+PRUEFE deine Arbeit wirklich, bevor du finish aufrufst:
+1. python3 -c "import ast; ast.parse(open('backend/app.py').read())" muss fehlerfrei sein.
+2. Per curl gegen das LAUFENDE Backend: eine Person MIT koerpergroesse anlegen (POST), pruefen dass GET sie mit dem Wert liefert, eine bestehende Person per PUT eine koerpergroesse geben, und pruefen dass die ALTEN Bestandsdaten weiterhin vollstaendig da sind (nichts verloren).
+3. Frontend: pruefen dass der Build funktioniert (cd frontend && npm run build muss exit 0 liefern).
+Behebe alle Fehler, bevor du finish aufrufst.
