@@ -967,15 +967,48 @@ def confirm(prompt):
     return ans in ("y", "yes", "j", "ja")
 
 
+# read_file darf deutlich mehr liefern als Tool-Ausgaben (MAX_OUTPUT_CHARS):
+# Real beobachtet, dass Modelle bei einer mittig gekappten Datei anfangen,
+# sie in sed/cat-Haeppchen zu blaettern — zyklisch bis ins Schrittlimit.
+# Der Verlauf waechst dadurch MEHR als durch einmal Ganz-Lesen (und die
+# Kontext-Beschneidung kuerzt alte Reads ohnehin wieder weg).
+READFILE_MAX_CHARS = 24000
+
+
 def do_read_file(args):
     path = args.get("path", "")
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-        READ_FILES.add(os.path.normpath(path))
-        return True, f"Inhalt von {path} ({len(content)} Zeichen):\n{truncate(content)}"
     except Exception as e:
         return False, f"FEHLER beim Lesen von {path}: {e}"
+    READ_FILES.add(os.path.normpath(path))
+    lines = content.split("\n")
+    total = len(lines)
+    frm, to = args.get("from"), args.get("to")
+    if frm or to:
+        try:
+            frm = max(int(frm or 1), 1)
+            to = min(int(to or frm + 199), total)
+        except (TypeError, ValueError):
+            return False, ("FEHLER: 'from'/'to' muessen Zeilennummern sein, z.B. "
+                           "{\"action\":\"read_file\",\"path\":\"...\",\"from\":120,\"to\":260}")
+        seg = "\n".join(lines[frm - 1:to])
+        return True, (f"Zeilen {frm}-{to} von {path} (gesamt {total} Zeilen):\n"
+                      f"{truncate(seg)}")
+    if len(content) > READFILE_MAX_CHARS:
+        head = int(READFILE_MAX_CHARS * 0.6)
+        tail = READFILE_MAX_CHARS - head
+        return True, (
+            f"Inhalt von {path} ({len(content)} Zeichen, {total} Zeilen) — zu "
+            f"gross fuer eine Ausgabe, Anfang und Ende folgen. Den FEHLENDEN "
+            f"MITTELTEIL holst du gezielt mit "
+            f"{{\"action\":\"read_file\",\"path\":\"{path}\",\"from\":<zeile>,\"to\":<zeile>}} "
+            f"— NICHT mit sed/cat blaettern.\n"
+            + content[:head]
+            + f"\n...[Mitte ausgelassen — per from/to nachladen]...\n"
+            + content[-tail:])
+    return True, f"Inhalt von {path} ({len(content)} Zeichen, {total} Zeilen):\n{content}"
 
 
 OVERWRITE_REJECTS = {}      # Pfad -> Anzahl abgelehnter blinder Ueberschreib-Versuche
@@ -1613,7 +1646,7 @@ Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst. Du erhael
 das Ergebnis und faehrst fort.
 
 Verfuegbare Aktionen (Feld "action"):
-  read_file   -> {"action":"read_file","path":"<pfad>"}
+  read_file   -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich, fuer den Mittelteil grosser Dateien — NICHT per sed/cat blaettern)
 @@WRITE_SPEC@@
 @@EDIT_SPEC@@
   list_dir    -> {"action":"list_dir","path":"<pfad>"}

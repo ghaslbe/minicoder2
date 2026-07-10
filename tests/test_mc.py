@@ -366,6 +366,32 @@ def test_kill_hint_plattform():
         assert hint == "kill 1234"
 
 
+# ------------------------------- read_file ----------------------------------
+
+def test_read_file_klein_komplett():
+    with open("a.py", "w") as f:
+        f.write("zeile1\nzeile2\nzeile3\n")
+    ok, msg = mc.do_read_file({"path": "a.py"})
+    assert ok and "zeile2" in msg and "4 Zeilen" in msg
+
+
+def test_read_file_zeilenbereich():
+    with open("a.py", "w") as f:
+        f.write("\n".join(f"zeile{i}" for i in range(1, 101)))
+    ok, msg = mc.do_read_file({"path": "a.py", "from": 40, "to": 42})
+    assert ok and "Zeilen 40-42" in msg
+    assert "zeile40" in msg and "zeile42" in msg and "zeile43" not in msg
+
+
+def test_read_file_gross_mit_nachlade_hinweis():
+    with open("gross.py", "w") as f:
+        f.write("kopf\n" + ("x" * 78 + "\n") * 400 + "ende\n")  # > 24000 Zeichen
+    ok, msg = mc.do_read_file({"path": "gross.py"})
+    assert ok
+    assert "from" in msg and "Mitte ausgelassen" in msg
+    assert msg.strip().endswith("ende") or "ende" in msg[-50:]
+
+
 # --------------------------- Shell-Lese-Schleifen ---------------------------
 
 def test_shell_read_registriert_und_warnt_ab_drittem_mal():
