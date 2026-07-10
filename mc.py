@@ -1467,6 +1467,8 @@ def _shell_read_hint(cmd):
                          f"Shell. Hoer auf, in der Datei zu blaettern: nutze EINMAL "
                          f"read_file fuer den kompletten Inhalt und fuehre dann "
                          f"SOFORT die geplante Aenderung mit edit_file aus.")
+                print(f"{C.YELLOW}⚠ Shell-Lese-Schleife: {tok} zum {n}. Mal "
+                      f"— Hinweis angehaengt.{C.RESET}")
     return hint
 
 
@@ -1500,6 +1502,8 @@ def _addr_in_use_hint(output):
         hint += "\nLaufende Hintergrundprozesse:"
         for pid, cmd in running:
             hint += f"\n  pid={pid}: {cmd}\n    beenden mit: {_kill_hint(pid)}"
+    print(f"{C.YELLOW}⚠ Port belegt erkannt — Hinweis (eigenen Prozess beenden, "
+          f"Port behalten) angehaengt.{C.RESET}")
     return hint
 
 
@@ -2474,6 +2478,8 @@ def run_task(messages, model):
                            "konkrete Pruefung, fuehre GENAU DIE noch aus; sonst "
                            "gib JETZT finish aus. Beginne NICHT, das Projekt neu "
                            "zu erkunden.")
+                print(f"{C.YELLOW}⚠ finish-Wiedervorlage angehaengt (Pruefung "
+                      f"erfolgt — jetzt abschliessen).{C.RESET}")
 
         # Geschriebene Dateien fuer Rollback merken und (bekannte Typen) validieren.
         valed = ""
