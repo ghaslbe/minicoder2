@@ -366,6 +366,31 @@ def test_kill_hint_plattform():
         assert hint == "kill 1234"
 
 
+# --------------------------- Runaway-Erkennung ------------------------------
+
+def test_runaway_zeichen_dauerlauf():
+    assert mc._looks_runaway("ok bis hier\n" + "Y" * 200) is True
+
+
+def test_runaway_wort_wiederholung():
+    assert mc._looks_runaway("prosa davor\n" + "GO " * 30) is True
+
+
+def test_runaway_lange_zeile_ohne_umbruch():
+    assert mc._looks_runaway("normal\n" + "af9c" * 700) is True  # 2800 Z., kein \n
+
+
+def test_runaway_lange_zeile_im_offenen_fence_erlaubt():
+    text = "```action\n" + '{"content":"' + "x y " * 700  # offener Fence
+    assert mc._looks_runaway(text) is False
+
+
+def test_runaway_gesunde_antworten():
+    assert mc._looks_runaway("Ich lege die Datei an.\n```action\n{}\n```\n") is False
+    code = "\n".join("  const x%d = compute(%d);" % (i, i) for i in range(200))
+    assert mc._looks_runaway(code) is False
+
+
 # ------------------------------- read_file ----------------------------------
 
 def test_read_file_klein_komplett():

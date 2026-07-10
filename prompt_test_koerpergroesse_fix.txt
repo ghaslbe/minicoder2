@@ -1,0 +1,9 @@
+In der bestehenden Personenverwaltung (frontend/src/App.jsx) wurde das Feld 'koerpergroesse' bereits in Backend, Formular und Sortier-Logik integriert - es fehlen aber noch DREI kleine Stellen im Frontend. Lies frontend/src/App.jsx zuerst und aendere dann gezielt per edit_file. Backend NICHT anfassen, das ist fertig.
+
+1. TABELLEN-SPALTE: Die Personentabelle hat klickbare Spaltenkoepfe (th mit handleSort(...) und Pfeil-Indikator) fuer name, adresse, telefon, email, geburtstag - aber KEINEN fuer koerpergroesse. Ergaenze einen Spaltenkopf 'Groesse' mit handleSort('koerpergroesse') im selben Stil (gleiche className, gleicher Pfeil-Indikator) UND die zugehoerige Zelle in den Tabellenzeilen, die den Wert als '<wert> cm' anzeigt (leer, wenn nicht gesetzt).
+
+2. NULL-BEHANDLUNG BEIM SORTIEREN: In der .sort()-Logik fehlt die Behandlung fehlender Werte. Personen ohne Wert im aktuellen Sortierfeld (null/undefined/leer) sollen IMMER ans Ende der Liste, unabhaengig von auf-/absteigend. Zahlenfelder (koerpergroesse) muessen numerisch verglichen werden, nicht als String.
+
+3. FORMULAR-RESETS: Es gibt drei setFormData-Aufrufe, die das Formular zuruecksetzen (nach PUT, nach POST, beim Abbrechen) - sie setzen unvollstaendige Objekte (es fehlen je nach Stelle koerpergroesse, notizen, email, geburtstag). Bringe ALLE drei auf das vollstaendige Objekt: { name: '', adresse: '', telefon: '', email: '', geburtstag: '', notizen: '', koerpergroesse: '' }.
+
+PRUEFE deine Arbeit: cd frontend && npm run build muss exit 0 liefern. Das Backend laeuft bereits auf Port 5010 - nichts starten. Gib danach finish aus.
