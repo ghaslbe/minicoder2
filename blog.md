@@ -2704,6 +2704,67 @@ falsches Verhalten mechanisch unmöglich oder teuer und richtiges billig"*.
 Kleine Modelle folgen keinem Regelwerk — aber sie folgen sehr zuverlässig
 einer konkreten Fehlermeldung, die ihnen den nächsten Schritt vorschreibt.
 
+## 14. Ein großes Modell im Weiterentwicklungs-Szenario — und der unbewachte Ausgang
+
+Nach all den kleinen lokalen Modellen die Gegenprobe: **Kann ein großes
+Cloud-Modell die Weiterentwicklungs-Leitplanken einfach so bedienen?**
+Aufgabe: die bestehende Personenverwaltung (`test/`) um ein Feld
+`koerpergroesse` (cm) erweitern plus Sortierung danach — mit
+`deepseek/deepseek-v4-flash` über OpenRouter ($0.09/$0.18 pro Mio Token),
+gegen die **laufenden** Server (Backend 5010 mit Flask-Autoreload, Vite
+8095), mit der harten Anforderung, dass die bestehenden Daten in
+`personen.db` erhalten bleiben.
+
+**Lauf 1 (155 s, $0.0151, 23 Schritte) — Bilderbuch-Anfang:** Der
+Ist-Zustand-Hinweis feuerte, das Modell las **zuerst** `app.py` und
+`App.jsx`, prüfte das DB-Schema per `PRAGMA table_info` und arbeitete
+dann ausschließlich mit gezielten `edit_file`-Schritten — kein einziger
+blinder Neuschrieb, das Overwrite-Gate musste nie eingreifen. Backend
+komplett korrekt: idempotente `ALTER TABLE`-Migration, Feld in
+POST/PUT/GET und CSV-Export, Bestandsdaten intakt (live verifiziert).
+Das Frontend bekam sogar eine **verallgemeinerte Sortierung über alle
+Spalten** — mehr als verlangt.
+
+**Dann der eigentliche Fund.** In Schritt 23 kündigte das Modell den
+nächsten Edit an und schrieb dann wörtlich
+`(edit_file ausgefuehrt: frontend/src/App.jsx (0 Z) — Inhalt gekuerzt)`
+— **als Prosa**. Es imitierte exakt das Format, mit dem `mc` ältere
+Schritte in der gekürzten Kontext-Historie zusammenfasst, das es in
+seinen eigenen Nachrichten sah. Kein Action-Block, kein Edit — und die
+Regel „Antwort ohne Aktion = Textantwort = fertig" beendete den Lauf
+sofort. **Mitten in der Arbeit, unter Umgehung des kompletten
+Check-/Finish-Gates.** Prosa-Ende war ein unbewachter Ausgang: alle
+Gates dieser Testreihe (Check-Modus, Finish-Verifikation, Notizen-
+Nachfrage) hängen am `finish` — eine Antwort, die einfach keinen
+Action-Block enthält, lief an allen vorbei. Zurück blieben drei Lücken:
+keine Größen-Spalte in der Tabelle (Kernanforderung per UI unbenutzbar),
+keine Null-Behandlung beim Sortieren, unvollständige Formular-Resets —
+exakt die Punkte, die das Modell selbst noch als offen benannt hatte.
+
+**Der `mc.py`-Fix:** Wurde im Lauf bereits geschrieben, bekommt eine
+aktionslose Antwort jetzt genau **eine** Rückfrage („Text wie
+`(edit_file ausgefuehrt: ...)` führt KEINE Aktion aus — fertig heißt
+finish, sonst nächste echte Aktion"). Ein `finish` läuft dann durch alle
+Gates; eine zweite aktionslose Antwort gilt als bewusstes Prosa-Ende
+(keine Schleife); reine Frage-Antwort-Läufe ohne Schreibaktionen enden
+unverändert sofort. Drei Szenarien isoliert getestet, Suite 66/66.
+
+**Lauf 2 (149 s, $0.0116) — Nachbesserung der drei Lücken:** sauberes
+`finish`, alle drei Punkte korrekt (sortierbare Spalte „Groesse" mit
+„X cm"-Anzeige, Personen ohne Wert in **beiden** Sortierrichtungen am
+Ende, numerischer Vergleich, vollständige Resets) — live im Browser
+per Klick auf den Spaltenkopf verifiziert. Nebenbei pflegte das Modell
+unaufgefordert `MC-NOTIZEN.md` (Feld-Liste ergänzt) — die
+Notizen-Nachfrage aus dem Weiterentwicklungs-Paket griff.
+
+**Einordnung:** Das große Modell bediente die neuen Leitplanken auf
+Anhieb so, wie sie gedacht sind (lesen → prüfen → gezielt editieren) —
+und lieferte trotzdem die Entdeckung des Tages: Der Ausstieg über
+imitierte Beobachtungs-Prosa ist kein Klein-Modell-Problem, sondern ein
+Protokoll-Loch, das erst ein Modell fand, das die Historien-Kürzung
+aufmerksam genug „gelesen" hat, um sie nachzuahmen. Gesamtkosten beider
+Läufe: **$0.0267**.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
