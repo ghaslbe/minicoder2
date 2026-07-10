@@ -1,0 +1,18 @@
+In der bestehenden Personenverwaltung wurde das Feld 'gewicht' (kg, Dezimalzahl, nullable) bereits TEILWEISE integriert: die DB-Migration (ALTER TABLE), die Sortier-Logik, die setFormData-Resets und die Bearbeiten-Vorbefuellung sind FERTIG. Es fehlen noch GENAU FUENF Stellen. Nutze read_file (NICHT sed/cat) um Dateien zu lesen, und edit_file mit ```old/```new Bloecken fuer die Aenderungen.
+
+BACKEND (backend/app.py) - drei Stellen:
+1. Im INSERT-Statement (POST): Spalte gewicht + Platzhalter + data.get('gewicht') ergaenzen (analog zu koerpergroesse direkt daneben).
+2. Im UPDATE-Statement (PUT): gewicht = ? + data.get('gewicht') ergaenzen (analog koerpergroesse). Auch im jsonify-Rueckgabeobjekt des PUT das Feld ergaenzen, falls dort Felder einzeln aufgezaehlt werden.
+3. Im CSV-Export (writer.writerow der Datenzeilen): p['gewicht'] am Ende ergaenzen.
+
+FRONTEND (frontend/src/App.jsx) - zwei Stellen:
+4. Eingabefeld 'Gewicht (kg)' im Formular, direkt nach dem Feld 'Koerpergroesse (cm)', im exakt gleichen Stil (label + input, type und className vom Koerpergroesse-Feld uebernehmen, step="0.1" erlauben, value={formData.gewicht}, onChange analog).
+5. In der Personentabelle: Spaltenkopf 'Gewicht' mit handleSort('gewicht') und Pfeil-Indikator im selben Stil wie der Spaltenkopf 'Groesse', plus die zugehoerige Zelle in den Tabellenzeilen mit Anzeige '<wert> kg' (leer wenn nicht gesetzt), analog zur Groesse-Zelle.
+
+WICHTIG: Das Backend laeuft BEREITS auf Port 5010 (Auto-Reload), der Vite-Dev-Server auf 8095 - nichts starten.
+
+PRUEFE deine Arbeit:
+1. python3 -c "import ast; ast.parse(open('backend/app.py').read())" fehlerfrei.
+2. curl: POST einer Person mit gewicht 72.5 gegen http://localhost:5010/api/persons, dann GET und pruefen dass der Wert 72.5 zurueckkommt.
+3. cd frontend && npm run build muss exit 0 liefern.
+Gib danach finish aus.
