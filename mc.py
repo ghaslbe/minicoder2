@@ -371,6 +371,30 @@ def extra_headers():
 
 MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
 
+# Runaway-Schutz: Modelle koennen mitten in EINER Antwort kollabieren (real
+# beobachtet bei einem Cloud-Reasoning-Modell: erst halluzinierte Fehlermeldungs-
+# Prosa samt erfundener Ticket-Nummer, dann Zeichenmuell — 166k Completion-
+# Tokens, $0.83, und die Auto-Continuation bat den Muell auch noch hoeflich um
+# Fortsetzung). Erkennung ueber drei Signale + harte Laengenbremse.
+MAX_REPLY_CHARS = int(_setting("MC_MAX_REPLY_CHARS", "max_reply_chars", 40000))
+DEGEN_CHAR_RE = re.compile(r"(.)\1{119,}", re.DOTALL)     # 120x dasselbe Zeichen
+DEGEN_WORD_RE = re.compile(r"(\b\w{1,20})(?:[ \t]+\1\b){19,}")  # 20x dasselbe Wort
+DEGEN_MARKER = "\n[mc: Antwort abgebrochen — Endlos-Ausgabe erkannt]"
+
+
+def _looks_runaway(text):
+    """True, wenn die Antwort erkennbar ausser Kontrolle ist. Drittes Signal:
+    eine sehr lange Strecke ohne Zeilenumbruch AUSSERHALB eines offenen
+    Code-Fences — gesunder Code/Prosa bricht um, einzeiliger JSON-Dateiinhalt
+    steckt in einem (dann offenen) Fence und ist ausgenommen."""
+    tail = text[-6000:]
+    if DEGEN_CHAR_RE.search(tail) or DEGEN_WORD_RE.search(tail):
+        return True
+    tail = text[-2500:]
+    if len(tail) == 2500 and "\n" not in tail and text.count("```") % 2 == 0:
+        return True
+    return False
+
 
 class Spinner:
     """Kleiner animierter Warte-Indikator in einem Hintergrund-Thread. Zeigt, dass
@@ -538,6 +562,11 @@ def chat_stream(messages, model):
     text, fr = _chat_once_retry(messages, model)
     cont = 0
     while _looks_truncated(text, fr) and cont < MAX_CONTINUATIONS:
+        if len(text) > MAX_REPLY_CHARS or _looks_runaway(text):
+            print(f"\n{C.RED}⚠ Antwort ausser Kontrolle (Endlos-Ausgabe oder "
+                  f"> {MAX_REPLY_CHARS} Zeichen) — abgebrochen statt "
+                  f"fortgesetzt.{C.RESET}")
+            return text[:MAX_REPLY_CHARS] + DEGEN_MARKER
         cont += 1
         print()
         # Ursache klassifizieren und IMMER anzeigen (nicht nur verbose), damit man
@@ -563,6 +592,10 @@ def chat_stream(messages, model):
         more, fr = _chat_once_retry(cont_msgs, model)
         text += more
     print()
+    if len(text) > MAX_REPLY_CHARS or _looks_runaway(text):
+        print(f"{C.RED}⚠ Antwort ausser Kontrolle (Endlos-Ausgabe oder zu lang) "
+              f"— gekappt.{C.RESET}")
+        return text[:MAX_REPLY_CHARS] + DEGEN_MARKER
     log(f"Antwort vollstaendig ({len(text)} Zeichen"
         + (f", {cont} Fortsetzung(en)" if cont else "") + ").")
     return text
@@ -2198,6 +2231,7 @@ def run_task(messages, model):
     finish_rejects = 0
     parse_error_streak = 0
     check_probe_done = False
+    prose_end_nudged = False
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     budget_warned = False
@@ -2251,6 +2285,45 @@ def run_task(messages, model):
 
         action, raw = extract_action(reply)
         if action is None:
+            if reply.endswith(DEGEN_MARKER):
+                # Kollabierte Antwort ohne brauchbare Aktion: NICHT als
+                # "Textantwort = fertig" werten, sondern neu anfordern.
+                obs = ("Deine letzte Antwort ist in eine Endlos-Ausgabe "
+                       "degeneriert und wurde vom Tool abgebrochen. Sammle "
+                       "dich: gib jetzt GENAU EINEN kleinen, validen "
+                       "```action Block aus — ein kleiner Schritt, kurzer "
+                       "Inhalt, keine langen Erklaerungen.")
+                print(f"{C.RED}⚠ Degenerierte Antwort — fordere einen neuen, "
+                      f"kleinen Schritt an.{C.RESET}")
+                # Kollabierten Text nicht komplett im Verlauf lassen.
+                messages[-1]["content"] = (reply[:800]
+                                           + "\n…[Rest degeneriert, entfernt]")
+                messages.append({"role": "user", "content": obs})
+                continue
+            # Keine Aktion im Antworttext. Frueher galt das sofort als
+            # "Textantwort = fertig" — ein UNBEWACHTER Ausgang, der das
+            # komplette Check-/Finish-Gate umgeht. Real beobachtet
+            # (deepseek-v4-flash): das Modell schrieb "(edit_file
+            # ausgefuehrt: ...)" als PROSA — es imitierte das Format der
+            # gekuerzten Kontext-Historie —, der Edit fand nie statt, der
+            # Lauf endete mitten in der Arbeit als scheinbar normales
+            # Prosa-Ende. Deshalb: wurde in diesem Lauf bereits
+            # GESCHRIEBEN, gibt es genau EINE Rueckfrage — fertig heisst
+            # finish (laeuft durchs Gate), sonst weiter mit einer echten
+            # Aktion. Antwortet das Modell erneut ohne Aktion, wird das
+            # als bewusstes Prosa-Ende akzeptiert. Reine Frage-Antwort-
+            # Laeufe (nie geschrieben) enden wie bisher sofort.
+            if TOUCHED and not prose_end_nudged:
+                prose_end_nudged = True
+                obs = ("Deine Antwort enthielt KEINEN action-Block — Text wie "
+                       "'(edit_file ausgefuehrt: ...)' fuehrt KEINE Aktion aus, "
+                       "das war nur Prosa. Wenn die Aufgabe fertig ist: gib die "
+                       "finish-Aktion aus. Wenn nicht: gib die naechste echte "
+                       "Aktion als ```action Block aus.")
+                print(f"{C.YELLOW}⚠ Antwort ohne Aktion trotz begonnener "
+                      f"Arbeit — einmalige Rueckfrage statt stillem Ende.{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
             # Keine Aktion -> Modell ist mit einer Textantwort fertig.
             return reply
 
