@@ -366,6 +366,27 @@ def test_kill_hint_plattform():
         assert hint == "kill 1234"
 
 
+# --------------------------- Shell-Lese-Schleifen ---------------------------
+
+def test_shell_read_registriert_und_warnt_ab_drittem_mal():
+    mc.SHELL_READS.clear()
+    with open("App.jsx", "w") as f:
+        f.write("x")
+    assert mc._shell_read_hint("sed -n '1,50p' App.jsx") == ""
+    assert os.path.normpath("App.jsx") in mc.READ_FILES  # Gate-Konsistenz
+    assert mc._shell_read_hint("sed -n '50,100p' App.jsx") == ""
+    hint = mc._shell_read_hint("cat App.jsx")
+    assert "3. Mal" in hint and "read_file" in hint
+
+
+def test_shell_read_ignoriert_nicht_lese_kommandos():
+    mc.SHELL_READS.clear()
+    with open("a.py", "w") as f:
+        f.write("x")
+    assert mc._shell_read_hint("python3 a.py") == ""
+    assert mc._shell_read_hint("npm run build") == ""
+
+
 # ------------------------------ Konfiguration -------------------------------
 
 def test_extra_headers_konfig_und_env(monkeypatch):

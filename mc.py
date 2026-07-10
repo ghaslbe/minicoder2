@@ -1408,6 +1408,35 @@ def _generator_conflict(cmd):
     return ""
 
 
+SHELL_READS = {}  # Pfad -> Anzahl Shell-Lesezugriffe in diesem Lauf
+READ_CMD_RE = re.compile(r"^\s*(cat|head|tail|awk|sed|more|type)\b")
+
+
+def _shell_read_hint(cmd):
+    """Shell-Lesekommandos (cat/sed -n/head/...) auf Projektdateien: die Datei
+    als 'gelesen' registrieren (sonst ist das Overwrite-Gate blind fuer per
+    Shell gelesene Inhalte) und Blaetter-Schleifen erkennen. Real beobachtet:
+    ein starkes Modell las dieselbe Datei 24x in variierenden sed-Haeppchen —
+    zyklisch bis ins Schrittlimit; die Konsekutiv-Erkennung im Loop griff
+    nicht, weil kein Aufruf dem vorigen exakt glich."""
+    if not READ_CMD_RE.match(cmd):
+        return ""
+    hint = ""
+    for tok in cmd.split():
+        tok = tok.strip("'\";|&()")
+        if ("/" in tok or "." in tok) and os.path.isfile(tok):
+            norm = os.path.normpath(tok)
+            READ_FILES.add(norm)
+            n = SHELL_READS.get(norm, 0) + 1
+            SHELL_READS[norm] = n
+            if n >= 3 and n % 3 == 0:
+                hint += (f"\nHINWEIS: du liest {tok} jetzt zum {n}. Mal ueber die "
+                         f"Shell. Hoer auf, in der Datei zu blaettern: nutze EINMAL "
+                         f"read_file fuer den kompletten Inhalt und fuehre dann "
+                         f"SOFORT die geplante Aenderung mit edit_file aus.")
+    return hint
+
+
 def bg_status():
     """Laufende, von mc gestartete Hintergrundprozesse als (pid, kommando)."""
     return [(p.pid, p.args if isinstance(p.args, str) else " ".join(p.args))
@@ -1520,6 +1549,7 @@ def do_run(args):
                     "Programmende NICHT automatisch beendet (verwaist danach). Nutze "
                     "fuer Dauerlaeufer stattdessen \"background\":true.")
         warn += _addr_in_use_hint(out)
+        warn += _shell_read_hint(cmd)
         if len(out) > MAX_OUTPUT_CHARS and FETCH_URL_RE.search(cmd):
             # Grosser curl/wget-Abruf (z.B. eine ganze Webseite): statt blind
             # auf MAX_OUTPUT_CHARS zu kuerzen (haengt bei HTML oft nur im
@@ -2126,6 +2156,7 @@ def run_task(messages, model):
     READ_FILES.clear()
     OVERWRITE_REJECTS.clear()
     WRITE_HISTORY.clear()
+    SHELL_READS.clear()
     RAN_SINCE_WRITE = False
     finish_rejects = 0
     parse_error_streak = 0
