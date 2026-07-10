@@ -2302,26 +2302,30 @@ def run_task(messages, model):
                 continue
             # Keine Aktion im Antworttext. Frueher galt das sofort als
             # "Textantwort = fertig" — ein UNBEWACHTER Ausgang, der das
-            # komplette Check-/Finish-Gate umgeht. Real beobachtet
-            # (deepseek-v4-flash): das Modell schrieb "(edit_file
+            # komplette Check-/Finish-Gate umgeht. Zwei real beobachtete
+            # Varianten: (1) deepseek-v4-flash schrieb "(edit_file
             # ausgefuehrt: ...)" als PROSA — es imitierte das Format der
             # gekuerzten Kontext-Historie —, der Edit fand nie statt, der
-            # Lauf endete mitten in der Arbeit als scheinbar normales
-            # Prosa-Ende. Deshalb: wurde in diesem Lauf bereits
-            # GESCHRIEBEN, gibt es genau EINE Rueckfrage — fertig heisst
-            # finish (laeuft durchs Gate), sonst weiter mit einer echten
-            # Aktion. Antwortet das Modell erneut ohne Aktion, wird das
-            # als bewusstes Prosa-Ende akzeptiert. Reine Frage-Antwort-
-            # Laeufe (nie geschrieben) enden wie bisher sofort.
-            if TOUCHED and not prose_end_nudged:
+            # Lauf endete mitten in der Arbeit. (2) mimo-v2.5 KUENDIGTE in
+            # Schritt 1 nur an ("Ich lese zuerst die relevanten Dateien")
+            # — ohne Action-Block, Lauf nach 5s beendet, bevor irgendetwas
+            # geschah. Deshalb EINE Rueckfrage, wenn der Lauf erkennbar
+            # ein Arbeits-Lauf ist: bereits geschrieben (TOUCHED), ODER
+            # Check-Modus aktiv, ODER die Aufgabe nennt Dateien
+            # (EXPECTED_FILES). Fertig heisst finish (laeuft durchs Gate),
+            # sonst naechste echte Aktion. Eine zweite aktionslose Antwort
+            # gilt als bewusstes Prosa-Ende. Reine Frage-Antwort-Laeufe
+            # (nichts davon trifft zu) enden wie bisher sofort.
+            if (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
                 prose_end_nudged = True
-                obs = ("Deine Antwort enthielt KEINEN action-Block — Text wie "
-                       "'(edit_file ausgefuehrt: ...)' fuehrt KEINE Aktion aus, "
+                obs = ("Deine Antwort enthielt KEINEN action-Block — blosse "
+                       "Ankuendigungen ('Ich lese zuerst ...') oder Texte wie "
+                       "'(edit_file ausgefuehrt: ...)' fuehren KEINE Aktion aus, "
                        "das war nur Prosa. Wenn die Aufgabe fertig ist: gib die "
                        "finish-Aktion aus. Wenn nicht: gib die naechste echte "
-                       "Aktion als ```action Block aus.")
-                print(f"{C.YELLOW}⚠ Antwort ohne Aktion trotz begonnener "
-                      f"Arbeit — einmalige Rueckfrage statt stillem Ende.{C.RESET}")
+                       "Aktion als ```action Block aus (z.B. read_file).")
+                print(f"{C.YELLOW}⚠ Antwort ohne Aktion in einem Arbeits-Lauf "
+                      f"— einmalige Rueckfrage statt stillem Ende.{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
             # Keine Aktion -> Modell ist mit einer Textantwort fertig.
