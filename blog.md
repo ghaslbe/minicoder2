@@ -2765,6 +2765,61 @@ Protokoll-Loch, das erst ein Modell fand, das die Historien-Kürzung
 aufmerksam genug „gelesen" hat, um sie nachzuahmen. Gesamtkosten beider
 Läufe: **$0.0267**.
 
+## 15. Dasselbe Experiment mit `xiaomi/mimo-v2.5` — und Variante 2 des Prosa-Lochs
+
+Gleiche Aufgabenform, gleiches Projekt, nächstes Modell: `xiaomi/mimo-v2.5`
+($0.10/$0.28 pro Mio Token) sollte das Feld `gewicht` (kg, Dezimalzahl)
+plus Sortierung ergänzen — mit dem Vorteil, dass inzwischen die
+`koerpergroesse`-Migration als Vorbild im Code steht und `MC-NOTIZEN.md`
+die Feldliste dokumentiert.
+
+**Lauf 1 (161 s, $0.0187): ins Schrittlimit gestolpert.** Statt
+`read_file` blätterte mimo per `sed`/`cat` durch die Dateien (die
+Lese-Schleifen-Erkennung feuerte beim **9. Zugriff** auf dieselbe Datei)
+und produzierte **9+ `edit_file`-Fehltreffer** („old nicht gefunden") —
+370k Token für ein zur Hälfte fertiges Feature. Immerhin: Migration
+korrekt im Vorbild-Muster, Sortier-Logik/Resets/Vorbefüllung sauber,
+Bestandsdaten unangetastet.
+
+**Der gezielte Fix-Lauf endete nach 5 Sekunden — Variante 2 des
+Prosa-Lochs.** mimo antwortete auf den Fix-Prompt in Schritt 1 nur mit
+der Ankündigung *„Ich lese zuerst die relevanten Dateien"* — ohne
+Action-Block. Der frisch eingebaute Prosa-Wächter griff nicht, denn seine
+Bedingung war „bereits geschrieben" (`TOUCHED` nicht leer) — in Schritt 1
+war naturgemäß nichts geschrieben. Ein Request, $0.0002, Lauf beendet.
+Keine 30 Minuten nach dem ersten Fix fand ein anderes Modell die zweite
+Lücke desselben Lochs — besserer Härtetest geht kaum.
+
+**Der nachgezogene `mc.py`-Fix:** Ein Lauf gilt jetzt als Arbeits-Lauf
+(und bekommt die Rückfrage), wenn **eines** zutrifft: bereits geschrieben,
+Check-Modus aktiv, oder die Aufgabe nennt Dateien. Reine
+Frage-Antwort-Läufe enden unverändert sofort. Drei Szenarien getestet,
+Suite 66/66.
+
+**Fix-Lauf 2 (235 s, $0.0090):** mimo lieferte diesmal von Schritt 1 an
+echte Aktionen (der Wächter musste nie feuern), setzte alle fünf
+benannten Lücken korrekt um und lief erst bei der Verifikations-Politur
+erneut ins Schrittlimit — den letzten Kosmetik-Punkt (POST-Rückgabe ohne
+die neuen Felder) hatte es selbst noch gefunden, aber nicht mehr
+umgesetzt (eine Zeile, von Hand nachgezogen). Live verifiziert: POST mit
+72.5 kg, GET korrekt, Bestandsdaten samt `koerpergroesse` intakt, Spalte
+„Gewicht" sortiert mit Personen-ohne-Wert am Ende in beiden Richtungen.
+
+**Modellvergleich im selben Szenario:**
+
+| | deepseek-v4-flash | xiaomi/mimo-v2.5 |
+|---|---|---|
+| Vorgehen | erst lesen, `PRAGMA`-Schemaprüfung | sofort editieren, `sed`-Blättern |
+| `edit_file`-Fehltreffer | wenige | 9+ |
+| Läufe bis fertig | 2 | 3 (einer davon 5-Sekunden-Fehlstart) |
+| Gesamtkosten | $0.0267 | $0.0279 |
+| Gefundenes `mc.py`-Loch | Prosa-Imitat der Historien-Kürzung | Ankündigungs-Prosa in Schritt 1 |
+
+Am Ende kosteten beide fast dasselbe und lieferten dasselbe Feature —
+aber auf sehr verschiedenen Wegen. Und beide haben je eine Variante
+desselben Protokoll-Lochs aufgedeckt, das drei Wochen Klein-Modell-Tests
+nie getroffen hatten: der stille Ausstieg über aktionslose Prosa.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
