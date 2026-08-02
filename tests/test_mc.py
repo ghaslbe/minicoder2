@@ -28,6 +28,9 @@ def _clean_state(tmp_path, monkeypatch):
     mc.OVERWRITE_REJECTS.clear()
     mc.WRITE_HISTORY.clear()
     mc.TOUCHED.clear()
+    mc.PLAN_POINTS.clear()
+    mc.EXPLORED = False
+    mc.HAS_CODE = None
     yield
 
 
@@ -555,3 +558,106 @@ def test_system_prompt_fence_und_json_varianten():
     assert "```old" in sp_fence and "```content" in sp_fence
     assert '"old":"<exakter ausschnitt>"' in sp_json
     assert "@@" not in sp_fence and "@@" not in sp_json  # alle Platzhalter ersetzt
+
+
+# ----------------------- Weiterentwicklungs-Paket ---------------------------
+
+def test_write_files_string_eintraege_stuerzen_nicht_ab():
+    # Real beobachtet (Harness-Crash): files als ["app.py", ...] statt Objekte.
+    ok, msg = mc.do_write_files({"files": ["app.py", "b.py"]})
+    assert ok is False
+    assert "fehlt der Inhalt" in msg  # sauberer Fehler statt AttributeError
+
+
+def test_write_files_ohne_content_wird_gemeldet():
+    ok, msg = mc.do_write_files({"files": [{"path": "a.py"}]})
+    assert ok is False and "a.py" in msg
+
+
+def test_edit_kaskade_zeilengetrimmt_mit_einrueckung():
+    with open("a.py", "w") as f:
+        f.write("def f():\n        x = 1\n        return x\n")
+    # Modell zitiert den Block ohne Einrueckung — Kaskade findet ihn trotzdem
+    # und passt 'new' an die echte Einrueckung an.
+    ok, msg = mc.do_edit_file({"path": "a.py", "old": "x = 1\nreturn x",
+                               "new": "x = 2\nreturn x"})
+    assert ok is True
+    inhalt = open("a.py").read()
+    assert "        x = 2" in inhalt          # Einrueckung uebernommen
+    assert "Hinweis" in msg                    # Modell erfaehrt von der Toleranz
+
+
+def test_edit_kaskade_doppelt_escaped():
+    with open("a.txt", "w") as f:
+        f.write("zeile1\nzeile2\n")
+    ok, _ = mc.do_edit_file({"path": "a.txt", "old": "zeile1\\nzeile2",
+                             "new": "zeile1\\nNEU"})
+    assert ok is True
+    assert "NEU" in open("a.txt").read()
+
+
+def test_edit_kaskade_blockanker_bei_halluzinierter_mitte():
+    with open("a.py", "w") as f:
+        f.write("def g():\n    a = 1\n    b = 2\n    c = 3\n    return c\n")
+    # Mitte stimmt nicht exakt (halluzinierte Variablennamen), Anker passen.
+    ok, _ = mc.do_edit_file({
+        "path": "a.py",
+        "old": "def g():\n    a = 1\n    b = 20\n    c = 3\n    return c",
+        "new": "def g():\n    return 42"})
+    assert ok is True
+    assert "return 42" in open("a.py").read()
+
+
+def test_edit_kaskade_mehrdeutig_wird_abgelehnt():
+    with open("a.py", "w") as f:
+        f.write("  x = 1\n\n  x = 1\n")
+    ok, msg = mc.do_edit_file({"path": "a.py", "old": "x = 1", "new": "x = 2"})
+    assert ok is False and "eindeutig" in msg
+
+
+def test_neubau_bremse_greift_bei_bestand_ohne_blick():
+    with open("bestand.py", "w") as f:
+        f.write("print('alt')\n")
+    ok, msg = mc.do_write_file({"path": "neu.py", "content": "print('neu')\n"})
+    assert ok is False and "NEUBAU-BREMSE" in msg
+    assert not os.path.exists("neu.py")
+
+
+def test_neubau_bremse_offen_nach_suche():
+    with open("bestand.py", "w") as f:
+        f.write("print('alt')\n")
+    mc.do_grep({"pattern": "gibtesnicht"})  # auch LEERES Ergebnis schaltet frei
+    ok, _ = mc.do_write_file({"path": "neu.py", "content": "print('neu')\n"})
+    assert ok is True
+
+
+def test_neubau_bremse_ignoriert_leeres_projekt():
+    ok, _ = mc.do_write_file({"path": "neu.py", "content": "print('neu')\n"})
+    assert ok is True  # Greenfield: keine Bremse
+
+
+def test_repo_brief_erkennt_python_und_node():
+    with open("requirements.txt", "w") as f:
+        f.write("flask\n")
+    with open("package.json", "w") as f:
+        f.write('{"dependencies": {"react": "^19"}, "scripts": {"build": "x"}}')
+    brief = "\n".join(mc.repo_brief())
+    assert "Python" in brief and "react" in brief
+    assert "pip install -r requirements.txt" in brief
+    assert "npm run build" in brief
+
+
+def test_code_outline_python_mit_routen():
+    with open("app.py", "w") as f:
+        f.write("import x\n\n@app.route('/api/p')\ndef liste():\n    pass\n\n"
+                "class Dienst:\n    def start(self):\n        pass\n")
+    out = "\n".join(mc.code_outline())
+    assert "def liste()" in out and "route /api/p" in out
+    assert "class Dienst" in out and "start" in out
+
+
+def test_analyse_prompt_ohne_schreibaktionen():
+    sp = mc.system_prompt(True, analyse=True)
+    assert "plan" in sp and "read_file" in sp and "grep" in sp
+    assert "write_file" not in sp and "edit_file" not in sp
+    assert "run " not in sp  # keine run-Aktion im Analyse-Protokoll

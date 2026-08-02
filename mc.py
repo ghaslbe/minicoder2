@@ -29,11 +29,12 @@ Env-Variablen:
   MC_API_KEY   (optional, falls der Endpoint einen Key verlangt)
 
 Konfig-Datei (fuer den Alltag): ~/.mc.json bzw. MC_CONFIG=<pfad> — Schluessel
-base_url, model, api_key, headers, proxy, ca_bundle, check, fence, verbose,
-max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
+base_url, model, api_key, headers, proxy, ca_bundle, check, analyse, fence,
+verbose, max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
 """
 
 import argparse
+import ast
 import difflib
 import json
 import os
@@ -115,6 +116,10 @@ VALIDATE = True            # nach dem Schreiben bekannte Dateitypen pruefen
 GIT_ROLLBACK = False       # nur True, wenn git installiert + sauberes Repo (in main gesetzt)
 TOUCHED = []               # von mc geschriebene/geaenderte Pfade (fuer Rollback)
 READ_FILES = set()         # in diesem Lauf per read_file gelesene Pfade (normpath)
+EXPLORED = False           # wurde in diesem Lauf schon in den Bestand geschaut?
+HAS_CODE = None            # Cache: hat das Projekt Bestandscode? (pro Lauf)
+PLAN_POINTS = []           # Aenderungsplan aus der Analyse-Phase (--analyse)
+SYSTEM_CONTEXT = ""        # Projektueberblick-Teil der System-Message (fuer Phasenwechsel)
 CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/Prosa-Ende)
 WRITE_HISTORY = {}         # Pfad -> (letzter Inhalt, Anzahl fast identischer Wiederholungen)
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
@@ -133,6 +138,13 @@ EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Chec
 # Hintergrund: Syntax-Validierung findet keine falschen API-Annahmen,
 # Feldnamen-Verwechslungen oder kaputte Dependencies — echte Ausfuehrung schon.
 CHECK = _truthy(_setting("MC_CHECK", "check", False))
+# Analyse-Phase (--analyse): bei Aufgaben an BESTEHENDEM Code arbeitet der
+# Agent zweistufig — erst nur lesen/suchen und einen nummerierten
+# Aenderungsplan ausgeben (plan-Aktion), erst DANACH werden Schreibaktionen
+# freigeschaltet. Gegen den Neubau-Reflex kleiner Modelle: Verstehen wird
+# nicht erbeten, sondern erzwungen — Schreibaktionen stehen in Phase 1 gar
+# nicht erst im Protokoll.
+ANALYSE = _truthy(_setting("MC_ANALYSE", "analyse", False))
 RAN_SINCE_WRITE = False    # seit letztem Schreiben ein run mit exit=0?
 BG_PROCS = []              # Hintergrundprozesse (Dev-Server); Ende: aufgeraeumt
 # Selbst genanntes Pruefprogramm aus der Plan-Phase (--plan --check): wird bei
@@ -789,6 +801,11 @@ def _attach_fence_contents(action, tail):
     files = action.get("files")
     if not isinstance(files, list):
         return ""  # wird im Handler gemeldet
+    # Blanke String-Eintraege (["app.py", ...]) hier schon zu Objekten
+    # normalisieren, damit ihre ```content Bloecke zugeordnet werden koennen
+    # (real beobachtet; ohne das blieben die Inhalte unzugeordnet liegen).
+    files = [{"path": f} if isinstance(f, str) else f for f in files]
+    action["files"] = files
     missing = [f for f in files if isinstance(f, dict) and "content" not in f]
     if not missing:
         return ""
@@ -1075,6 +1092,8 @@ READFILE_MAX_CHARS = 24000
 
 
 def do_read_file(args):
+    global EXPLORED
+    EXPLORED = True
     path = args.get("path", "")
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -1112,6 +1131,51 @@ def do_read_file(args):
 
 OVERWRITE_REJECTS = {}      # Pfad -> Anzahl abgelehnter blinder Ueberschreib-Versuche
 MAX_OVERWRITE_REJECTS = 2   # danach Notausgang (Warnungen greifen weiter), sonst Endlosschleife
+
+
+def _project_has_code(root="."):
+    """Hat das Projekt Bestandscode? (Quelldateien ausserhalb der Ignore-
+    Verzeichnisse, Projekt-Notizen zaehlen nicht.) Pro Lauf gecacht."""
+    global HAS_CODE
+    if HAS_CODE is not None:
+        return HAS_CODE
+    HAS_CODE = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in IGNORE_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if fn == os.path.basename(MC_NOTES):
+                continue
+            if os.path.splitext(fn)[1].lower() in SRC_EXTS:
+                HAS_CODE = True
+                return True
+    return False
+
+
+def _new_file_gate(paths):
+    """Neubau-Bremse: In einem Projekt MIT Bestandscode wird das Anlegen
+    NEUER Dateien abgelehnt, solange in diesem Lauf noch gar nicht in den
+    Bestand geschaut wurde (kein read_file/grep/find/list_dir). Real
+    beobachtet: ein Modell findet auf Anhieb nichts (oder sucht gar nicht
+    erst) und legt die Datei einfach neu an — der Neubau-Reflex. Die Bremse
+    erzwingt nur den ERSTEN Blick; jedes Suchergebnis (auch ein leeres)
+    schaltet sie frei."""
+    if EXPLORED:
+        return ""
+    neu = [p for p in paths if p and not os.path.exists(p)]
+    vorhanden = [p for p in paths if p and os.path.exists(p)]
+    if not neu or vorhanden or not _project_has_code():
+        # Beruehrt der Block auch BESTEHENDE Dateien, greift bereits das
+        # Overwrite-Gate (lesen oder explizites overwrite) — nicht doppelt
+        # bremsen. Die Neubau-Bremse gilt nur fuer REIN neue Dateien.
+        return ""
+    return ("NEUBAU-BREMSE: du willst neue Datei(en) anlegen (" + ", ".join(neu)
+            + "), hast dir aber den BESTAND dieses Projekts noch gar nicht "
+            "angesehen. Pruefe erst mit find/grep/read_file, ob die "
+            "Funktionalitaet (ggf. unter anderem Namen) schon existiert — "
+            "danach ist das Anlegen freigeschaltet. Ein leeres Suchergebnis "
+            "heisst dabei: Muster verbreitern und erneut suchen, nicht sofort "
+            "neu anlegen.")
 
 
 def _overwrite_gate(path, force=False):
@@ -1216,6 +1280,10 @@ def _check_repetition(path, new_content):
 def do_write_file(args):
     path = args.get("path", "")
     content = args.get("content", "")
+    nb = _new_file_gate([path])
+    if nb:
+        print(f"{C.RED}✗ Neubau-Bremse: {path} (Bestand nie angesehen){C.RESET}")
+        return False, nb
     gate = _overwrite_gate(path, force=bool(args.get("overwrite")))
     if gate:
         print(f"{C.RED}✗ Overwrite-Gate: {path} (existiert, nie gelesen){C.RESET}")
@@ -1246,6 +1314,25 @@ def do_write_files(args):
     files = args.get("files")
     if not isinstance(files, list) or not files:
         return False, "FEHLER: 'files' muss eine nicht-leere Liste von {path,content} sein."
+    # Robustheit (real beobachtet, Harness-Crash): ein Modell schickte die
+    # Eintraege als BLANKE STRINGS statt Objekte (["app.py", ...]) — das ist
+    # als Absicht eindeutig (Pfad, Inhalt folgt als Fence-Block) und wird
+    # normalisiert statt mit AttributeError abzustuerzen.
+    files = [{"path": f} if isinstance(f, str) else f for f in files]
+    bad = [repr(f)[:60] for f in files
+           if not isinstance(f, dict) or not f.get("path")]
+    if bad:
+        return False, ("FEHLER: jeder files-Eintrag braucht ein 'path'-Feld, "
+                       "ungueltig: " + ", ".join(bad))
+    ohne_inhalt = [f["path"] for f in files if "content" not in f]
+    if ohne_inhalt:
+        return False, ("FEHLER: fuer diese Datei(en) fehlt der Inhalt "
+                       "('content'-Feld bzw. je ein ```content Block nach dem "
+                       "action-Block): " + ", ".join(ohne_inhalt))
+    nb = _new_file_gate([f.get("path", "") for f in files])
+    if nb:
+        print(f"{C.RED}✗ Neubau-Bremse: Bestand nie angesehen{C.RESET}")
+        return False, nb
     if len(files) > MAX_WRITE_FILES_BATCH:
         # Hartes Limit statt Prompt-Bitte: grosse Einzelbloecke sind das
         # Haupt-Risiko fuer abgeschnittene Antworten (kaputtes JSON).
@@ -1321,6 +1408,114 @@ def _closest_snippet(content, old, min_ratio=0.5):
             f"{snippet}")
 
 
+def _shift_indent(text, delta):
+    """Verschiebt jede nicht-leere Zeile um delta Spalten (negativ: entfernen,
+    soweit fuehrender Whitespace vorhanden ist)."""
+    out = []
+    for l in text.split("\n"):
+        if not l.strip():
+            out.append(l)
+        elif delta >= 0:
+            out.append(" " * delta + l)
+        else:
+            cut = min(-delta, len(l) - len(l.lstrip()))
+            out.append(l[cut:])
+    return "\n".join(out)
+
+
+def _unescape_once(s):
+    """Macht EINE Ebene JSON-artiges Escaping rueckgaengig (\\n -> Newline usw.)
+    — fuer Modelle, die old/new versehentlich doppelt escapen."""
+    return (s.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+            .replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\"))
+
+
+def _fuzzy_edit_match(content, old, new):
+    """Edit-Toleranz-Kaskade: findet 'old' mit steigender Nachsicht, wenn der
+    woertliche Text nicht in der Datei steht. Hintergrund (real beobachtet und
+    auch in anderen Agent-Harnesses DIE dominante Fehlklasse): kleine Modelle
+    liefern ein 'old', das zu 99%% stimmt — falsche Einrueckung, doppeltes
+    Escaping, eine halluzinierte Zeile in der Blockmitte. Ein harter Fehler
+    fuehrt dann oft dazu, dass das Modell aufgibt und die GANZE Datei neu
+    schreibt (genau der Neubau-Reflex, den wir bekaempfen). Jede Stufe
+    verlangt EINDEUTIGKEIT — lieber ein erklaerter Fehler als ein stiller
+    Treffer an der falschen Stelle. Rueckgabe:
+      (datei_text, angepasstes_new, meldung)  bei eindeutigem Treffer
+      (None, None, fehlermeldung)             bei Mehrdeutigkeit/Gefahr
+      (None, None, "")                        wenn keine Stufe greift."""
+    lines = content.split("\n")
+    o_lines = old.split("\n")
+    n = len(o_lines)
+
+    # Stufe 1: zeilenweise getrimmt — deckt Einrueckungs-Drift (Modell hat den
+    # Block aus anderer Verschachtelungstiefe kopiert) UND Whitespace-Reste ab.
+    o_trim = [l.strip() for l in o_lines]
+    hits = [i for i in range(len(lines) - n + 1)
+            if [l.strip() for l in lines[i:i + n]] == o_trim]
+    if len(hits) > 1:
+        return None, None, (f"FEHLER: 'old' passt (zeilenweise getrimmt) auf "
+                            f"{len(hits)} Stellen — nicht eindeutig. Nimm mehr "
+                            f"umgebenden Kontext in den Ausschnitt.")
+    if len(hits) == 1:
+        i = hits[0]
+        span = "\n".join(lines[i:i + n])
+        delta = ((len(lines[i]) - len(lines[i].lstrip()))
+                 - (len(o_lines[0]) - len(o_lines[0].lstrip())))
+        return (span, _shift_indent(new, delta) if delta else new,
+                f"old nicht woertlich gefunden — zeilenweise getrimmt eindeutig "
+                f"ab Zeile {i + 1} identifiziert"
+                + (f", Einrueckung von new um {delta:+d} Spalten angepasst"
+                   if delta else ""))
+
+    # Stufe 2: Escape-Ebene entfernen (old/new kamen doppelt escaped an).
+    if "\\n" in old or "\\t" in old:
+        old2 = _unescape_once(old)
+        if old2 != old and old2 in content:
+            if content.count(old2) > 1:
+                return None, None, ("FEHLER: 'old' kommt (nach Entfernen der "
+                                    "Escape-Ebene) mehrfach vor — nicht "
+                                    "eindeutig. Mehr Kontext angeben.")
+            return (old2, _unescape_once(new),
+                    "old/new waren doppelt escaped — Escape-Ebene entfernt")
+
+    # Stufe 3: Block-Anker fuer Bloecke ab 3 Zeilen — erste und letzte Zeile
+    # muessen (getrimmt) exakt stimmen, die Mitte nur zu >= 75%% aehneln.
+    # Rettet Edits, bei denen das Modell das Innere eines Blocks aus dem
+    # Gedaechtnis statt aus der Datei zitiert hat. Groessen-Wächter: der
+    # gefundene Block darf nicht deutlich groesser sein als 'old', sonst
+    # wuerde die Ersetzung still zu viel Code fressen.
+    if n >= 3 and o_trim[0] and o_trim[-1]:
+        cands = []
+        for i in range(len(lines)):
+            if lines[i].strip() != o_trim[0]:
+                continue
+            for j in range(i + 2, min(i + n + 3, len(lines))):
+                if lines[j].strip() == o_trim[-1]:
+                    mid_file = "\n".join(x.strip() for x in lines[i + 1:j])
+                    mid_old = "\n".join(o_trim[1:-1])
+                    r = difflib.SequenceMatcher(None, mid_file, mid_old).ratio()
+                    if r >= 0.75:
+                        cands.append((i, j, r))
+                    break  # je Anfangs-Anker nur das naechste passende Ende
+        if len(cands) > 1:
+            return None, None, ("FEHLER: 'old' passt per Block-Anker auf "
+                                f"{len(cands)} Stellen — nicht eindeutig. "
+                                "Mehr Kontext angeben.")
+        if len(cands) == 1:
+            i, j, r = cands[0]
+            if j - i + 1 > n + 3:
+                return None, None, (
+                    "FEHLER: die per Anker gefundene Stelle ist deutlich "
+                    "GROESSER als dein 'old' — Ersetzung abgelehnt, um nicht "
+                    "zu viel Code zu ersetzen. Lies die Datei neu (read_file) "
+                    "und gib 'old' vollstaendig und exakt an.")
+            span = "\n".join(lines[i:j + 1])
+            return (span, new,
+                    f"old per Block-Anker (Mitte {r:.0%} aehnlich) eindeutig "
+                    f"ab Zeile {i + 1} identifiziert")
+    return None, None, ""
+
+
 def do_edit_file(args):
     """Ersetzt in einer bestehenden Datei einen exakten Textausschnitt durch einen
     neuen — es wandert nur die Aenderung ueber die Leitung, nicht die ganze Datei.
@@ -1329,6 +1524,7 @@ def do_edit_file(args):
     old = args.get("old", "")
     new = args.get("new", "")
     replace_all = bool(args.get("replace_all", False))
+    fuzzy_note = ""  # gesetzt, wenn die Toleranz-Kaskade den Treffer fand
     if not path or old == "":
         return False, ("FEHLER: 'path' und 'old' sind erforderlich. Tipp: gib "
                        "old/new nicht als JSON-Strings an, sondern als rohe "
@@ -1360,6 +1556,21 @@ def do_edit_file(args):
             return False, (f"FEHLER: 'old' kommt (mit Whitespace-Toleranz) {len(hits)}x "
                            f"in {path} vor — nicht eindeutig. Mache den Ausschnitt "
                            f"groesser/eindeutiger.")
+        elif not replace_all:
+            # Toleranz-Kaskade (nur ohne replace_all — bei Umbenennungen ist
+            # ein kurzes, mehrfach vorkommendes 'old' ja Absicht).
+            f_old, f_new, note = _fuzzy_edit_match(content, old, new)
+            if f_old is not None:
+                old, new = f_old, f_new
+                count = 1
+                fuzzy_note = note
+                print(f"{C.DIM}({note}){C.RESET}")
+            elif note:
+                return False, note  # eindeutige Diagnose (mehrdeutig/zu gross)
+            else:
+                return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
+                               f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
+                               f"(Whitespace zaehlt)." + _closest_snippet(content, old))
         else:
             return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
                            f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
@@ -1384,12 +1595,16 @@ def do_edit_file(args):
         with open(path, "w", encoding="utf-8") as f:
             f.write(updated)
         return True, (f"OK, {count if replace_all else 1} Stelle(n) in {path} ersetzt "
-                      f"(Datei jetzt {len(updated)} Zeichen).")
+                      f"(Datei jetzt {len(updated)} Zeichen)."
+                      + (f" Hinweis: {fuzzy_note} — gib 'old' kuenftig exakt "
+                         f"aus der Datei an." if fuzzy_note else ""))
     except Exception as e:
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
 
 def do_list_dir(args):
+    global EXPLORED
+    EXPLORED = True
     path = args.get("path", ".")
     try:
         entries = []
@@ -1416,6 +1631,8 @@ def _norm(s):
 def do_find(args):
     """Sucht Dateien, deren Name das Muster enthaelt — auch unscharf
     (Leerzeichen/Sonderzeichen werden ignoriert)."""
+    global EXPLORED
+    EXPLORED = True
     pattern = args.get("pattern") or args.get("name") or ""
     root = args.get("path", ".")
     if not pattern:
@@ -1443,6 +1660,8 @@ def do_grep(args):
     """Sucht Text/Regex IN Dateiinhalten (nicht nur im Namen) und liefert
     Datei:Zeile:Treffer — damit der Agent Stellen in bestehendem Code findet,
     statt viele Dateien komplett zu lesen (spart Tokens und Schritte)."""
+    global EXPLORED
+    EXPLORED = True
     pattern = args.get("pattern", "")
     root = args.get("path", ".")
     if not pattern:
@@ -1496,6 +1715,137 @@ def project_overview(root=".", max_entries=200):
                 paths.append(f"... (>{max_entries} Dateien, gekuerzt)")
                 return paths
     return paths
+
+
+def repo_brief(root="."):
+    """Deterministischer Projekt-Steckbrief OHNE Modell-Aufruf: erkannter
+    Stack, real vorhandene Kommandos, juengste Git-Historie. Ein kleines
+    Modell, das schwarz auf weiss liest 'hier existiert ein Python-Projekt,
+    Tests laufen per pytest, letzter Commit war X', startet mit der
+    Grundannahme BESTAND statt Neubau — der billigste Hebel gegen den
+    Neubau-Reflex, weil er vor dem ersten Modell-Token wirkt."""
+    def hat(p):
+        return os.path.exists(os.path.join(root, p))
+    zeilen, stacks, cmds = [], [], []
+    if hat("pyproject.toml") or hat("requirements.txt") or hat("setup.py"):
+        stacks.append("Python")
+        if hat("requirements.txt"):
+            cmds.append("pip install -r requirements.txt")
+        if hat("pytest.ini") or hat("tests") or hat("test"):
+            cmds.append("python3 -m pytest")
+    if hat("package.json"):
+        try:
+            with open(os.path.join(root, "package.json"), encoding="utf-8") as f:
+                pkg = json.load(f)
+        except Exception:
+            pkg = {}
+        deps = {}
+        if isinstance(pkg, dict):
+            deps = {**(pkg.get("dependencies") or {}),
+                    **(pkg.get("devDependencies") or {})}
+        art = next((k for k in ("next", "react", "vue", "svelte", "vite",
+                                "express", "flask") if k in deps), "")
+        stacks.append("Node/JS" + (f" ({art})" if art else ""))
+        for s in ("dev", "build", "test", "lint"):
+            if isinstance(pkg, dict) and s in (pkg.get("scripts") or {}):
+                cmds.append(f"npm run {s}")
+    if hat("Cargo.toml"):
+        stacks.append("Rust")
+        cmds.append("cargo test")
+    if hat("go.mod"):
+        stacks.append("Go")
+        cmds.append("go test ./...")
+    if hat("composer.json"):
+        stacks.append("PHP")
+    if stacks:
+        zeilen.append("Erkannter Stack: " + ", ".join(stacks))
+    if cmds:
+        zeilen.append("Real vorhandene Kommandos: " + " | ".join(cmds))
+    try:
+        r = subprocess.run(["git", "log", "--oneline", "-5"], cwd=root,
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            zeilen.append("Letzte Commits:\n  "
+                          + "\n  ".join(r.stdout.strip().splitlines()))
+    except Exception:
+        pass
+    return zeilen
+
+
+ROUTE_RE = re.compile(r"\.(route|get|post|put|delete|patch)\(\s*['\"]([^'\"]+)")
+JS_DEF_RE = re.compile(
+    r"^[ \t]*(?:export\s+(?:default\s+)?)?(?:async\s+)?"
+    r"(?:function\s+(\w+)|class\s+(\w+)|const\s+(\w+)\s*=\s*(?:async\s*)?[(f])",
+    re.MULTILINE)
+
+
+def _outline_py(path):
+    """Top-Level-Klassen/Funktionen (+Routen-Dekoratoren) einer Python-Datei."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            src = f.read()
+        tree = ast.parse(src)
+    except Exception:
+        return []
+    out = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            route = ""
+            for d in node.decorator_list:
+                seg = ast.get_source_segment(src, d) or ""
+                m = ROUTE_RE.search(seg)
+                if m:
+                    route = f" [{m.group(1)} {m.group(2)}]"
+                    break
+            out.append(f"def {node.name}() Z{node.lineno}{route}")
+        elif isinstance(node, ast.ClassDef):
+            meth = [m.name for m in node.body
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            out.append(f"class {node.name} Z{node.lineno}"
+                       + (f" ({', '.join(meth[:6])})" if meth else ""))
+    return out
+
+
+def _outline_js(path):
+    """Funktionen/Klassen/Routen einer JS/TS-Datei (Regex-Naeherung)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            src = f.read()
+    except Exception:
+        return []
+    out = []
+    for m in JS_DEF_RE.finditer(src):
+        name = m.group(1) or m.group(2) or m.group(3)
+        line = src.count("\n", 0, m.start()) + 1
+        out.append(("class " if m.group(2) else "fn ") + f"{name} Z{line}")
+    for m in ROUTE_RE.finditer(src):
+        out.append(f"route {m.group(1).upper()} {m.group(2)}")
+    return out[:15]
+
+
+def code_outline(root=".", max_files=30):
+    """Kompakte Struktur-Uebersicht des Bestandscodes ohne Modell-Aufruf:
+    je Quelldatei die Klassen/Funktionen/Routen mit Zeilennummern. Ein Modell,
+    das nur DATEINAMEN sieht, kennt den Bestand nicht — erst die Struktur
+    macht 'verstehen vor aendern' billig genug, dass kleine Modelle es tun."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in IGNORE_DIRS and not d.startswith("."))
+        for fn in sorted(filenames):
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in (".py", ".js", ".jsx", ".ts", ".tsx"):
+                continue
+            full = os.path.join(dirpath, fn)
+            items = (_outline_py(full) if ext == ".py" else _outline_js(full))
+            if not items:
+                continue
+            rel = os.path.normpath(os.path.relpath(full, root))
+            out.append(f"{rel}: " + " · ".join(items[:12]))
+            if len(out) >= max_files:
+                out.append("... (Struktur-Uebersicht gekappt)")
+                return out
+    return out
 
 
 def do_ask(args):
@@ -1779,6 +2129,9 @@ Regeln:
   eine neue an. Suche sie zuerst mit find/list_dir. Nutzer benennen Dateien oft
   ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
   find ignoriert Gross-/Kleinschreibung und Leer-/Sonderzeichen.
+- Ein LEERES find/grep-Ergebnis heisst NICHT 'gibt es nicht': verbreitere das
+  Suchmuster (kuerzerer Begriff, andere Schreibweise, ab Wurzel suchen) und
+  suche ERNEUT, bevor du etwas als fehlend einstufst oder neu anlegst.
 - Erst wenn find/list_dir nichts Passendes liefern, frage nach oder lege neu an.
 - Fuer Projekte mit VIELEN Dateien: schreibe sie gebuendelt mit write_files
   (mehrere auf einmal) statt einzeln — das spart Schritte.
@@ -1887,8 +2240,39 @@ auf dein Gedaechtnis, was eine Bibliothek 'haben muesste' — pruefe es
 (z.B. ls node_modules/@material/web/) statt zu raten."""
 
 
-def system_prompt(fence):
-    """Baut den System-Prompt fuer den gewaehlten Modus zusammen."""
+ANALYSE_PROMPT = """Du bist ein praeziser Coding-Agent in der ANALYSE-PHASE fuer eine Aenderung an BESTEHENDEM Code.
+In dieser Phase darfst du NICHTS schreiben oder ausfuehren — erst verstehen, dann planen.
+Du forderst EINE Aktion pro Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst.
+
+Verfuegbare Aktionen (Feld "action"):
+  read_file -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich)
+  list_dir  -> {"action":"list_dir","path":"<pfad>"}
+  find      -> {"action":"find","pattern":"<namensteil>"}
+  grep      -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
+  ask       -> {"action":"ask","question":"<frage an den nutzer>"}
+  plan      -> {"action":"plan","punkte":["<datei>: <konkrete aenderung>", "..."]}
+
+Regeln:
+- Finde ZUERST die betroffenen Stellen: grep nach Feld-/Funktions-/Routen-Namen,
+  dann gezielt read_file. Die Struktur-Uebersicht unten zeigt dir, was existiert.
+- Ein LEERES Suchergebnis heisst NICHT, dass der Code fehlt — verbreitere das
+  Muster und suche erneut, bevor du irgendetwas als 'nicht vorhanden' einstufst.
+- Lies JEDE Datei, die du aendern willst, BEVOR du planst.
+- Schliesse die Phase mit der plan-Aktion ab: jeder Punkt genau EINE konkrete,
+  kleine Aenderung mit Dateipfad (z.B. "backend/app.py: Feld 'gewicht' in
+  POST /api/persons ergaenzen"). Keine vagen Punkte ('Code verbessern').
+- Der Plan wird erst akzeptiert, wenn du mindestens eine Datei gelesen hast.
+- Danach werden die Schreibaktionen freigeschaltet und du setzt die Punkte
+  NACHEINANDER um."""
+
+
+def system_prompt(fence, analyse=False):
+    """Baut den System-Prompt fuer den gewaehlten Modus zusammen. In der
+    Analyse-Phase (analyse=True) enthaelt das Protokoll BEWUSST keine
+    Schreibaktionen: was nicht im Protokoll steht, kann ein kleines Modell
+    auch nicht benutzen — Weglassen ist zuverlaessiger als Verbieten."""
+    if analyse:
+        return ANALYSE_PROMPT
     sp = SYSTEM_PROMPT_TEMPLATE
     sp = sp.replace("@@WRITE_SPEC@@", WRITE_SPEC_FENCE if fence else WRITE_SPEC_JSON)
     sp = sp.replace("@@EDIT_SPEC@@", EDIT_SPEC_FENCE if fence else EDIT_SPEC_JSON)
@@ -2291,9 +2675,12 @@ def git_commit_run(summary):
 
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
-    global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL
+    global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL, EXPLORED, HAS_CODE
     CLEAN_FINISH = False
     CURRENT_MODEL = model
+    EXPLORED = False
+    HAS_CODE = None
+    PLAN_POINTS.clear()
     # Aufgaben-lokalen Zustand zuruecksetzen: im interaktiven Modus galten
     # READ_FILES & Co. bisher fuer die GANZE Sitzung — eine in Aufgabe 1
     # gelesene Datei durfte in Aufgabe 5 noch blind ueberschrieben werden,
@@ -2312,6 +2699,16 @@ def run_task(messages, model):
     budget_warned = False
     notes_probe_done = False
     check_finish_pending = False  # finish wurde nur mangels Pruefung abgelehnt
+    plan_probe_done = False
+    # Analyse-Phase: nur sinnvoll, wenn es ueberhaupt Bestand zu verstehen gibt.
+    analyse_active = ANALYSE and _project_has_code()
+    analyse_steps = 0
+    analyse_nudged = False
+    if analyse_active:
+        messages[0]["content"] = (system_prompt(FENCE, analyse=True)
+                                  + ("\n\n" + SYSTEM_CONTEXT if SYSTEM_CONTEXT else ""))
+        info("Analyse-Phase aktiv: erst verstehen (nur Lese-Aktionen), dann "
+             "Aenderungsplan, erst danach werden Schreibaktionen freigeschaltet.")
     for step in range(1, MAX_STEPS + 1):
         # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
         # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
@@ -2332,6 +2729,15 @@ def run_task(messages, model):
                 f"gib dann finish mit einer ehrlichen Zusammenfassung aus (offen "
                 f"Gebliebenes darin benennen).")
             print(f"{C.YELLOW}⚠ Budget-Hinweis: noch {remaining} Schritte.{C.RESET}")
+        # Analyse-Stupser: gegen endloses Herumlesen ohne Plan (einmalig, an
+        # die letzte user-Nachricht angehaengt — keine doppelte user-Rolle).
+        if (analyse_active and analyse_steps >= 10 and not analyse_nudged
+                and messages and messages[-1]["role"] == "user"):
+            analyse_nudged = True
+            messages[-1]["content"] += (
+                "\n\n[HINWEIS VOM TOOL] Du bist seit 10 Schritten in der "
+                "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
+                "Aenderungsplan aus (plan-Aktion).")
         maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck (Prompt-Cache schonen)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         reply = chat_stream(messages, model)
@@ -2475,6 +2881,61 @@ def run_task(messages, model):
             continue
 
         name = action.get("action")
+
+        if name == "plan" and not analyse_active:
+            # plan ausserhalb der Analyse-Phase: kein Fehler, sondern sanft
+            # in die Umsetzung weiterleiten.
+            messages.append({"role": "user", "content":
+                "Plan notiert. Setze ihn jetzt direkt mit Aktionen um "
+                "(read_file/edit_file/write_file/run)."})
+            continue
+        if analyse_active:
+            analyse_steps += 1
+            if name == "plan":
+                punkte = action.get("punkte") or action.get("points") or []
+                if isinstance(punkte, str):
+                    punkte = [punkte]
+                punkte = [str(p).strip() for p in punkte if str(p).strip()]
+                if not punkte:
+                    obs = ("PLAN ABGELEHNT — 'punkte' muss eine nicht-leere "
+                           "Liste konkreter Aenderungsschritte sein (je Punkt "
+                           "Dateipfad + Aenderung).")
+                elif not READ_FILES:
+                    obs = ("PLAN ABGELEHNT — du hast noch keine einzige Datei "
+                           "gelesen. Lies erst die betroffenen Dateien "
+                           "(read_file), dann plane.")
+                else:
+                    PLAN_POINTS[:] = punkte
+                    nummeriert = "\n".join(f"{i}. {p}"
+                                           for i, p in enumerate(punkte, 1))
+                    print(f"\n{C.CYAN}{C.BOLD}── Aenderungsplan ─────────────"
+                          f"────────────{C.RESET}\n{nummeriert}")
+                    analyse_active = False
+                    messages[0]["content"] = (system_prompt(FENCE)
+                        + ("\n\n" + SYSTEM_CONTEXT if SYSTEM_CONTEXT else ""))
+                    messages.append({"role": "user", "content":
+                        "ANALYSE ABGESCHLOSSEN — dein Aenderungsplan:\n"
+                        + nummeriert +
+                        "\nAb jetzt sind Schreibaktionen freigeschaltet. Setze "
+                        "die Punkte NACHEINANDER um: kleine gezielte edit_file-"
+                        "Aenderungen bevorzugen. Wenn alle Punkte umgesetzt "
+                        "(oder begruendet verworfen) sind, pruefe das Ergebnis "
+                        "und gib finish aus."})
+                    continue
+                print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+            if name in ("write_file", "write_files", "edit_file", "run",
+                        "finish"):
+                obs = (f"ANALYSE-PHASE — '{name}' ist noch gesperrt. Verstehe "
+                       "erst den Bestand (read_file/grep/find/list_dir) und "
+                       "gib dann den Aenderungsplan aus: "
+                       '{"action":"plan","punkte":["<datei>: <aenderung>", '
+                       '...]}. Danach werden Schreibaktionen freigeschaltet.')
+                print(f"{C.YELLOW}⚠ Analyse-Phase: {name} gesperrt.{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+
         if name == "finish":
             # Deterministischer Finish-Check: in der Aufgabe genannte Dateien
             # muessen existieren, geschriebene muessen valide sein. Sonst wird
@@ -2551,6 +3012,23 @@ def run_task(messages, model):
                        "Endpunkt nie per curl getestet), fuehre sie JETZT aus und "
                        "behebe, was auffaellt. Danach gib erneut finish aus.")
                 print(f"{C.YELLOW}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
+            # Plan-Nachfrage: das finish wird gegen den EIGENEN Aenderungsplan
+            # aus der Analyse-Phase gehalten (einmalig) — dasselbe Prinzip wie
+            # beim Check-Modus: das Modell an seinem eigenen Versprechen
+            # messen, nicht an einer abstrakten Regel.
+            if PLAN_POINTS and not plan_probe_done:
+                plan_probe_done = True
+                obs = ("FINISH-NACHFRAGE — dein Aenderungsplan aus der "
+                       "Analyse-Phase:\n"
+                       + "\n".join(f"{i}. {p}"
+                                   for i, p in enumerate(PLAN_POINTS, 1))
+                       + "\nIst JEDER Punkt umgesetzt oder bewusst verworfen "
+                       "(dann kurz begruenden)? Setze Fehlendes JETZT um und "
+                       "gib danach erneut finish aus; ist wirklich alles "
+                       "erledigt, gib einfach erneut finish aus.")
+                print(f"{C.YELLOW}⚠ Plan-Nachfrage vor dem finish.{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
             # Notizen-Nachfrage (einmalig, nur wenn Code geschrieben wurde und
@@ -2660,7 +3138,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -2702,6 +3180,12 @@ def main():
     ap.add_argument("--no-fence", action="store_true",
                     help="Fence-Modus abschalten (Dateiinhalte als JSON-Strings); "
                          "der Parser versteht unabhaengig davon immer beide Formate")
+    ap.add_argument("--analyse", action="store_true",
+                    help="Zweistufig bei Bestandscode: erst NUR lesen/suchen und "
+                         "einen nummerierten Aenderungsplan ausgeben (plan-Aktion), "
+                         "erst danach werden Schreibaktionen freigeschaltet — "
+                         "gegen den Neubau-Reflex bei Aenderungen an bestehenden "
+                         "Projekten")
     ap.add_argument("--check", action="store_true",
                     help="Selbsttest-Modus: finish wird erst akzeptiert, wenn das "
                          "Modell seine Arbeit per run real ausgefuehrt/geprueft hat "
@@ -2713,6 +3197,7 @@ def main():
     MAX_STEPS = args.max_steps
     VALIDATE = not args.no_validate
     CHECK = CHECK or args.check
+    ANALYSE = ANALYSE or args.analyse
     KEEP_CONTEXT = args.keep_context
     PRUNE = not args.no_prune
     if args.no_fence:
@@ -2800,6 +3285,9 @@ def main():
     if FENCE:
         info("Fence-Modus aktiv: Dateiinhalte als rohe ```content Bloecke "
              "(kein JSON-Escaping).")
+    if ANALYSE:
+        info("Analyse-Modus aktiv (--analyse): bei Bestandscode erst "
+             "verstehen + Aenderungsplan, dann aendern.")
 
     # Projektueberblick als Kontext: damit der Agent vorhandene Dateien kennt und
     # bei ungenauer Benennung die richtige trifft, statt eine neue anzulegen.
@@ -2810,6 +3298,19 @@ def main():
         f"Vorhandene Dateien (rekursiv):\n{listing}\n\n"
         f"Wenn der Nutzer eine Datei ungenau benennt, ordne sie einer dieser Dateien "
         f"zu (find hilft beim unscharfen Suchen), statt blind eine neue anzulegen.")
+    # Deterministischer Bestands-Kontext: Steckbrief (Stack, Kommandos, Git)
+    # und Struktur-Uebersicht (Funktionen/Klassen/Routen) — beides ohne
+    # Modell-Aufruf erzeugt. Ein Modell, das Struktur statt nur Dateinamen
+    # sieht, iteriert eher, statt neu zu bauen.
+    brief = repo_brief()
+    if brief:
+        context_msg += "\n\nProjekt-Steckbrief:\n" + "\n".join(brief)
+    outline = code_outline()
+    if outline:
+        context_msg += ("\n\nCode-Struktur (automatisch extrahiert, "
+                        "Z<n> = Zeile):\n" + "\n".join(outline))
+    global SYSTEM_CONTEXT
+    SYSTEM_CONTEXT = context_msg
 
     # System-Prompt und Projektueberblick in EINER system-Message buendeln.
     # Manche Chat-Templates (z.B. Ornith-GGUF) brechen bei zwei aufeinander-
