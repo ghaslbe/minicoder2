@@ -662,6 +662,24 @@ def test_code_outline_python_mit_routen():
     assert "class Dienst" in out and "start" in out
 
 
+def test_terse_hint_nur_bei_kurzem_auftrag_mit_bestand():
+    with open("app.py", "w") as f:
+        f.write("x = 1\n")
+    assert "knapp" in mc.terse_task_hint("fix die liste")
+    assert mc.terse_task_hint("Baue eine ausfuehrliche Anwendung mit "
+                              "vielen Details und Erklaerungen dazu") == ""
+    os.remove("app.py")
+    mc.HAS_CODE = None
+    assert mc.terse_task_hint("fix die liste") == ""  # Greenfield: kein Stupser
+
+
+def test_qa_hint_erkennt_fragen_und_ignoriert_auftraege():
+    assert "FRAGE" in mc.qa_task_hint("warum ist die liste leer?")
+    assert "FRAGE" in mc.qa_task_hint("wo wird der port gesetzt")
+    assert mc.qa_task_hint("baue eine app") == ""
+    assert mc.qa_task_hint("ergaenze das feld beruf?") == ""  # Imperativ schlaegt '?'
+
+
 def test_ctx_overflow_parser():
     assert mc._parse_ctx_overflow(
         '{"error": "maximum context length is 32768 tokens, however you '

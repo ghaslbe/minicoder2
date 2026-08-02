@@ -1716,8 +1716,12 @@ def do_list_dir(args):
 
 
 # Verzeichnisse, die beim Durchsuchen/Ueberblick ignoriert werden.
+# mc_skills gehoert dazu: Skill-Vorlagen sind Tool-Zubehoer, kein
+# Projekt-Bestand (sonst wuerde ein leeres Projekt mit Skills faelschlich
+# als 'hat Bestandscode' gelten und z.B. die Neubau-Bremse ausloesen).
 IGNORE_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
-               ".mypy_cache", ".pytest_cache", ".idea", ".vscode", "dist", "build"}
+               ".mypy_cache", ".pytest_cache", ".idea", ".vscode", "dist",
+               "build", "mc_skills"}
 
 
 def _norm(s):
@@ -2561,6 +2565,51 @@ def task_hints(task):
 
 
 # --------------------- Validierung & Git-Rollback --------------------------
+
+TERSE_TASK_CHARS = 50
+QA_START_RE = re.compile(
+    r"^\s*(warum|wieso|weshalb|was (ist|sind|macht|passiert|bedeutet|fehlt)"
+    r"|wie (funktioniert|ist|wird|laeuft|läuft|viele?)"
+    r"|wo (ist|liegt|wird|steht)|welche[rs]?\b|gibt es)", re.IGNORECASE)
+IMPERATIV_RE = re.compile(
+    r"\b(bau|erstell|schreib|aender|änder|fix|beheb|ergaenz|ergänz|"
+    r"implementier|loesch|lösch|entfern|refactor|migrier|fueg|füg|mach)\w*\b",
+    re.IGNORECASE)
+
+
+def terse_task_hint(task):
+    """Knappheits-Stupser: Menschen tippen faul — voellig ok, wenn das
+    Werkzeug die Luecke deterministisch fuellt. Sehr kurze Auftraege an
+    Projekten MIT Bestand bekommen die Anweisung, die wahrscheinlichste
+    Absicht aus Bestand/Notizen abzuleiten, bei ECHTER Mehrdeutigkeit genau
+    EINE ask-Frage zu stellen und sonst mit benannten Annahmen loszulegen —
+    statt zehn Schritte in die falsche Richtung zu laufen."""
+    global HAS_CODE
+    if len((task or "").strip()) >= TERSE_TASK_CHARS:
+        return ""
+    HAS_CODE = None  # frisch pruefen (interaktiv kann sich der Bestand aendern)
+    if not _project_has_code():
+        return ""
+    return ("\n\n[HINWEIS VOM TOOL] Der Auftrag ist knapp gehalten. Leite die "
+            "wahrscheinlichste Absicht aus dem Bestand ab (Struktur-Uebersicht, "
+            "MC-NOTIZEN.md, aehnliche vorhandene Features als Vorbild). Nur bei "
+            "ECHTER Mehrdeutigkeit: stelle genau EINE ask-Frage. Sonst: nenne "
+            "in einem Satz deine Annahme(n) und beginne direkt.")
+
+
+def qa_task_hint(task):
+    """Frage-Weiche: liest sich der Auftrag wie eine FRAGE (Fragewort am
+    Anfang oder '?' am Ende, ohne Umsetzungs-Verben), soll der Lauf sie mit
+    Lese-Aktionen beantworten — nicht ungefragt Code aendern."""
+    t = (task or "").strip()
+    if not t or IMPERATIV_RE.search(t):
+        return ""
+    if not (QA_START_RE.search(t) or t.endswith("?")):
+        return ""
+    return ("\n\n[HINWEIS VOM TOOL] Das ist eine FRAGE. Beantworte sie mit "
+            "Lese-Aktionen (grep/read_file/list_dir) und schliesse mit einer "
+            "TEXT-Antwort ab — KEINE Schreibaktionen, nichts aendern.")
+
 
 def _git(*args, timeout=15):
     """Fuehrt ein git-Kommando aus, gibt (returncode, stdout) zurueck."""
@@ -3522,7 +3571,8 @@ def main():
         if hints:
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
-        messages.append({"role": "user", "content": task_text + hints})
+        zusatz = terse_task_hint(task_text) + qa_task_hint(task_text)
+        messages.append({"role": "user", "content": task_text + hints + zusatz})
         if plan_mode and not plan_phase(messages, args.model):
             return
         result = run_task(messages, args.model)
@@ -3564,7 +3614,8 @@ def main():
         if hints:
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
-        messages.append({"role": "user", "content": user + hints})
+        zusatz = terse_task_hint(user) + qa_task_hint(user)
+        messages.append({"role": "user", "content": user + hints + zusatz})
         if plan_mode and not plan_phase(messages, args.model):
             continue
         # Skill-Flags (check/analyse) gelten nur fuer DIESE Aufgabe: Globals
