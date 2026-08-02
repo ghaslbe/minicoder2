@@ -3559,6 +3559,66 @@ def run_task(messages, model):
     return None
 
 
+def _current_settings(model):
+    """Die zur Laufzeit umstellbaren Einstellungen als Dict — Grundlage fuer
+    /settings und die benannten Profile (/profil speichern|laden)."""
+    return {"model": model, "base_url": BASE_URL, "check": CHECK,
+            "analyse": ANALYSE, "fence": FENCE, "verbose": VERBOSE,
+            "prune": PRUNE, "max_steps": MAX_STEPS,
+            "keep_context": KEEP_CONTEXT, "yes": AUTO_YES}
+
+
+def _settings_report(model):
+    zeilen = ["Aktuelle Einstellungen (/settings <name> <wert> zum Aendern):"]
+    for k, v in _current_settings(model).items():
+        zeilen.append(f"  {k:14s} {v}")
+    zeilen.append("Profile: /profil speichern <name> · /profil laden <name> "
+                  "· /profil liste")
+    return "\n".join(zeilen)
+
+
+def _apply_setting(key, wert):
+    """Setzt eine Laufzeit-Einstellung. Gibt (ok, meldung, prompt_neu) zurueck
+    — prompt_neu=True, wenn die System-Message neu gebaut werden muss (fence/
+    check stecken im Prompt-Text). 'model' behandelt der Aufrufer selbst."""
+    global BASE_URL, CHECK, ANALYSE, FENCE, VERBOSE, PRUNE
+    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES
+    key = key.strip().lower()
+    if key == "base_url":
+        BASE_URL = str(wert).rstrip("/")
+        _LOADED_CTX_CACHE.clear()
+        _LOADED_CTX_TOKENS.clear()
+        return True, f"base_url = {BASE_URL}", False
+    if key in ("check", "analyse", "fence", "verbose", "prune", "yes"):
+        v = _truthy(wert)
+        if key == "check":
+            CHECK = v
+        elif key == "analyse":
+            ANALYSE = v
+        elif key == "fence":
+            FENCE = v
+        elif key == "verbose":
+            VERBOSE = v
+        elif key == "prune":
+            PRUNE = v
+        else:
+            AUTO_YES = v
+        return True, f"{key} = {v}", key in ("check", "fence")
+    if key in ("max_steps", "keep_context"):
+        try:
+            v = max(1, int(str(wert).strip()))
+        except ValueError:
+            return False, f"FEHLER: '{wert}' ist keine Zahl.", False
+        if key == "max_steps":
+            MAX_STEPS = v
+        else:
+            KEEP_CONTEXT = v
+        return True, f"{key} = {v}", False
+    gueltig = ", ".join(_current_settings("").keys())
+    return False, (f"FEHLER: unbekannte Einstellung '{key}'. "
+                   f"Verfuegbar: {gueltig}"), False
+
+
 def main():
     global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
@@ -3791,6 +3851,13 @@ def main():
                 info(f"Modellwechsel im Einmal-Modus bitte per --model. "
                      f"Aktuell: {args.model}")
                 return
+            if art == "settings_show":
+                print(_settings_report(args.model))
+                return
+            if art in ("setting", "models", "profil_save", "profil_load"):
+                info("Dieses Kommando gibt es im interaktiven Modus "
+                     "(mc.py ohne Aufgabe starten).")
+                return
             if art == "task":
                 task_text = wert
                 if sflags.get("check") or sflags.get("analyse"):
@@ -3849,6 +3916,57 @@ def main():
             if art == "model":
                 args.model = wert
                 info(f"Modell fuer diese Sitzung gewechselt: {wert}")
+                continue
+            if art == "models":
+                try:
+                    eintraege = list_models()
+                    print("Modelle am Endpoint:")
+                    for mid, preis in eintraege[:60]:
+                        print("  " + mid + (f"  ({preis})" if preis else ""))
+                    if len(eintraege) > 60:
+                        print(f"  ... ({len(eintraege)} gesamt)")
+                except (Exception, SystemExit) as e:
+                    print(f"Modell-Liste nicht abrufbar: {e}")
+                continue
+            if art == "settings_show":
+                print(_settings_report(args.model))
+                continue
+            if art == "setting":
+                key, val = wert
+                if key.strip().lower() == "model":
+                    args.model = val
+                    info(f"model = {val}")
+                    continue
+                ok_s, meldung, prompt_neu = _apply_setting(key, val)
+                print(meldung)
+                if ok_s and prompt_neu:
+                    messages[0]["content"] = (system_prompt(FENCE)
+                                              + "\n\n" + SYSTEM_CONTEXT)
+                    info("System-Prompt neu aufgebaut (fence/check geaendert).")
+                continue
+            if art == "profil_save":
+                pfad = mc_terminal.save_profile(wert, _current_settings(args.model))
+                print(f"Profil gespeichert: {pfad}" if pfad
+                      else "Profil-Speichern fehlgeschlagen (Name/Schreibrecht?).")
+                continue
+            if art == "profil_load":
+                prof = mc_terminal.load_profile(wert)
+                if not prof:
+                    print(f"Profil '{wert}' nicht gefunden — /profil liste "
+                          f"zeigt alle.")
+                    continue
+                prompt_neu = False
+                for k, v in prof.items():
+                    if k == "model":
+                        args.model = v
+                        continue
+                    ok_s, _m, pn = _apply_setting(k, v)
+                    prompt_neu = prompt_neu or (ok_s and pn)
+                if prompt_neu:
+                    messages[0]["content"] = (system_prompt(FENCE)
+                                              + "\n\n" + SYSTEM_CONTEXT)
+                print(f"Profil '{wert}' geladen.")
+                print(_settings_report(args.model))
                 continue
             if art == "task":
                 user = wert

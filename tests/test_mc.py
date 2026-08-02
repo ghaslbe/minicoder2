@@ -791,3 +791,33 @@ def test_system_prompt_lehrt_read_files_und_explore():
     assert "read_files" in sp and "explore" in sp
     spa = mc.system_prompt(True, analyse=True)
     assert "read_files" in spa and "explore" in spa
+
+
+# --------------------------- Laufzeit-Settings ------------------------------
+
+def test_apply_setting_bool_int_und_unbekannt(monkeypatch):
+    ok, msg, neu = mc._apply_setting("check", "true")
+    assert ok and "check = True" in msg and neu is True   # steckt im Prompt
+    ok, msg, neu = mc._apply_setting("max_steps", "60")
+    assert ok and mc.MAX_STEPS == 60 and neu is False
+    ok, msg, _ = mc._apply_setting("max_steps", "abc")
+    assert not ok and "keine Zahl" in msg
+    ok, msg, _ = mc._apply_setting("quatsch", "1")
+    assert not ok and "unbekannte Einstellung" in msg
+    mc._apply_setting("check", "false")
+    mc._apply_setting("max_steps", "40")
+
+
+def test_apply_setting_base_url_leert_caches(monkeypatch):
+    mc._LOADED_CTX_TOKENS["x"] = 123
+    ok, msg, _ = mc._apply_setting("base_url", "http://neu:1234/v1/")
+    assert ok and mc.BASE_URL == "http://neu:1234/v1"
+    assert mc._LOADED_CTX_TOKENS == {}
+    mc._apply_setting("base_url", "http://localhost:1234/v1")
+
+
+def test_settings_report_zeigt_alles():
+    rep = mc._settings_report("test-modell")
+    for k in ("model", "base_url", "check", "analyse", "max_steps", "yes"):
+        assert k in rep
+    assert "test-modell" in rep

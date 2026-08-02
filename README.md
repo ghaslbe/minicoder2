@@ -668,8 +668,22 @@ Aufruf: `/weiterentwickeln Gewicht-Feld ergänzen` (interaktiv oder als
 Einmal-Aufgabe: `python3 mc.py "/weiterentwickeln …"`). Das erste Wort
 einer Eingabe wird auch **ohne** Slash als Skill erkannt, wenn es exakt
 einem Skill-Namen entspricht. `/skills` listet alles, `/help` zeigt
-auch die eingebauten Kommandos (`/model` wechselt das Modell in der
-Sitzung), und bei Vertippern gibt es „Meintest du …?"-Vorschläge.
+auch die eingebauten Kommandos, und bei Vertippern gibt es „Meintest
+du …?"-Vorschläge.
+
+**Einstellungen & Profile in der Sitzung:**
+
+- `/settings` zeigt alle Laufzeit-Einstellungen (model, base_url, check,
+  analyse, fence, verbose, prune, max_steps, keep_context, yes);
+  `/settings check true` ändert eine davon sofort — ändert sich etwas,
+  das im System-Prompt steckt (fence/check), wird er neu aufgebaut.
+- `/model <id>` wechselt das Modell, `/models` listet die Modelle des
+  Endpoints (mit Preisen, falls er sie meldet).
+- `/profil speichern <name>` sichert den kompletten Einstellungs-Satz
+  unter `~/.mc/profile/<name>.json`, `/profil laden <name>` stellt ihn
+  wieder her (auch in späteren Sitzungen), `/profil liste` zeigt alle —
+  z.B. ein Profil „lokal" (LM Studio, gemma) und eins „cloud"
+  (OpenRouter, laguna) zum schnellen Umschalten.
 
 #### Kontext-Paket: Batch-Lesen, Erkundungs-Unteraufträge, Plan-Datei, Diff-Review, `--resume`
 

@@ -94,3 +94,36 @@ def test_skills_liste_und_model(_skill_dirs):
     assert art == "model" and wert == "neu-modell"
     art, wert, _ = mt.expand_input("/model", model="altes-modell")
     assert art == "print" and "altes-modell" in wert
+
+
+# ------------------------- Settings & Profile -------------------------------
+
+def test_settings_parsing():
+    art, wert, _ = mt.expand_input("/settings")
+    assert art == "settings_show"
+    art, wert, _ = mt.expand_input("/settings check true")
+    assert art == "setting" and wert == ("check", "true")
+    art, wert, _ = mt.expand_input("/settings max_steps 60")
+    assert art == "setting" and wert == ("max_steps", "60")
+    art, wert, _ = mt.expand_input("/models")
+    assert art == "models"
+
+
+def test_profil_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(mt, "PROFILE_DIR", str(tmp_path / "profile"))
+    pfad = mt.save_profile("mein Profil!", {"check": True, "max_steps": 60})
+    assert pfad and pfad.endswith("mein-Profil.json")
+    assert mt.load_profile("mein Profil!") == {"check": True, "max_steps": 60}
+    assert mt.list_profiles() == ["mein-Profil"]
+    art, wert, _ = mt.expand_input("/profil laden mein-Profil")
+    assert art == "profil_load" and wert == "mein-Profil"
+    art, wert, _ = mt.expand_input("/profil speichern anderes")
+    assert art == "profil_save" and wert == "anderes"
+
+
+def test_profil_fehlend_und_liste_leer(tmp_path, monkeypatch):
+    monkeypatch.setattr(mt, "PROFILE_DIR", str(tmp_path / "leer"))
+    assert mt.load_profile("gibtsnicht") is None
+    assert mt.list_profiles() == []
+    art, wert, _ = mt.expand_input("/profil")
+    assert art == "print" and "Keine Profile" in wert

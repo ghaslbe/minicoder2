@@ -46,7 +46,11 @@ BUILTINS = {
     "/help": "Diese Uebersicht",
     "/skills": "Verfuegbare Skills auflisten",
     "/model": "Aktuelles Modell anzeigen bzw. wechseln: /model <id>",
+    "/models": "Modelle des Endpoints auflisten (mit Preisen, falls gemeldet)",
+    "/settings": "Einstellungen anzeigen bzw. aendern: /settings <name> <wert>",
+    "/profil": "Einstellungs-Profile: /profil speichern|laden <name>, /profil liste",
 }
+PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".mc", "profile")
 _TRUTHY = ("1", "true", "yes", "ja", "wahr")
 
 
@@ -157,7 +161,33 @@ def expand_input(user, model=""):
     if cmd == "/model":
         if rest:
             return "model", rest, {}
-        return "print", f"Aktuelles Modell: {model}", {}
+        return "print", (f"Aktuelles Modell: {model}\n"
+                         f"Wechseln: /model <id> — Liste: /models"), {}
+    if cmd == "/models":
+        return "models", None, {}
+    if cmd == "/settings":
+        if not rest:
+            return "settings_show", None, {}
+        teile = rest.split(None, 1)
+        if len(teile) < 2:
+            return "print", ("Nutzung: /settings <name> <wert> — ohne "
+                             "Argumente zeigt /settings alle Werte."), {}
+        return "setting", (teile[0], teile[1].strip()), {}
+    if cmd == "/profil":
+        sub, _, name = rest.partition(" ")
+        sub, name = sub.lower(), name.strip()
+        if sub in ("speichern", "save") and name:
+            return "profil_save", name, {}
+        if sub in ("laden", "load") and name:
+            return "profil_load", name, {}
+        if not sub or sub in ("liste", "list"):
+            profile = list_profiles()
+            if not profile:
+                return "print", (f"Keine Profile gespeichert ({PROFILE_DIR}). "
+                                 f"Anlegen: /profil speichern <name>"), {}
+            return "print", ("Gespeicherte Profile (/profil laden <name>):\n  "
+                             + "\n  ".join(profile)), {}
+        return "print", "Nutzung: /profil speichern|laden <name> · /profil liste", {}
     name = cmd[1:]
     if name in skills:
         sk = skills[name]
@@ -169,6 +199,47 @@ def expand_input(user, model=""):
         msg += " Meintest du: " + ", ".join(tipps) + "?"
     msg += " (/help zeigt alles)"
     return "print", msg, {}
+
+
+def _profil_pfad(name):
+    sauber = re.sub(r"[^a-zA-Z0-9._-]+", "-", name.strip()).strip("-")
+    return os.path.join(PROFILE_DIR, sauber + ".json") if sauber else ""
+
+
+def save_profile(name, settings):
+    """Speichert ein Einstellungs-Profil unter ~/.mc/profile/<name>.json.
+    Gibt den Pfad zurueck (oder '' bei ungueltigem Namen/Fehler)."""
+    import json as _json
+    pfad = _profil_pfad(name)
+    if not pfad:
+        return ""
+    try:
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        with open(pfad, "w", encoding="utf-8") as f:
+            _json.dump(settings, f, indent=2, ensure_ascii=False)
+        return pfad
+    except OSError:
+        return ""
+
+
+def load_profile(name):
+    """Laedt ein Profil — None, wenn es fehlt oder unlesbar ist."""
+    import json as _json
+    pfad = _profil_pfad(name)
+    try:
+        with open(pfad, "r", encoding="utf-8") as f:
+            daten = _json.load(f)
+        return daten if isinstance(daten, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def list_profiles():
+    try:
+        return sorted(os.path.splitext(f)[0] for f in os.listdir(PROFILE_DIR)
+                      if f.endswith(".json"))
+    except OSError:
+        return []
 
 
 def _completer_factory():
