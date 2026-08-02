@@ -2822,6 +2822,168 @@ nie getroffen hatten: der stille Ausstieg über aktionslose Prosa.
 
 ---
 
+## 16. Schneller mit lokalem gemma: das Pruning sabotierte den Prompt-Cache
+
+Die Frage klang harmlos: Wie arbeitet man mit dem lokalen
+`gemma-4-26b-a4b-it@mxfp4` noch **schneller**? Die halbe Antwort stand
+längst als Kommentar in `mc.py`: *„Auf lokalen Maschinen ist
+Prompt-Processing der Flaschenhals"* — genau deshalb gab es ja die
+Kontext-Beschneidung. Was fehlte, war die zweite Hälfte: LM Studio
+(llama.cpp) hat einen **Prefix-/KV-Cache**. Enthält ein Request den
+vorigen als Präfix, kostet er nur die *neuen* Tokens — und ein
+Agenten-Loop ist dafür der Idealfall, denn Schritt N ist Schritt N−1
+plus Antwort plus Tool-Ergebnis.
+
+Nur: `prune_messages()` lief **vor jedem Schritt** und kürzte dabei
+jedes Mal genau die Nachricht, die gerade aus dem Vollständig-Fenster
+fiel — **mitten in der Historie**. Ab der Änderungsstelle ist der Cache
+wertlos; der Server musste die letzten `KEEP_CONTEXT` vollen Schritte —
+ausgerechnet die größten Brocken, volle Tool-Ausgaben und write-Blöcke —
+bei *jedem* Schritt neu vorverarbeiten. Die Optimierung gegen das
+langsame Prompt-Processing erzwang das langsame Prompt-Processing.
+
+**Der Umbau (Lazy Pruning):**
+
+- Die Historie wächst **unangetastet**, solange sie unter ~70 % des
+  **geladenen** Kontextfensters bleibt (abgefragt über LM Studios
+  `/api/v0/models` — dieselbe Quelle, die schon die Fetch-Analyse
+  nutzt). Jeder Schritt ist dann eine reine Präfix-Verlängerung:
+  Cache-Hit, Prefill nur für die neuen Tokens.
+- Erst beim Reißen der Schwelle wird **einmal im Batch** gekürzt —
+  danach ist das Präfix wieder stabil und der Cache baut sich einmalig
+  neu auf. Reicht das nicht, greift die Notfall-Stufe (nur der letzte
+  Schritt bleibt voll), wie beim Leere-Antwort-Fall.
+- Ist das Fenster **nicht abfragbar** (Ollama, Cloud-Endpoints), bleibt
+  alles beim Alten — dort zählt Überlauf-Schutz bzw. Token-Preis mehr
+  als der Cache.
+
+**Und eine Falle, die erst der Test gegen den echten Server zeigte:**
+LM Studio meldet `loaded_context_length: null`, solange das Modell nicht
+geladen ist — geladen wird aber erst JIT beim ersten Chat-Request. Ein
+naiver Cache hätte den Wert beim Start als „unbekannt" eingefroren und
+das Lazy Pruning für den ganzen Lauf still deaktiviert. Deshalb wird der
+transiente Fall nicht gecacht; der Wert zieht ab Schritt 2 nach.
+Dieselbe Lektion, die `mc` seinen Modellen predigt („nachschauen statt
+raten"), gilt offenbar auch für den, der an `mc` baut. Suite: 72/72.
+
+## 17. Gegentest über OpenRouter: eine komplette CRUD-App für 0,7 Cent
+
+Zur Abwechslung mal kein Weiterentwicklungs-Szenario, sondern der
+Klassiker from scratch — und zwar mit `deepseek/deepseek-v4-flash`, dem
+Modell aus Kapitel 14: Flask + SQLite, CRUD-API für Personendaten,
+HTML-Oberfläche, fester Port, `--yes --check`, unbeaufsichtigt.
+
+**Der Lauf: 18 Schritte, 85.181 Tokens, $0.0068.** Null Parse-Fehler
+(der Fence-Default bewährt sich weiter), keine Truncation, der
+Prosa-Wächter musste nie eingreifen. Das Check-Gate holte vor dem
+`finish` eine Verifikationstabelle ein — alle Endpunkte per `curl`
+getestet, inklusive `DELETE /999 → 404`. `MC-NOTIZEN.md` wurde
+unaufgefordert angelegt, der Abschluss sauber committet, die
+Hintergrundserver aufgeräumt. Das Modell, das in Kapitel 14 durch den
+unbewachten Ausgang verschwand, lief unter den inzwischen eingebauten
+Leitplanken glatt durch.
+
+**Die Token-Bilanz beantwortet nebenbei die Speed-Frage aus
+Kapitel 16 quantitativ:** 77.516 Prompt- gegen 7.665
+Completion-Tokens — **91 %** des Aufwands ist das Wiederkäuen der
+Historie, nicht das Erzeugen der Antworten. Lokal frisst das Zeit (die
+jetzt der KV-Cache spart), in der Cloud frisst es Geld (das dort das
+Pro-Schritt-Pruning drückt). Beide Modi drehen an derselben Schraube,
+nur in entgegengesetzter Richtung.
+
+**Der unabhängige Abnahme-Test** (API per `curl` inklusive Randfälle,
+Oberfläche im echten Browser): Kern-CRUD komplett in Ordnung — 404 bei
+unbekannten IDs, partielles PUT erhält die übrigen Felder, Umlaute
+sauber, das Frontend escaped gespeicherte XSS-Payloads. Aber vier
+Lücken: ein **leerer** Name (`""`) wird angelegt (geprüft wird nur, ob
+das Feld *vorhanden* ist), POST ohne JSON-Content-Type liefert eine
+HTML-415-Seite statt JSON, `app.run(debug=True)` steht in der fertigen
+App, und der DB-Pfad ist relativ zum Arbeitsverzeichnis — exakt die
+Lektion, die im Personenverwaltungs-Projekt schon einmal als
+`BASE_DIR`-Regel in den Projekt-Notizen stand, dort aber nur *pro
+Projekt* wirkt.
+
+**Das Muster dahinter ist die eigentliche Erkenntnis:** Das Modell
+testete exakt die Fehlerfälle, die der Check-Prompt **wörtlich nennt**
+(„unbekannte ID sollte 404 liefern" — brav und gründlich geprüft), und
+exakt keinen darüber hinaus. Beispiellisten in Prompts sind für kleine
+Modelle keine Illustration, sie sind die Spezifikation. Konsequenz,
+direkt eingebaut:
+
+1. Der **Check-Prompt** verlangt jetzt ausdrücklich auch ungültige
+   Eingaben: ein fehlendes UND ein leeres Pflichtfeld müssen beide
+   mit 400 abgelehnt werden.
+2. Zwei neue **System-Prompt-Regeln**: Daten-/DB-Pfade absolut zur
+   Skript-Datei auflösen (`BASE_DIR`-Muster) statt relativ zum
+   Arbeitsverzeichnis, und fertiger Code läuft ohne Debug-Modus (kein
+   `app.run(debug=True)` — der Werkzeug-Debugger erlaubt
+   Code-Ausführung im Browser).
+
+Damit ist die `BASE_DIR`-Lektion von einer Projekt-Notiz zur globalen
+Regel befördert. Suite: 74/74.
+
+## 18. Dieselbe Aufgabe mit GPT-5.6 Luna — und der Beweis, dass die Prompt-Schärfung wirkt
+
+Direkt im Anschluss dieselbe Aufgabe, wortgleich, gleiche Flags — nur das
+Modell getauscht: `openai/gpt-5.6-luna` ($0.10/$0.60 pro Mio Token,
+completion-seitig gut doppelt so teuer wie deepseek-v4-flash).
+Fairerweise vorweg: das ist **kein sauberer A/B-Vergleich der Modelle**,
+denn Luna lief bereits mit den in Kapitel 17 nachgeschärften Prompts.
+Aber genau das war der Zweck des Laufs — prüfen, ob die Schärfung wirkt.
+
+**Der Lauf: 15 Schritte, 150.619 Tokens, $0.0143.** Luna arbeitet
+erkennbar anders: erst alle Dateien in wenigen großen Schritten, dann ein
+eigenes venv, dann die CRUD-Logik per lokalem Python-Testskript — und
+erst danach Serverstart und ein einziges, durchkomponiertes
+`curl`-Testskript mit einem Dutzend Prüfungen. Weniger Schritte, aber
+längere Antworten und größere Tool-Blöcke: trotz drei Schritten weniger
+verbrauchte Luna fast doppelt so viele Tokens wie deepseek. Zwei
+`mc`-Wächter kamen zum Einsatz und funktionierten: der
+Port-belegt-Hinweis (Luna wollte den Server starten, der eigene
+Hintergrundprozess lief schon — Port wurde behalten statt gewechselt)
+und die Notizen-Nachfrage vor dem `finish` (worauf `MC-NOTIZEN.md`
+sauber nachgeliefert wurde).
+
+**Der Kausalitäts-Beleg steht in Lunas eigenem Testskript:** Dort finden
+sich wörtlich die Zeilen `POST fehlendes name` und `POST leeres name` —
+exakt die zwei Prüffälle, die der Check-Prompt seit Kapitel 17 verlangt.
+Und der Code hält, was das Skript prüft: `BASE_DIR`-Muster beim
+DB-Pfad, kein `debug=True`, Whitespace-Namen werden gestrippt und
+abgelehnt, Nicht-JSON-Requests bekommen einen 400er **mit
+JSON-Fehlermeldung**. Der unabhängige Abnahme-Test (dieselbe
+`curl`-Batterie plus Browser-Test von Anlegen/Bearbeiten und
+XSS-Escaping): **null Befunde**. Alle vier Lücken des deepseek-Laufs
+sind zu.
+
+| | deepseek-v4-flash (Kap. 17) | GPT-5.6 Luna |
+|---|---|---|
+| Schritte / Requests | 18 | 15 |
+| Tokens (prompt + completion) | 85.181 (77.5k + 7.7k) | 150.619 (136.6k + 14.1k) |
+| Kosten | $0.0068 | $0.0143 |
+| Vorgehen | kleinteilig, Einzel-`curl`s | venv + gebündelte Testskripte |
+| Abnahme-Befunde | 4 | 0 |
+| PUT-Semantik | partiell (Felder bleiben erhalten) | strikt (volles Objekt, sonst 400) |
+
+Die PUT-Zeile ist keine Wertung — beides ist vertretbar (strikt ist
+näher am REST-Lehrbuch, partiell ist praktischer), und beide Frontends
+passen jeweils zu ihrer API. Interessant ist sie trotzdem: dieselbe
+unterspezifizierte Aufgabe, zwei legitime Interpretationen.
+
+**Eine Luna-Eigenheit zum Beobachten:** Das Modell schreibt nach dem
+Action-Block gern weiter — und behauptet dort schon Ergebnisse („Der
+Server ist gestartet", „erfolgreich geprüft"), bevor das Tool-Ergebnis
+überhaupt zurück ist. `mc` führt ohnehin nur den einen Action-Block aus,
+die vorauseilende Prosa bleibt also folgenlos — aber es ist derselbe
+Geist wie das Prosa-Loch aus Kapitel 14/15: Modelle erzählen gern von
+Taten statt sie abzuwarten. Die Wächter dagegen bleiben also zu Recht.
+
+Unterm Strich: Für 0,7 Cent mehr gab es die fehlerfreie App im ersten
+Anlauf. Und die eigentliche Erkenntnis ist modellunabhängig — was im
+Check-Prompt wörtlich steht, wird geprüft; was nicht dasteht, bleibt
+Glückssache. Die Prompts sind jetzt die Spezifikation.
+
+---
+
 ## Anhang: Die `mc`-Aufrufe & Prompts
 
 Zur Nachvollziehbarkeit die tatsächlich verwendeten Aufrufe. `$BASE` steht für die
