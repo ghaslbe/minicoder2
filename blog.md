@@ -3115,6 +3115,36 @@ Mechanismen:
 Suite: 86/86. Der erste Praxistest des Pakets steht noch aus — das wird
 der nächste Weiterentwicklungs-Testtag.
 
+## 21. `/skills` — die Prompt-Dateien werden erwachsen
+
+Beim Blick auf die Terminal-Bedienung anderer Agenten fiel auf, dass
+dieses Repo längst mit „Skills" arbeitet, nur zu Fuß: die vielen
+`prompt_*.txt`-Dateien sind wiederverwendbare Aufgaben-Vorlagen, die
+bisher per Copy-Paste oder `"$(cat …)"` in `mc` gefüttert wurden. Das
+neue, **optionale** Modul `mc_terminal.py` formalisiert genau das —
+und ist zugleich der erste Schritt weg vom Ein-Datei-Zwang (die
+Einzeldatei war praktisch, wird aber langsam groß; fehlt das Modul,
+läuft `mc.py` unverändert allein weiter).
+
+Skills sind Textdateien in `~/.mc/skills/` bzw. `.mc-skills/` (Projekt
+gewinnt), mit `$ARGUMENTS`-Platzhalter und optionalen Kopfzeilen, die
+Flags **nur für diese eine Aufgabe** setzen — der
+Weiterentwicklungs-Skill bringt sich so selbst den `--analyse`- und
+`--check`-Modus mit:
+
+```text
+du> /weiterentwickeln Gewicht-Feld ergaenzen
+```
+
+Dazu kommen die kleinen Dinge, die eine Terminal-Bedienung angenehm
+machen: persistente Eingabe-History (Pfeil-hoch/Ctrl-R), Tab
+vervollständigt `/`-Kommandos (die Kandidaten werden bei jedem Tab
+frisch aus den Skill-Verzeichnissen gelesen — neue Skills wirken ohne
+Neustart), „Meintest du …?"-Vorschläge per Editierdistanz bei
+Vertippern, `/model` zum Sitzungs-Modellwechsel, und Bare-Word-Dispatch
+(das erste Wort einer Eingabe zählt auch ohne Slash als Skill, wenn es
+exakt passt). Suite: 95/95.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
