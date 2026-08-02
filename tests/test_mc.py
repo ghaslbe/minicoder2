@@ -722,3 +722,72 @@ def test_analyse_prompt_ohne_schreibaktionen():
     assert "plan" in sp and "read_file" in sp and "grep" in sp
     assert "write_file" not in sp and "edit_file" not in sp
     assert "run " not in sp  # keine run-Aktion im Analyse-Protokoll
+
+
+# ------------------------- Kontext-Paket (Ideen) ----------------------------
+
+def test_read_files_batch_und_limit():
+    with open("a.py", "w") as f:
+        f.write("A = 1\n")
+    with open("b.py", "w") as f:
+        f.write("B = 2\n")
+    ok, msg = mc.do_read_files({"paths": ["a.py", "b.py"]})
+    assert ok and "A = 1" in msg and "B = 2" in msg
+    ok, msg = mc.do_read_files({"paths": [f"f{i}.py" for i in range(9)]})
+    assert not ok and "maximal" in msg
+    ok, _ = mc.do_read_files({"paths": []})
+    assert not ok
+
+
+def test_plan_datei_und_wiederaufnahme_hinweis():
+    assert mc._write_plan_file(["app.py: Feld ergaenzen", "index.html: Spalte"])
+    inhalt = open(mc.MC_PLAN, encoding="utf-8").read()
+    assert "- [ ] 1. app.py: Feld ergaenzen" in inhalt
+    hints = mc.task_hints("mach weiter")
+    assert "OFFENER Aenderungsplan" in hints
+    with open(mc.MC_PLAN, "w", encoding="utf-8") as f:
+        f.write("# Plan\n\n- [x] 1. fertig\n")  # alles abgehakt
+    assert "OFFENER" not in mc.task_hints("mach weiter")
+
+
+def test_plan_datei_zaehlt_nicht_als_bestand():
+    mc._write_plan_file(["x"])
+    mc.HAS_CODE = None
+    assert mc._project_has_code() is False
+
+
+def test_git_diff_summary_zeigt_aenderungen():
+    import subprocess
+    subprocess.run(["git", "init", "-q"], check=True)
+    with open("datei.py", "w") as f:
+        f.write("x = 1\n")
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                    "commit", "-qm", "start"], check=True)
+    with open("datei.py", "w") as f:
+        f.write("x = 2\n")
+    out = mc._git_diff_summary()
+    assert "datei.py" in out and "Diff:" in out
+
+
+def test_transcript_roundtrip_ohne_system(monkeypatch):
+    monkeypatch.setattr(mc, "RESUME", True)
+    msgs = [{"role": "system", "content": "S"},
+            {"role": "user", "content": "aufgabe"},
+            {"role": "assistant", "content": "antwort"}]
+    mc._save_transcript(msgs)
+    assert mc._load_transcript() == msgs[1:]  # System-Message bleibt draussen
+
+
+def test_explore_validierung_und_dispatch():
+    ok, msg = mc.do_explore({})
+    assert not ok and "task" in msg
+    assert mc.DISPATCH["explore"] is mc.do_explore
+    assert mc.DISPATCH["read_files"] is mc.do_read_files
+
+
+def test_system_prompt_lehrt_read_files_und_explore():
+    sp = mc.system_prompt(True)
+    assert "read_files" in sp and "explore" in sp
+    spa = mc.system_prompt(True, analyse=True)
+    assert "read_files" in spa and "explore" in spa

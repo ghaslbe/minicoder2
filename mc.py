@@ -137,6 +137,13 @@ MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbe
 # - Modelle erklaeren sich nach einem verworfenen Schritt gern in Prosa fuer
 #   "fertig" -> finish wird gegen die in der Aufgabe genannten Dateien geprueft.
 MAX_WRITE_FILES_BATCH = 3  # max. Dateien pro write_files-Block
+MAX_READ_FILES_BATCH = 5   # max. Dateien pro read_files-Schritt (Lesen ist
+                           # gefahrlos — der Batch spart Umlaeufe, und die
+                           # Prompt-Tokens dominieren die Kosten mit >90%)
+EXPLORE_STEPS = 10         # Schrittlimit fuer isolierte Erkundungs-Laeufe
+MC_PLAN = "mc_plan.md"     # Aenderungsplan der Analyse-Phase (ueberlebt Abbrueche)
+MC_VERLAUF = "mc_verlauf.json"  # Sitzungs-Verlauf fuer --resume
+RESUME = False             # --resume: Verlauf sichern und fortsetzen
 MAX_FINISH_REJECTS = 2     # so oft wird ein verfruehtes finish zurueckgewiesen
 EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Check)
 
@@ -1185,6 +1192,99 @@ def user_reject_msg():
 READFILE_MAX_CHARS = 24000
 
 
+def do_read_files(args):
+    """Mehrere Dateien in EINEM Schritt lesen — das Lese-Gegenstueck zu
+    write_files. Lesen kann nichts kaputtmachen, und jeder gesparte Umlauf
+    spart das erneute Verarbeiten des kompletten Verlaufs (Prompt-Tokens
+    dominieren die Kosten mit ueber 90 Prozent)."""
+    paths = args.get("paths") or args.get("files") or []
+    if isinstance(paths, str):
+        paths = [paths]
+    paths = [p.get("path") if isinstance(p, dict) else p for p in paths]
+    paths = [p for p in paths if p]
+    if not paths:
+        return False, "FEHLER: 'paths' muss eine nicht-leere Liste von Pfaden sein."
+    if len(paths) > MAX_READ_FILES_BATCH:
+        return False, (f"FEHLER: {len(paths)} Dateien in einem read_files — "
+                       f"maximal {MAX_READ_FILES_BATCH}. Teile auf oder nutze "
+                       f"explore fuer breite Erkundungen.")
+    teile, fehler = [], 0
+    for p in paths:
+        ok, res = do_read_file({"path": p})
+        if not ok:
+            fehler += 1
+        teile.append(res)
+    return fehler == 0, "\n\n".join(teile)
+
+
+EXPLORE_PROMPT = """Du bist ein Erkundungs-Agent mit FRISCHEM Kontext. Beantworte den Erkundungs-Auftrag,
+indem du NUR liest und suchst — EINE Aktion pro Antwort als ```action Block mit JSON:
+  read_file  -> {"action":"read_file","path":"<pfad>"}
+  read_files -> {"action":"read_files","paths":["a","b"]}  (max 5)
+  list_dir   -> {"action":"list_dir","path":"<pfad>"}
+  find       -> {"action":"find","pattern":"<namensteil>"}
+  grep       -> {"action":"grep","pattern":"<text oder regex>"}
+  finish     -> {"action":"finish","summary":"<GRUENDLICHES ergebnis>"}
+
+Regeln:
+- Ein leeres Suchergebnis heisst: Muster verbreitern und erneut suchen.
+- Schliesse mit finish ab. Die summary ist ALLES, was der Hauptlauf von dir
+  erfaehrt — nenne konkrete Fundstellen (Pfad, Zeile, Funktionsname), wie die
+  Teile zusammenhaengen und was fuer den Auftrag relevant ist.
+
+Beispiel-Antwort:
+Ich suche zuerst nach dem Begriff.
+```action
+{"action":"grep","pattern":"persons"}
+```"""
+
+
+def do_explore(args):
+    """Unterauftrag mit frischem Kontext: eine isolierte Mini-Schleife
+    erkundet das Projekt (nur Lese-Aktionen), und NUR die Zusammenfassung
+    kommt in den Haupt-Verlauf zurueck. Verallgemeinerung der isolierten
+    Analyse grosser Abrufausgaben — schuetzt kleine Kontextfenster davor,
+    an breiten Erkundungen zu ersticken."""
+    auftrag = (args.get("task") or args.get("auftrag")
+               or args.get("question") or "").strip()
+    if not auftrag:
+        return False, "FEHLER: 'task' fehlt (der Erkundungs-Auftrag)."
+    print(f"{C.CYAN}» explore{C.RESET} (isolierter Kontext): {auftrag[:100]}")
+    ueberblick = "\n".join(project_overview()) or "(keine Dateien)"
+    msgs = [{"role": "system", "content": EXPLORE_PROMPT},
+            {"role": "user", "content":
+             f"Erkundungs-Auftrag: {auftrag}\n\nVorhandene Dateien:\n{ueberblick}"}]
+    lese = {"read_file": do_read_file, "read_files": do_read_files,
+            "list_dir": do_list_dir, "find": do_find, "grep": do_grep}
+    for _ in range(EXPLORE_STEPS):
+        try:
+            reply = chat_stream(msgs, CURRENT_MODEL)
+        except (CtxOverflowError, NetRetryError, SystemExit) as e:
+            return True, f"ERKUNDUNG abgebrochen ({e}). Erkunde selbst gezielt weiter."
+        msgs.append({"role": "assistant", "content": reply})
+        action, _raw = extract_action(reply)
+        if action is None:
+            return True, "ERKUNDUNGS-ERGEBNIS:\n" + reply.strip()[:4000]
+        if "_parse_error" in action:
+            msgs.append({"role": "user", "content":
+                         "FEHLER: ungueltiges action-JSON. Bitte erneut."})
+            continue
+        name = action.get("action")
+        if name == "finish":
+            return True, ("ERKUNDUNGS-ERGEBNIS:\n"
+                          + str(action.get("summary", "")).strip()[:4000])
+        handler = lese.get(name)
+        if not handler:
+            msgs.append({"role": "user", "content":
+                         f"FEHLER: '{name}' gibt es in der Erkundung nicht — "
+                         f"nur Lese-Aktionen und finish."})
+            continue
+        ok, result = handler(action)
+        msgs.append({"role": "user", "content": truncate(str(result))})
+    return True, ("ERKUNDUNG am Schrittlimit beendet — letzter Stand:\n"
+                  + msgs[-1]["content"][:2000])
+
+
 def _closest_paths_hint(path, limit=3):
     """'Meintest du …?' fuer vertippte/geratene Pfade — kleine Modelle
     vertippen Dateinamen staendig, und die blosse Fehlermeldung fuehrt dann
@@ -1259,7 +1359,8 @@ def _project_has_code(root="."):
         dirnames[:] = [d for d in dirnames
                        if d not in IGNORE_DIRS and not d.startswith(".")]
         for fn in filenames:
-            if fn == os.path.basename(MC_NOTES):
+            # Eigene Zustandsdateien zaehlen nicht als Projekt-Bestand.
+            if fn in (os.path.basename(MC_NOTES), MC_PLAN, MC_VERLAUF):
                 continue
             if os.path.splitext(fn)[1].lower() in SRC_EXTS:
                 HAS_CODE = True
@@ -2199,6 +2300,7 @@ def kill_bg_procs():
 
 DISPATCH = {
     "read_file": do_read_file,
+    "read_files": do_read_files,
     "write_file": do_write_file,
     "write_files": do_write_files,
     "edit_file": do_edit_file,
@@ -2207,6 +2309,7 @@ DISPATCH = {
     "grep": do_grep,
     "ask": do_ask,
     "run": do_run,
+    "explore": do_explore,
 }
 
 
@@ -2219,6 +2322,8 @@ das Ergebnis und faehrst fort.
 
 Verfuegbare Aktionen (Feld "action"):
   read_file   -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich, fuer den Mittelteil grosser Dateien — NICHT per sed/cat blaettern)
+  read_files  -> {"action":"read_files","paths":["a","b/c"]}  (mehrere Dateien in EINEM Schritt, max 5 — spart Umlaeufe)
+  explore     -> {"action":"explore","task":"<erkundungs-auftrag>"}  (fuer BREITE Erkundungen: laeuft isoliert mit frischem Kontext, NUR die Zusammenfassung kommt in deinen Verlauf)
 @@WRITE_SPEC@@
 @@EDIT_SPEC@@
   list_dir    -> {"action":"list_dir","path":"<pfad>"}
@@ -2364,12 +2469,14 @@ In dieser Phase darfst du NICHTS schreiben oder ausfuehren — erst verstehen, d
 Du forderst EINE Aktion pro Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst.
 
 Verfuegbare Aktionen (Feld "action"):
-  read_file -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich)
-  list_dir  -> {"action":"list_dir","path":"<pfad>"}
-  find      -> {"action":"find","pattern":"<namensteil>"}
-  grep      -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
-  ask       -> {"action":"ask","question":"<frage an den nutzer>"}
-  plan      -> {"action":"plan","punkte":["<datei>: <konkrete aenderung>", "..."]}
+  read_file  -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich)
+  read_files -> {"action":"read_files","paths":["a","b/c"]}  (mehrere Dateien in EINEM Schritt, max 5)
+  list_dir   -> {"action":"list_dir","path":"<pfad>"}
+  find       -> {"action":"find","pattern":"<namensteil>"}
+  grep       -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
+  explore    -> {"action":"explore","task":"<erkundungs-auftrag>"}  (breite Erkundung in frischem Kontext, nur die Zusammenfassung kommt zurueck)
+  ask        -> {"action":"ask","question":"<frage an den nutzer>"}
+  plan       -> {"action":"plan","punkte":["<datei>: <konkrete aenderung>", "..."]}
 
 Regeln:
 - Finde ZUERST die betroffenen Stellen: grep nach Feld-/Funktions-/Routen-Namen,
@@ -2536,6 +2643,35 @@ def existing_project_dirs(max_depth=2):
     return found
 
 
+def _write_plan_file(punkte):
+    """Sichert den Aenderungsplan als Datei mit Abhak-Kaestchen — der Plan
+    ueberlebt so Kontext-Kuerzungen und sogar Abbrueche: ein Folgelauf liest
+    ihn ueber task_hints wieder ein und macht beim offenen Punkt weiter."""
+    try:
+        with open(MC_PLAN, "w", encoding="utf-8") as f:
+            f.write("# Aenderungsplan (mc)\n\n" + "\n".join(
+                f"- [ ] {i}. {p}" for i, p in enumerate(punkte, 1)) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _git_diff_summary(max_chars=3500):
+    """Gesamt-Diff des Laufs fuer den Selbstreview vor dem finish:
+    git status (inkl. neuer Dateien) + gekapptes Diff der Aenderungen."""
+    rc1, status = _git("status", "--short")
+    rc2, diff = _git("diff")
+    if rc1 != 0 or not status.strip():
+        return ""
+    out = "Geaenderte/neue Dateien:\n" + status.strip()
+    if rc2 == 0 and diff.strip():
+        d = diff.strip()
+        if len(d) > max_chars:
+            d = d[:max_chars] + f"\n...[Diff gekuerzt, {len(diff)} Zeichen gesamt]"
+        out += "\n\nDiff:\n" + d
+    return out
+
+
 def task_hints(task):
     """Deterministische Ist-Zustand-Hinweise, die VOR dem ersten Modell-Call an
     die Aufgabe angehaengt werden (kein LLM-Aufruf, reiner Dateisystem-Check).
@@ -2560,6 +2696,20 @@ def task_hints(task):
                 hints.append(f"Projekt-Notizen aus {MC_NOTES} (Festlegungen "
                              f"frueherer Laeufe — HALTE DICH DARAN):\n"
                              + notes[:2000])
+        except OSError:
+            pass
+    # Offener Aenderungsplan aus einem frueheren (abgebrochenen) Lauf.
+    if os.path.isfile(MC_PLAN):
+        try:
+            with open(MC_PLAN, "r", encoding="utf-8", errors="replace") as f:
+                plan_inhalt = f.read().strip()
+            if "- [ ]" in plan_inhalt:
+                hints.append(
+                    f"Es existiert ein OFFENER Aenderungsplan aus einem "
+                    f"frueheren Lauf ({MC_PLAN}):\n" + plan_inhalt[:1500] +
+                    f"\nSetze die offenen Punkte ('- [ ]') fort, hake erledigte "
+                    f"per edit_file ab ('- [ ]' -> '- [x]') — oder loesche die "
+                    f"Datei, wenn der Plan erledigt/obsolet ist.")
         except OSError:
             pass
     existing = [p for p in expected_files_from_task(task) if os.path.isfile(p)]
@@ -2848,6 +2998,31 @@ def git_commit_run(summary):
         print(f"{C.DIM}Kein Git-Commit (evtl. keine Aenderungen): {out.strip()[:100]}{C.RESET}")
 
 
+def _save_transcript(messages):
+    """Sichert den Verlauf (--resume) nach jedem Schritt — so bleibt auch ein
+    hart abgebrochener Lauf fortsetzbar."""
+    if not RESUME:
+        return
+    try:
+        with open(MC_VERLAUF, "w", encoding="utf-8") as f:
+            json.dump(messages, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _load_transcript():
+    """Laedt einen gesicherten Verlauf — OHNE System-Message: die wird immer
+    frisch gebaut, damit Prompt-Aenderungen und der aktuelle Projektstand
+    gelten."""
+    try:
+        with open(MC_VERLAUF, "r", encoding="utf-8") as f:
+            alte = json.load(f)
+        return [m for m in alte if isinstance(m, dict)
+                and m.get("role") in ("user", "assistant") and m.get("content")]
+    except (OSError, ValueError):
+        return []
+
+
 def run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
     global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL, EXPLORED, HAS_CODE
@@ -2876,6 +3051,7 @@ def run_task(messages, model):
     notes_probe_done = False
     check_finish_pending = False  # finish wurde nur mangels Pruefung abgelehnt
     plan_probe_done = False
+    diff_probe_done = False
     # Analyse-Phase: nur sinnvoll, wenn es ueberhaupt Bestand zu verstehen gibt.
     analyse_active = ANALYSE and _project_has_code()
     analyse_steps = 0
@@ -2915,6 +3091,7 @@ def run_task(messages, model):
                 "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
                 "Aenderungsplan aus (plan-Aktion).")
         maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck (Prompt-Cache schonen)
+        _save_transcript(messages)    # --resume: Stand nach jedem Schritt sichern
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         try:
             reply = chat_stream(messages, model)
@@ -3101,6 +3278,8 @@ def run_task(messages, model):
                            "(read_file), dann plane.")
                 else:
                     PLAN_POINTS[:] = punkte
+                    if _write_plan_file(punkte):
+                        info(f"Plan gesichert: {MC_PLAN} (ueberlebt Abbrueche).")
                     nummeriert = "\n".join(f"{i}. {p}"
                                            for i, p in enumerate(punkte, 1))
                     print(f"\n{C.CYAN}{C.BOLD}── Aenderungsplan ─────────────"
@@ -3111,11 +3290,13 @@ def run_task(messages, model):
                     messages.append({"role": "user", "content":
                         "ANALYSE ABGESCHLOSSEN — dein Aenderungsplan:\n"
                         + nummeriert +
-                        "\nAb jetzt sind Schreibaktionen freigeschaltet. Setze "
-                        "die Punkte NACHEINANDER um: kleine gezielte edit_file-"
-                        "Aenderungen bevorzugen. Wenn alle Punkte umgesetzt "
-                        "(oder begruendet verworfen) sind, pruefe das Ergebnis "
-                        "und gib finish aus."})
+                        f"\nDer Plan liegt zusaetzlich in {MC_PLAN} — hake dort "
+                        "erledigte Punkte per edit_file ab ('- [ ]' -> '- [x]'), "
+                        "damit ein Folgelauf den Stand kennt. Ab jetzt sind "
+                        "Schreibaktionen freigeschaltet. Setze die Punkte "
+                        "NACHEINANDER um: kleine gezielte edit_file-Aenderungen "
+                        "bevorzugen. Wenn alle Punkte umgesetzt (oder begruendet "
+                        "verworfen) sind, pruefe das Ergebnis und gib finish aus."})
                     continue
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 messages.append({"role": "user", "content": obs})
@@ -3246,13 +3427,37 @@ def run_task(messages, model):
                 print(f"{C.YELLOW}⚠ Notizen-Nachfrage vor dem finish.{C.RESET}")
                 messages.append({"role": "user", "content": obs})
                 continue
+            # Diff-Selbstreview (einmalig): das eigene Gesamtwerk noch einmal
+            # im Zusammenhang sehen, bevor 'fertig' gilt — faengt vergessene
+            # Dateien, Debug-Reste und ungewollte Aenderungen. Nur mit Git
+            # (sauberer Ausgangszustand), sonst zeigt das Diff Fremdes.
+            if GIT_ROLLBACK and TOUCHED and not diff_probe_done:
+                diff_probe_done = True
+                zusammenfassung = _git_diff_summary()
+                if zusammenfassung:
+                    obs = ("FINISH-NACHFRAGE — dein Gesamtwerk dieses Laufs als "
+                           "Diff:\n" + zusammenfassung +
+                           "\nLetzter Blick: Passt das vollstaendig zur Aufgabe "
+                           "— nichts vergessen, keine Debug-Reste (print/"
+                           "console.log), keine ungewollten Aenderungen? Falls "
+                           "etwas auffaellt, korrigiere es JETZT und gib danach "
+                           "finish aus; sonst gib einfach erneut finish aus.")
+                    print(f"{C.YELLOW}⚠ Diff-Selbstreview vor dem finish.{C.RESET}")
+                    messages.append({"role": "user", "content": obs})
+                    continue
             if missing or still_bad:
                 print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
                       f"(fehlend: {len(missing)}, ungueltig: {len(still_bad)}).{C.RESET}")
             else:
                 CLEAN_FINISH = True  # nur OHNE offene Probleme gilt der Lauf als "sauber"
+            if PLAN_POINTS and CLEAN_FINISH and os.path.isfile(MC_PLAN):
+                try:
+                    os.remove(MC_PLAN)  # erledigt — kein Geisterplan fuer Folgelaeufe
+                except OSError:
+                    pass
             summary = action.get("summary", "Fertig.")
             print(f"\n{C.GREEN}{C.BOLD}✓ {summary}{C.RESET}")
+            _save_transcript(messages)
             return summary
 
         handler = DISPATCH.get(name)
@@ -3268,7 +3473,7 @@ def run_task(messages, model):
         # treibt kleine Kontextfenster in den stillen Overflow. Schreib-/run-
         # Aktionen sind ausgenommen (ein wiederholter curl nach einem Fix ist
         # legitim).
-        if name in ("read_file", "list_dir", "find", "grep"):
+        if name in ("read_file", "read_files", "list_dir", "find", "grep"):
             if raw and raw == last_ro_raw:
                 obs = (f"HINWEIS: exakt diese {name}-Aktion hast du im vorigen "
                        f"Schritt bereits ausgefuehrt — das Ergebnis steht oben "
@@ -3355,7 +3560,7 @@ def run_task(messages, model):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -3397,6 +3602,10 @@ def main():
     ap.add_argument("--no-fence", action="store_true",
                     help="Fence-Modus abschalten (Dateiinhalte als JSON-Strings); "
                          "der Parser versteht unabhaengig davon immer beide Formate")
+    ap.add_argument("--resume", action="store_true",
+                    help=f"Verlauf nach jedem Schritt in {MC_VERLAUF} sichern "
+                         f"und einen dort gesicherten Verlauf beim Start "
+                         f"fortsetzen (abgebrochene Laeufe wiederaufnehmen)")
     ap.add_argument("--analyse", action="store_true",
                     help="Zweistufig bei Bestandscode: erst NUR lesen/suchen und "
                          "einen nummerierten Aenderungsplan ausgeben (plan-Aktion), "
@@ -3415,6 +3624,7 @@ def main():
     VALIDATE = not args.no_validate
     CHECK = CHECK or args.check
     ANALYSE = ANALYSE or args.analyse
+    RESUME = args.resume
     KEEP_CONTEXT = args.keep_context
     PRUNE = not args.no_prune
     if args.no_fence:
@@ -3534,6 +3744,11 @@ def main():
     # folgenden system-Rollen sofort leer ab — eine kombinierte ist universell
     # vertraeglicher.
     messages = [{"role": "system", "content": system_prompt(FENCE) + "\n\n" + context_msg}]
+    if RESUME:
+        alte = _load_transcript()
+        if alte:
+            messages.extend(alte)
+            info(f"Verlauf fortgesetzt: {len(alte)} Nachrichten aus {MC_VERLAUF}.")
 
     def after_run(summary=""):
         """Am Ende einer Aufgabe: noch ungueltige Dateien melden, dann je nach

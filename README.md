@@ -671,6 +671,31 @@ einem Skill-Namen entspricht. `/skills` listet alles, `/help` zeigt
 auch die eingebauten Kommandos (`/model` wechselt das Modell in der
 Sitzung), und bei Vertippern gibt es „Meintest du …?"-Vorschläge.
 
+#### Kontext-Paket: Batch-Lesen, Erkundungs-Unteraufträge, Plan-Datei, Diff-Review, `--resume`
+
+Fünf Mechanismen nach dem Vorbild „Zustand auslagern, Umläufe sparen":
+
+- **`read_files`**: mehrere Dateien in *einem* Schritt lesen (max. 5) —
+  das Lese-Gegenstück zu `write_files`. Bei >90 % Prompt-Token-Anteil
+  spart jeder eingesparte Umlauf bares Geld bzw. lokale Rechenzeit.
+- **`explore`**: breite Erkundungen laufen als isolierter Unterauftrag
+  mit *frischem* Kontext (nur Lese-Aktionen, max. 10 Schritte) — in den
+  Haupt-Verlauf kommt **nur die Zusammenfassung**. Schützt kleine
+  Kontextfenster davor, an Erkundungen zu ersticken.
+- **Plan als Datei**: Der Änderungsplan der Analyse-Phase wird
+  zusätzlich als `mc_plan.md` mit Abhak-Kästchen gesichert. Er überlebt
+  Kontext-Kürzungen und Abbrüche — ein Folgelauf bekommt offene Punkte
+  (`- [ ]`) automatisch als Hinweis vorgelegt und macht dort weiter.
+  Bei sauberem finish wird die Datei aufgeräumt.
+- **Diff-Selbstreview**: Vor dem akzeptierten finish bekommt das Modell
+  einmalig sein **Gesamtwerk als Diff** vorgelegt (git status + Diff,
+  gekappt): nichts vergessen, keine Debug-Reste, keine ungewollten
+  Änderungen? Nutzt die ohnehin vorhandene Git-Absicherung.
+- **`--resume`**: sichert den Verlauf nach jedem Schritt in
+  `mc_verlauf.json` und setzt ihn beim nächsten Start fort — auch nach
+  einem harten Abbruch. Die System-Message wird dabei immer frisch
+  gebaut (aktueller Projektstand, aktuelle Prompts).
+
 #### Auto-Continuation bei abgeschnittenen Antworten
 
 Lange Antworten (große Multi-File-Blöcke) können **abgeschnitten** werden — sei es
