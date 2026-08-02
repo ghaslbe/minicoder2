@@ -3184,6 +3184,49 @@ unter 50 Zeilen Stdlib. Jetzt sind sie drin:
 Suite: 98/98. Bewusst weiter im Notizbuch: der Cache-Bruch-Detektiv,
 das Folgeschäden-Radar über Import-Beziehungen und der Plan als Datei.
 
+## 23. Der Praxistest: Neubau, dann Weiterentwicklung — alles auf einmal
+
+Alle neuen Mechanismen zusammen im Ernstfall, mit dem Preis-Leistungs-Sieger
+`deepseek-v4-flash-0731`: erst die CRUD-App **neu bauen** (per
+`/crud-personen`-Skill, der sich sein `check: true` selbst mitbringt),
+dann zwei Personen als Bestandsdaten anlegen, dann per
+`/weiterentwickeln` (bringt `analyse` + `check` mit) das Feld `beruf`
+ergänzen — Migration, API, Formular, Tabelle.
+
+**Lauf 1 (Neubau): 31 Schritte, $0.0173, sauberes finish.** Die
+Skill-Mechanik griff im Einmal-Modus wie geplant (Vorlage expandiert,
+Flags aus der Kopfzeile aktiv).
+
+**Lauf 2 (Weiterentwicklung) begann mit einem Lehrstück.** Nach zwei
+Requests und $0.0005 war der Lauf tot: Das Modell hatte seine Aktion als
+```` ```json ````-Block statt ```` ```action ````-Block ausgegeben, der
+Parser erkannte nichts, und nach der einen Prosa-Rückfrage war Schluss.
+Die Ursache war hausgemacht — der neue Analyse-Prompt **beschrieb** das
+Format nur, statt es zu **zeigen**, und verstieß damit exakt gegen die
+Lektion aus Kapitel 17 (das Beispiel ist die Spezifikation). Doppel-Fix:
+Beispiel-Antwort in den Analyse-Prompt, und der Parser akzeptiert
+gefencte JSON-Objekte mit `action`-Feld jetzt auch ohne korrektes Label.
+
+**Lauf 2, zweiter Versuch: das Weiterentwicklungs-Paket liefert.** Die
+Analyse-Phase produzierte einen **8-Punkte-Änderungsplan**, der sich wie
+eine Edit-Anleitung liest („`app.py init_db()`: nach CREATE TABLE ein
+PRAGMA-Check, falls Spalte `beruf` fehlt → ALTER TABLE …"). Danach:
+**19 gezielte `edit_file`-Änderungen, kein einziger Neuschrieb** einer
+Bestandsdatei. Ergebnis der unabhängigen Abnahme: Migration korrekt,
+Bestandsdaten überlebt (inklusive leerem `beruf` als Default), das neue
+Feld funktioniert in POST/PUT/GET, Formular und Tabelle, die Validierung
+blieb intakt — für $0.0169. Ehrliche Fußnoten: Die Edit-Toleranz-Kaskade
+musste kein einziges Mal eingreifen (alle 19 `old`-Blöcke saßen exakt —
+das Netz ist für schwächere Modelle gespannt), und der Lauf rannte bei
+der Verifikation ins 40-Schritte-Limit. Dort griff dafür erstmals die
+neue **Übergabe**: statt eines Abbruchs mitten in einer Aktion steht am
+Ende ein Zustandsbericht im Verlauf.
+
+Damit der Benchmark-Apparat nicht im Temp-Verzeichnis verdunstet, liegt
+er jetzt im Repo: `mc_benchmark/runner.py` (sequenzielle Modell-Läufe
+mit Zeitmessung) und `mc_benchmark/abnahme.py` (die Abnahme-Batterie:
+8 Kern-Fälle, 3 Validierungs-Fälle, PUT-Semantik, statische Checks).
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
