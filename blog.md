@@ -3304,6 +3304,42 @@ behoben): Im Pipe-Betrieb wurden die Eingaben nicht ins Log geechot, und
 Knappheits-Stupser/Frage-Weiche arbeiteten unsichtbar — beide melden
 sich jetzt mit einer Info-Zeile.
 
+## 26. Das Kimi-Duell: „das soll ja mega sein"
+
+Zwei Kandidaten aus dem Premium-Regal gegen den amtierenden
+Preis-Leistungs-Sieger, gleiche Aufgabe, gleiche Abnahme (Läufe über den
+frisch parametrisierten `mc_benchmark/runner.py`):
+
+| | kimi-k2.7-code | kimi-k3 | deepseek-v4-flash-0731 |
+|---|---|---|---|
+| Preis pro Mio | $0.73/$3.50 | $3.00/$15.00 | $0.09/$0.18 |
+| Dauer | **111 s** | 433 s | 192 s |
+| Schritte | 16 | 40 (Limit!) | 20 |
+| Lauf-Kosten | $0.084 | **$0.909** | $0.008 |
+| Abnahme | 8/8 · 3/3 | 8/8 · 3/3 | 8/8 · 3/3 |
+| Sauberes finish | ✓ | ✗ nie eines ausgegeben | ✓ |
+
+**kimi-k3 bestätigt das Perfektionisten-Muster** (bekannt von glm-5.2
+und dem Weiterentwicklungs-E2E): eine tadellose App, aber in 40
+Schritten **kein einziges finish** — es verifizierte und polierte bis
+ans harte Limit, die Übergabe rettete den Abschluss. Fast ein Dollar für
+eine Abnahme-Note, die es anderswo für 0,8 Cent gibt: als Denker
+beeindruckend, als mc-Arbeiter Perlen vor die Säue.
+
+**kimi-k2.7-code ist die eigentliche Überraschung:** Der schnellste
+Lauf aller bisherigen Tests — 111 Sekunden, 16 Schritte, sauberes
+finish, volle Abnahme. „Mega" stimmt hier also tatsächlich, zumindest
+beim Tempo. Nur: Es kostet das Elffache von deepseek bei identischem
+Ergebnis. Wer auf die Uhr schaut, nimmt kimi-k2.7-code; wer auf die
+Rechnung schaut, bleibt beim Champion.
+
+Und die Meta-Erkenntnis nach nunmehr **14 getesteten Modellen**: Die
+Abnahme-Note trennt die Spreu kaum noch — fast jedes Modell, das
+überhaupt ankommt, baut inzwischen eine korrekte CRUD-App durch die
+`mc`-Leitplanken. Die Unterschiede leben in Zuverlässigkeit (kommt ein
+finish?), Tempo und Preis — genau den drei Spalten, die dieser Blog
+inzwischen bei jedem Lauf misst.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
