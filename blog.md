@@ -1687,10 +1687,10 @@ Exakter Aufruf:
 python3 mc.py --base-url http://192.168.178.79:1234/v1 \
   --model "gemma-4-26b-a4b-it@mxfp4" \
   --yes --plan --check --max-steps 60 \
-  "$(cat prompt_vite_material_check.txt)"
+  "$(cat beispiel-prompts/prompt_vite_material_check.txt)"
 ```
 
-Der Prompt (`prompt_vite_material_check.txt`):
+Der Prompt (`beispiel-prompts/prompt_vite_material_check.txt`):
 
 > Erstelle eine CRUD-Webanwendung 'Personenverwaltung'. BACKEND in backend/:
 > Flask + SQLite (Datei personen.db), Tabelle person mit Spalten id
@@ -1867,7 +1867,7 @@ Vergleich mit derselben Aufgabe und demselben Modell:
 python3 mc.py --base-url http://192.168.178.79:1234/v1 \
   --model "gemma-4-26b-a4b-it@mxfp4" \
   --yes --plan --check --max-steps 60 \
-  "$(cat prompt_vite_material_check.txt)"
+  "$(cat beispiel-prompts/prompt_vite_material_check.txt)"
 ```
 
 Nach 35 Schritten (deutlich mehr als die 23 aus dem ersten Lauf) steckt
@@ -1924,7 +1924,7 @@ vorherigen Backend-Instanzen über mehrere Läufe hinweg) kostete in beiden
 bisherigen Läufen unnötig viele Schritte. Der Prompt bekommt deshalb feste
 Ports vorgeschrieben statt freier Wahl: Backend **5010**, Vite-Dev-Server
 **8095** — als eigene Datei
-[`prompt_vite_material_check.txt`](prompt_vite_material_check.txt) jetzt
+[`beispiel-prompts/prompt_vite_material_check.txt`](beispiel-prompts/prompt_vite_material_check.txt) jetzt
 mit im Repository statt nur im Scratchpad.
 
 Der dritte Versuch mit beiden Korrekturen folgt in 9.25.
@@ -2011,7 +2011,7 @@ Antwort liegt direkt in den Lektionen des Tages — Material Web Components
 Custom-Element-Bibliothek und produzierte praktisch in jedem Lauf
 Halluzinationen (nicht existierende Card-Komponente, falsche Import-Pfade,
 ein kleingeschriebenes `oninput` statt `onInput`). Die naheliegende
-Gegenprobe: Ein neuer Prompt (`prompt_cool_tailwind.txt`) verlangt
+Gegenprobe: Ein neuer Prompt (`beispiel-prompts/prompt_cool_tailwind.txt`) verlangt
 **Tailwind CSS statt Material Web Components** — extrem gut dokumentiert,
 massenhaft in Trainingsdaten vertreten — bewusst **per CDN-Skript-Tag**
 (`<script src="https://cdn.tailwindcss.com">`) statt als npm-Paket, um
@@ -2028,7 +2028,7 @@ während des Laufs:
 python3 mc.py --base-url http://192.168.178.191:1234/v1 \
   --model "gemma-4-26b-a4b-it@mxfp4" \
   --yes --plan --check --max-steps 60 \
-  "$(cat prompt_cool_tailwind.txt)"
+  "$(cat beispiel-prompts/prompt_cool_tailwind.txt)"
 ```
 
 **Das Ergebnis übertraf die Erwartungen deutlich:**
@@ -2099,7 +2099,7 @@ python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
 ```
 
 Der volle Prompt-Text steht in
-[`prompt_vibelove_stage1.txt`](prompt_vibelove_stage1.txt) im Repo-Root.
+[`beispiel-prompts/prompt_vibelove_stage1.txt`](beispiel-prompts/prompt_vibelove_stage1.txt) im Repo-Root.
 Kernpunkte der Vorgabe:
 
 - **Struktur:** `server.py` (Flask, fest Port 5050), `templates/index.html`
@@ -2164,14 +2164,14 @@ Prompt.
 expliziter Hinweis auf den vorherigen Fehlschlag) lief in **73 Sekunden,
 10 Schritten**, glatt durch — keine Wiederholungswarnung nötig, keine
 Validierungsfehler. Vollständiger Prompt:
-[`prompt_vibelove_stage1_retry.txt`](prompt_vibelove_stage1_retry.txt).
+[`beispiel-prompts/prompt_vibelove_stage1_retry.txt`](beispiel-prompts/prompt_vibelove_stage1_retry.txt).
 
 **3) Etappe 1b** (187s): Der Retry-Lauf hatte selbst bemerkt, dass
 `server.py` den `mc.py`-Aufruf ohne `--model`/`--base-url` absetzt und
 damit auf `mc.py`s Standardwerte zurückfällt. Kleiner Folgeauftrag:
 zwei Umgebungsvariablen (`VIBELOVE_BASE_URL`, `VIBELOVE_MODEL`) mit
 Fallback ergänzen — von Gemma selbst per `curl` verifiziert (Prompt:
-[`prompt_vibelove_stage1b.txt`](prompt_vibelove_stage1b.txt)).
+[`beispiel-prompts/prompt_vibelove_stage1b.txt`](beispiel-prompts/prompt_vibelove_stage1b.txt)).
 
 **4) Live-Test in der echten Weboberfläche** (nicht nur Code-Review):
 Formular ausgefüllt, „Bauen" geklickt, echter `mc.py`-Lauf gegen Gemma
@@ -2204,7 +2204,7 @@ Wirkung**, egal was drin stand. Ein Fehler, den reine „Port antwortet mit
 mit dem falschen (statischen) Inhalt statt dem gerenderten React-Baum.
 Klar anwendungsspezifisch (ein Fehler im generierten Vibelove-Code, kein
 Werkzeug-Problem) → behoben per gezieltem Prompt
-([`prompt_vibelove_stage1c.txt`](prompt_vibelove_stage1c.txt)), **nicht**
+([`beispiel-prompts/prompt_vibelove_stage1c.txt`](beispiel-prompts/prompt_vibelove_stage1c.txt)), **nicht**
 an `mc.py` selbst. Etappe 1c lief in 56 Sekunden durch.
 
 **Ergebnis nach allen vier Runden, live verifiziert:** Formular links,
@@ -2257,7 +2257,7 @@ python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
 ```
 
 Vollständiger Prompt:
-[`prompt_vibelove_stage2_chat.txt`](prompt_vibelove_stage2_chat.txt).
+[`beispiel-prompts/prompt_vibelove_stage2_chat.txt`](beispiel-prompts/prompt_vibelove_stage2_chat.txt).
 
 ### 10.3 Etappe 2, Ergebnis: eine zweite, andere Art von Wiederholungsschleife
 — und wieder zwei grundsätzliche `mc.py`-Fixes
@@ -2299,7 +2299,7 @@ angelegt wurde — ein `TypeError` beim Laden der Seite, die
 „Verlauf-zurücksetzen"-Funktion komplett unbenutzbar. Klar
 anwendungsspezifisch → **nicht** an `mc.py` geändert, nur per gezieltem
 Prompt behoben (25 Sekunden Laufzeit,
-[`prompt_vibelove_stage2_fix.txt`](prompt_vibelove_stage2_fix.txt)).
+[`beispiel-prompts/prompt_vibelove_stage2_fix.txt`](beispiel-prompts/prompt_vibelove_stage2_fix.txt)).
 
 **4) Beim erneuten direkten Testen desselben `h1`-Änderungsauftrags trat
 dieselbe Escape-Wiederholung nochmal auf** — `frequency_penalty` allein
@@ -2465,7 +2465,7 @@ python3 ../mc.py --base-url http://192.168.178.191:1234/v1 \
   "$(cat ../prompt_bilderkennung.txt)"
 ```
 
-Vollständiger Prompt: [`prompt_bilderkennung.txt`](prompt_bilderkennung.txt).
+Vollständiger Prompt: [`beispiel-prompts/prompt_bilderkennung.txt`](beispiel-prompts/prompt_bilderkennung.txt).
 
 ### 11.1 Ergebnis: Vision-App gebaut — und ein Chrome-Sicherheitsdetail entdeckt
 
