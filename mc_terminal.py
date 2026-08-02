@@ -9,7 +9,10 @@ Komfort automatisch aktiv.
 
 Skills sind Aufgaben-VORLAGEN als Textdateien (.md/.txt):
   ~/.mc/skills/<name>.md   (global)
-  .mc-skills/<name>.md     (pro Projekt — gewinnt bei Namensgleichheit)
+  mc_skills/<name>.md      (pro Projekt — gewinnt bei Namensgleichheit)
+
+Namenskonvention: alles, was zu mc gehoert (Module, Verzeichnisse),
+traegt das Praefix mc_ — so bleibt es im Projekt erkennbar.
 
 Aufbau einer Skill-Datei (Kopfzeilen optional):
   ---
@@ -37,7 +40,7 @@ except ImportError:  # z.B. Windows ohne readline-Modul
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".mc", "history")
 HISTORY_MAX = 200
 SKILL_DIRS = (os.path.join(os.path.expanduser("~"), ".mc", "skills"),
-              ".mc-skills")
+              "mc_skills")
 SKILL_EXTS = (".md", ".txt")
 BUILTINS = {
     "/help": "Diese Uebersicht",

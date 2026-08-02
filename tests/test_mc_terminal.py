@@ -17,7 +17,7 @@ def _skill_dirs(tmp_path, monkeypatch):
     """Jeder Test: eigene Skill-Verzeichnisse (global + projekt)."""
     monkeypatch.chdir(tmp_path)
     global_dir = tmp_path / "global-skills"
-    projekt_dir = tmp_path / ".mc-skills"
+    projekt_dir = tmp_path / "mc_skills"
     global_dir.mkdir()
     monkeypatch.setattr(mt, "SKILL_DIRS", (str(global_dir), str(projekt_dir)))
     yield global_dir, projekt_dir

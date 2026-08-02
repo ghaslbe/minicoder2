@@ -3126,7 +3126,7 @@ und ist zugleich der erste Schritt weg vom Ein-Datei-Zwang (die
 Einzeldatei war praktisch, wird aber langsam groß; fehlt das Modul,
 läuft `mc.py` unverändert allein weiter).
 
-Skills sind Textdateien in `~/.mc/skills/` bzw. `.mc-skills/` (Projekt
+Skills sind Textdateien in `~/.mc/skills/` bzw. `mc_skills/` (Projekt
 gewinnt), mit `$ARGUMENTS`-Platzhalter und optionalen Kopfzeilen, die
 Flags **nur für diese eine Aufgabe** setzen — der
 Weiterentwicklungs-Skill bringt sich so selbst den `--analyse`- und

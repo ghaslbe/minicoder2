@@ -645,10 +645,12 @@ Slash-Kommandos, Tab-Vervollständigung und eine persistente
 Eingabe-History (`~/.mc/history`, Pfeil-hoch/Ctrl-R). Fehlt die Datei,
 läuft `mc.py` unverändert im Ein-Datei-Betrieb — das Modul ist der
 erste Schritt einer behutsamen Aufteilung der inzwischen recht groß
-gewordenen Einzeldatei.
+gewordenen Einzeldatei. Namenskonvention dabei: **alles, was zu `mc`
+gehört, trägt das Präfix `mc_`** — Module wie `mc_terminal.py` genauso
+wie Verzeichnisse wie `mc_skills/`.
 
 **Skills** sind wiederverwendbare Aufgaben-Vorlagen als Textdateien:
-`~/.mc/skills/<name>.md` (global) bzw. `.mc-skills/<name>.md` (pro
+`~/.mc/skills/<name>.md` (global) bzw. `mc_skills/<name>.md` (pro
 Projekt, gewinnt bei Namensgleichheit). `$ARGUMENTS` wird durch alles
 hinter dem Kommando ersetzt; optionale `---`-Kopfzeilen setzen Flags
 **nur für diese Aufgabe**:
