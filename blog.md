@@ -3145,6 +3145,45 @@ Vertippern, `/model` zum Sitzungs-Modellwechsel, und Bare-Word-Dispatch
 (das erste Wort einer Eingabe zählt auch ohne Slash als Skill, wenn es
 exakt passt). Suite: 95/95.
 
+## 22. Die Nachzügler: fünf kleine Learnings aus den fremden Werkstätten
+
+Beim Sezieren der beiden großen Agenten (Kapitel 20) blieben ein paar
+kleine, feine Mechanismen im Notizbuch liegen — „klein" heißt hier: je
+unter 50 Zeilen Stdlib. Jetzt sind sie drin:
+
+1. **Kontextfenster aus der Fehlermeldung lernen.** Meldet der Endpoint
+   einen Kontext-Überlauf per HTTP-Fehler, parst `mc` die tatsächliche
+   Fenstergröße aus dem Fehlertext („maximum context length is 32768
+   tokens …"), kalibriert die Kürzungs-Schwelle damit neu, kürzt hart
+   und versucht es erneut. Selbstkalibrierung für alle Endpoints, deren
+   geladenes Fenster nicht abfragbar ist — die Abfrage-Variante gibt es
+   ja nur für einen Servertyp.
+2. **Spill-Datei statt Datenverlust.** Wird eine Tool-Ausgabe für das
+   Modell gekürzt, landet die *vollständige* Ausgabe jetzt in einer
+   Temp-Datei, und der gekürzte Text endet mit dem Hinweis, wo sie
+   liegt („dort mit read_file/grep nachsehen"). Aus Trunkierung wird
+   ein Nachschlagewerk — gerade bei langen Build-Logs Gold wert.
+3. **Ablehnung als Steuerkanal.** Der Bestätigungs-Prompt versteht
+   jetzt Freitext: Wer statt `j`/`n` etwas wie „nimm Port 5030" tippt,
+   lehnt damit ab UND gibt dem Modell eine Anweisung mit — die als
+   Aktions-Ergebnis zurückfließt. Aus einem binären Nein wird eine
+   Kurskorrektur, statt dass das Modell dieselbe Aktion nochmal rät.
+4. **„Meintest du …?" bei Dateipfaden.** Ein fehlgeschlagenes
+   `read_file` schlägt jetzt die ähnlichsten real existierenden Pfade
+   vor (Editierdistanz, auch über den Dateinamen allein). Kleine
+   Modelle vertippen Pfade ständig — und die nackte Fehlermeldung war
+   bisher eine Einladung zum Neuanlegen.
+5. **Erzwungene Übergabe am Schrittlimit.** Läuft ein Lauf ins Limit,
+   bekommt das Modell einen letzten Request ausdrücklich OHNE
+   Aktionsmöglichkeit: Was ist fertig, was fehlt, womit weitermachen?
+   Der Benchmark aus Kapitel 19 hat gezeigt, wie wertvoll das ist —
+   zwei der drei gescheiterten Läufe endeten mitten in einer Aktion,
+   ohne dass der Verlauf verriet, wo man steht. Jetzt endet auch ein
+   gescheiterter Lauf mit einem Zustandsbericht.
+
+Suite: 98/98. Bewusst weiter im Notizbuch: der Cache-Bruch-Detektiv,
+das Folgeschäden-Radar über Import-Beziehungen und der Plan als Datei.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
