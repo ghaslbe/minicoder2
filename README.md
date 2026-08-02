@@ -594,6 +594,50 @@ bleibt das alte Verhalten: dort ist Überlauf-Schutz wichtiger als
 Cache-Optimierung, und bei Cloud-Anbietern sparen gekürzte Prompts direkt
 Tokens und damit Geld.
 
+#### Bestandscode: erst verstehen, dann planen, dann ändern
+
+Kleine Modelle haben bei **bestehenden** Projekten einen Neubau-Reflex:
+statt die betroffene Stelle zu suchen und gezielt zu ändern, schreiben sie
+Dateien lieber komplett neu — Verstehen ist für sie teuer und unbelohnt.
+Dagegen setzt `mc` vier ineinandergreifende Mechanismen:
+
+1. **Projekt-Steckbrief & Code-Struktur im Startkontext** (automatisch, ohne
+   Modell-Aufruf): erkannter Stack samt real vorhandener Kommandos
+   (`pip install -r requirements.txt`, `npm run build`, …), die letzten
+   Git-Commits, und je Quelldatei die **Funktionen/Klassen/Routen mit
+   Zeilennummern** (Python via `ast`, JS/TS per Regex-Näherung). Ein Modell,
+   das Struktur statt nur Dateinamen sieht, startet mit der Grundannahme
+   *es gibt schon Code*.
+2. **`--analyse` — die zweistufige Arbeitsweise**: Bei Aufgaben an
+   Bestandscode arbeitet der Agent erst in einer reinen **Analyse-Phase**,
+   deren Aktionsprotokoll **gar keine Schreibaktionen enthält** (was nicht im
+   Protokoll steht, kann ein kleines Modell auch nicht benutzen — Weglassen
+   ist zuverlässiger als Verbieten). Die Phase endet mit einer
+   `plan`-Aktion: ein nummerierter Änderungsplan, je Punkt eine konkrete
+   Änderung mit Dateipfad. Der Plan wird erst akzeptiert, wenn mindestens
+   eine Datei gelesen wurde. Danach werden `write_file`/`edit_file`/`run`
+   freigeschaltet und die Punkte nacheinander umgesetzt; beim `finish` wird
+   das Modell einmalig an seinem **eigenen Plan** gemessen.
+3. **Neubau-Bremse**: In einem Projekt mit Bestandscode wird das Anlegen
+   *rein neuer* Dateien abgelehnt, solange im Lauf noch kein einziges
+   `find`/`grep`/`read_file`/`list_dir` ausgeführt wurde. Ein leeres
+   Suchergebnis schaltet ausdrücklich frei — erzwungen wird nur der erste
+   Blick in den Bestand, nicht ein bestimmtes Ergebnis. Dazu die
+   Prompt-Regel: ein leeres Suchergebnis heißt *Muster verbreitern und
+   erneut suchen*, nicht *gibt es nicht*.
+4. **Edit-Toleranz-Kaskade**: Die häufigste Fehlerklasse bei Änderungen an
+   Bestandsdateien ist ein `old`, das zu 99 % stimmt — falsche Einrückung,
+   doppeltes Escaping, eine halluzinierte Zeile in der Blockmitte. Nach dem
+   exakten Match versucht `edit_file` deshalb der Reihe nach: zeilenweise
+   getrimmter Vergleich (mit automatischer Einrückungs-Anpassung von `new`),
+   Entfernen einer doppelten Escape-Ebene, und Block-Anker-Matching (erste
+   und letzte Zeile exakt, Mitte ≥ 75 % ähnlich). Jede Stufe verlangt
+   **Eindeutigkeit**, und ein Größen-Wächter lehnt Treffer ab, die deutlich
+   größer sind als `old` — lieber ein erklärter Fehler als ein stiller
+   Treffer an der falschen Stelle. Ohne die Kaskade führt ein harter
+   Fehlschlag erfahrungsgemäß genau dorthin, wo wir nicht hinwollen: das
+   Modell gibt auf und schreibt die ganze Datei neu.
+
 #### Auto-Continuation bei abgeschnittenen Antworten
 
 Lange Antworten (große Multi-File-Blöcke) können **abgeschnitten** werden — sei es
