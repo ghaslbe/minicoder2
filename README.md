@@ -638,6 +638,37 @@ Dagegen setzt `mc` vier ineinandergreifende Mechanismen:
    Fehlschlag erfahrungsgemäß genau dorthin, wo wir nicht hinwollen: das
    Modell gibt auf und schreibt die ganze Datei neu.
 
+#### Terminal-Komfort & `/skills` (optionales Modul `mc_terminal.py`)
+
+Liegt `mc_terminal.py` neben `mc.py`, bekommt der interaktive Modus
+Slash-Kommandos, Tab-Vervollständigung und eine persistente
+Eingabe-History (`~/.mc/history`, Pfeil-hoch/Ctrl-R). Fehlt die Datei,
+läuft `mc.py` unverändert im Ein-Datei-Betrieb — das Modul ist der
+erste Schritt einer behutsamen Aufteilung der inzwischen recht groß
+gewordenen Einzeldatei.
+
+**Skills** sind wiederverwendbare Aufgaben-Vorlagen als Textdateien:
+`~/.mc/skills/<name>.md` (global) bzw. `.mc-skills/<name>.md` (pro
+Projekt, gewinnt bei Namensgleichheit). `$ARGUMENTS` wird durch alles
+hinter dem Kommando ersetzt; optionale `---`-Kopfzeilen setzen Flags
+**nur für diese Aufgabe**:
+
+```markdown
+---
+analyse: true
+check: true
+beschreibung: Aenderung an bestehendem Projekt
+---
+Setze folgende Aenderung am BESTEHENDEN Projekt um: $ARGUMENTS
+```
+
+Aufruf: `/weiterentwickeln Gewicht-Feld ergänzen` (interaktiv oder als
+Einmal-Aufgabe: `python3 mc.py "/weiterentwickeln …"`). Das erste Wort
+einer Eingabe wird auch **ohne** Slash als Skill erkannt, wenn es exakt
+einem Skill-Namen entspricht. `/skills` listet alles, `/help` zeigt
+auch die eingebauten Kommandos (`/model` wechselt das Modell in der
+Sitzung), und bei Vertippern gibt es „Meintest du …?"-Vorschläge.
+
 #### Auto-Continuation bei abgeschnittenen Antworten
 
 Lange Antworten (große Multi-File-Blöcke) können **abgeschnitten** werden — sei es

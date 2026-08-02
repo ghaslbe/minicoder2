@@ -50,6 +50,11 @@ import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
 
+try:
+    import mc_terminal  # optionaler Terminal-Komfort (Slash-Kommandos, /skills)
+except ImportError:
+    mc_terminal = None  # Ein-Datei-Betrieb: mc.py laeuft auch ohne das Modul
+
 def _load_config():
     """Laedt eine optionale Konfig-Datei: ~/.mc.json (oder MC_CONFIG=<pfad>).
     Fuer Menschen gedacht, die das Tool taeglich benutzen: statt vor jedem
@@ -3356,6 +3361,25 @@ def main():
     # Einmal-Modus
     if args.task:
         task_text = " ".join(args.task)
+        if mc_terminal and task_text.strip().startswith("/"):
+            art, wert, sflags = mc_terminal.expand_input(task_text, args.model)
+            if art == "print":
+                print(wert)
+                return
+            if art == "model":
+                info(f"Modellwechsel im Einmal-Modus bitte per --model. "
+                     f"Aktuell: {args.model}")
+                return
+            if art == "task":
+                task_text = wert
+                if sflags.get("check") or sflags.get("analyse"):
+                    CHECK = CHECK or sflags.get("check", False)
+                    ANALYSE = ANALYSE or sflags.get("analyse", False)
+                    messages[0]["content"] = (system_prompt(FENCE)
+                                              + "\n\n" + SYSTEM_CONTEXT)
+                    info("Skill-Flags aktiv: " + ", ".join(
+                        k for k in ("check", "analyse") if sflags.get(k)))
+                info(f"Skill expandiert ({len(task_text)} Zeichen Aufgabe).")
         EXPECTED_FILES[:] = expected_files_from_task(task_text)
         if EXPECTED_FILES:
             info(f"Finish-Check aktiv: {len(EXPECTED_FILES)} in der Aufgabe "
@@ -3375,6 +3399,9 @@ def main():
     info("Interaktiv. Gib eine Aufgabe ein (oder 'exit' / Ctrl-D zum Beenden).")
     if plan_mode:
         info("Plan-Modus aktiv (--plan): erst Plan + Bestaetigung, dann Umsetzung.")
+    if mc_terminal and mc_terminal.init_readline():
+        info("Terminal-Komfort aktiv: Pfeil-hoch-History, Tab vervollstaendigt "
+             "/Kommandos, /help zeigt Skills.")
     while True:
         try:
             user = input(f"\n{C.GREEN}{C.BOLD}du> {C.RESET}").strip()
@@ -3385,6 +3412,19 @@ def main():
             continue
         if user.lower() in ("exit", "quit", "q"):
             break
+        sflags = {}
+        if mc_terminal:
+            art, wert, sflags = mc_terminal.expand_input(user, args.model)
+            if art == "print":
+                print(wert)
+                continue
+            if art == "model":
+                args.model = wert
+                info(f"Modell fuer diese Sitzung gewechselt: {wert}")
+                continue
+            if art == "task":
+                user = wert
+                info(f"Skill expandiert ({len(user)} Zeichen Aufgabe).")
         EXPECTED_FILES[:] = expected_files_from_task(user)
         hints = task_hints(user)
         if hints:
@@ -3393,8 +3433,22 @@ def main():
         messages.append({"role": "user", "content": user + hints})
         if plan_mode and not plan_phase(messages, args.model):
             continue
+        # Skill-Flags (check/analyse) gelten nur fuer DIESE Aufgabe: Globals
+        # setzen, System-Prompt neu bauen, nach dem Lauf zuruecksetzen.
+        prev_check, prev_analyse = CHECK, ANALYSE
+        if sflags.get("check") or sflags.get("analyse"):
+            CHECK = CHECK or sflags.get("check", False)
+            ANALYSE = ANALYSE or sflags.get("analyse", False)
+            messages[0]["content"] = system_prompt(FENCE) + "\n\n" + SYSTEM_CONTEXT
+            info("Skill-Flags aktiv fuer diese Aufgabe: " + ", ".join(
+                k for k in ("check", "analyse") if sflags.get(k)))
         result = run_task(messages, args.model)
+        if (CHECK, ANALYSE) != (prev_check, prev_analyse):
+            CHECK, ANALYSE = prev_check, prev_analyse
+            messages[0]["content"] = system_prompt(FENCE) + "\n\n" + SYSTEM_CONTEXT
         after_run(result if isinstance(result, str) else "")
+    if mc_terminal:
+        mc_terminal.save_history()
 
 
 if __name__ == "__main__":
