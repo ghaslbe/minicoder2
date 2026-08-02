@@ -79,11 +79,17 @@ def test_langer_zaun_fuer_inhalt_mit_backticks():
 
 # ------------------------------ Truncation ---------------------------------
 
-def test_truncate_zeigt_kopf_und_ende():
+def test_truncate_zeigt_kopf_und_ende_und_spillt():
     s = "ANFANG" + "x" * 20000 + "ENDE"
     out = mc.truncate(s)
-    assert out.startswith("ANFANG") and out.endswith("ENDE")
+    assert out.startswith("ANFANG") and "ENDE" in out
     assert "ausgelassen" in out
+    # Volle Ausgabe bleibt als Spill-Datei nachschlagbar
+    assert "gespeichert unter" in out
+    pfad = out.split("gespeichert unter ")[1].split(" —")[0].strip()
+    with open(pfad, encoding="utf-8") as f:
+        assert f.read() == s
+    os.remove(pfad)
 
 
 def test_looks_truncated_offener_fence_und_net_abort():
@@ -654,6 +660,32 @@ def test_code_outline_python_mit_routen():
     out = "\n".join(mc.code_outline())
     assert "def liste()" in out and "route /api/p" in out
     assert "class Dienst" in out and "start" in out
+
+
+def test_ctx_overflow_parser():
+    assert mc._parse_ctx_overflow(
+        '{"error": "maximum context length is 32768 tokens, however you '
+        'requested 45123 tokens"}') == 32768
+    assert mc._parse_ctx_overflow("Context size has been exceeded.") == 0
+    assert mc._parse_ctx_overflow("Invalid API key") is None
+
+
+def test_confirm_freitext_wird_ablehnungsgrund(monkeypatch):
+    monkeypatch.setattr(mc, "AUTO_YES", False)
+    monkeypatch.setattr("builtins.input", lambda *a: "nimm Port 5030")
+    assert mc.confirm("Aktion?") is False
+    assert "5030" in mc.user_reject_msg()          # Freitext = Anweisung
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    assert mc.confirm("Aktion?") is False
+    assert mc.user_reject_msg() == "Abgelehnt durch den Benutzer."
+
+
+def test_read_file_meintest_du_bei_tippfehler():
+    with open("personen.py", "w") as f:
+        f.write("x = 1\n")
+    ok, msg = mc.do_read_file({"path": "personnen.py"})
+    assert not ok
+    assert "Meintest du" in msg and "personen.py" in msg
 
 
 def test_analyse_prompt_ohne_schreibaktionen():

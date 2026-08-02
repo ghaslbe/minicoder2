@@ -36,6 +36,7 @@ verbose, max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
 import argparse
 import ast
 import difflib
+import tempfile
 import json
 import os
 import re
@@ -115,6 +116,7 @@ VERBOSE = _truthy(_setting("MC_VERBOSE", "verbose", False))  # passive Logausgab
 
 MAX_STEPS = int(_setting("MC_MAX_STEPS", "max_steps", 40))  # Sicherheitslimit pro Aufgabe
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
+_SPILL_N = 0             # Zaehler fuer Spill-Dateien gekuerzter Ausgaben
 
 # Validierung geschriebener Dateien (bekannte Typen) + Git-Rollback.
 VALIDATE = True            # nach dem Schreiben bekannte Dateitypen pruefen
@@ -529,8 +531,11 @@ def _chat_once(messages, model):
         if usage:
             account_usage(usage)
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:300]
-        raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body}")
+        body = e.read().decode("utf-8", "replace")[:500]
+        ctx = _parse_ctx_overflow(body)
+        if ctx is not None:
+            raise CtxOverflowError(ctx, body[:200])
+        raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}")
     except NET_ERRORS as e:
         if parts:
             # Mitten im Stream abgerissen: das Vorhandene zurueckgeben —
@@ -542,6 +547,33 @@ def _chat_once(messages, model):
     finally:
         spin.__exit__()  # Spinner-Thread immer beenden (auch bei Fehler)
     return "".join(parts), finish_reason
+
+
+class CtxOverflowError(Exception):
+    """Der Endpoint meldet einen Kontext-Ueberlauf per HTTP-Fehler. Traegt,
+    wenn aus dem Fehlertext parsbar, die TATSAECHLICHE Fenstergroesse in
+    Tokens (sonst 0) — damit kalibriert sich die Kuerzungs-Schwelle selbst,
+    auch bei Endpoints ohne abfragbares Kontextfenster."""
+
+    def __init__(self, tokens, detail):
+        super().__init__(detail)
+        self.tokens = tokens
+
+
+def _parse_ctx_overflow(body):
+    """Erkennt Kontext-Ueberlauf-Fehlertexte (llama.cpp, OpenAI-kompatible
+    Server) und zieht, wenn moeglich, die Fenstergroesse heraus.
+    None = kein Ueberlauf; sonst Tokens (0 = erkannt, Groesse unbekannt).
+    Bei mehreren Zahlen (angefragt vs. Limit) ist das LIMIT die kleinste."""
+    low = body.lower()
+    if "context" not in low and "kontext" not in low:
+        return None
+    if not any(w in low for w in ("exceed", "too long", "too large", "maximum",
+                                  "limit", "length", "ueberschritt", "size")):
+        return None
+    kand = [int(z) for z in re.findall(r"\d{4,7}", body)
+            if 2048 <= int(z) <= 2_000_000]
+    return min(kand) if kand else 0
 
 
 class NetRetryError(Exception):
@@ -963,8 +995,25 @@ def truncate(s):
     head = int(MAX_OUTPUT_CHARS * 0.6)
     tail = MAX_OUTPUT_CHARS - head
     cut = len(s) - head - tail
+    # Spill-Datei: die VOLLE Ausgabe bleibt nachschlagbar, statt verloren zu
+    # gehen — aus Datenverlust wird ein Nachschlagewerk (read_file/grep auf
+    # den absoluten Pfad). Liegt bewusst im Temp-Verzeichnis, nicht im
+    # Projekt (sonst taucht sie im Ueberblick/Git auf).
+    hint = ""
+    try:
+        global _SPILL_N
+        _SPILL_N += 1
+        spill = os.path.join(tempfile.gettempdir(),
+                             f"mc_spill_{os.getpid()}_{_SPILL_N}.txt")
+        with open(spill, "w", encoding="utf-8") as f:
+            f.write(s)
+        hint = (f"\n[Vollstaendige Ausgabe ({len(s)} Zeichen) gespeichert unter "
+                f"{spill} — bei Bedarf dort mit read_file (from/to) oder grep "
+                f"nachsehen]")
+    except OSError:
+        pass
     return (s[:head] + f"\n...[{cut} Zeichen in der MITTE ausgelassen — Anfang und Ende bleiben]...\n"
-            + s[-tail:])
+            + s[-tail:] + hint)
 
 
 def _loaded_ctx_tokens(model):
@@ -1077,15 +1126,38 @@ def summarize_large_fetch(raw_output, model):
             f"separaten Aufruf analysiert. Das ist das Ergebnis:]\n\n{summary}")
 
 
+REJECT_REASON = ""  # optionaler Freitext des Nutzers bei einer Ablehnung
+
+
 def confirm(prompt):
+    """Bestaetigungs-Prompt mit Steuerkanal: Antwortet der Nutzer weder mit
+    ja noch nein, gilt die Eingabe als Ablehnung MIT BEGRUENDUNG — der Text
+    geht als Aktions-Ergebnis ans Modell zurueck ('nimm Port 5030 statt
+    5020'), das daraufhin den Kurs korrigieren kann, statt dieselbe Aktion
+    erneut zu versuchen. Aus einem binaeren Nein wird eine Anweisung."""
+    global REJECT_REASON
+    REJECT_REASON = ""
     if AUTO_YES:
         print(f"{C.DIM}(auto-yes){C.RESET}")
         return True
     try:
-        ans = input(f"{C.YELLOW}{prompt} [y/N] {C.RESET}").strip().lower()
+        ans = input(f"{C.YELLOW}{prompt} [j/N/Text=Grund] {C.RESET}").strip()
     except EOFError:
         return False
-    return ans in ("y", "yes", "j", "ja")
+    low = ans.lower()
+    if low in ("y", "yes", "j", "ja"):
+        return True
+    if low not in ("", "n", "no", "nein", "q"):
+        REJECT_REASON = ans
+    return False
+
+
+def user_reject_msg():
+    """Ergebnis-Text fuer eine vom Nutzer abgelehnte Aktion (inkl. Grund)."""
+    if REJECT_REASON:
+        return ("Abgelehnt durch den Benutzer. Anweisung des Benutzers: "
+                + REJECT_REASON + " — beruecksichtige das im naechsten Schritt.")
+    return "Abgelehnt durch den Benutzer."
 
 
 # read_file darf deutlich mehr liefern als Tool-Ausgaben (MAX_OUTPUT_CHARS):
@@ -1096,6 +1168,27 @@ def confirm(prompt):
 READFILE_MAX_CHARS = 24000
 
 
+def _closest_paths_hint(path, limit=3):
+    """'Meintest du …?' fuer vertippte/geratene Pfade — kleine Modelle
+    vertippen Dateinamen staendig, und die blosse Fehlermeldung fuehrt dann
+    gern zum Neuanlegen statt zum zweiten Versuch."""
+    try:
+        alle = [p for p in project_overview(max_entries=400)
+                if not p.startswith("...")]
+    except Exception:
+        return ""
+    treffer = difflib.get_close_matches(path, alle, n=limit, cutoff=0.5)
+    base = os.path.basename(path)
+    if not treffer and base and base != path:
+        nach_name = {os.path.basename(p): p for p in alle}
+        treffer = [nach_name[b] for b in
+                   difflib.get_close_matches(base, list(nach_name),
+                                             n=limit, cutoff=0.6)]
+    if not treffer:
+        return ""
+    return " Meintest du: " + ", ".join(treffer) + "?"
+
+
 def do_read_file(args):
     global EXPLORED
     EXPLORED = True
@@ -1104,7 +1197,7 @@ def do_read_file(args):
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
     except Exception as e:
-        return False, f"FEHLER beim Lesen von {path}: {e}"
+        return False, f"FEHLER beim Lesen von {path}: {e}" + _closest_paths_hint(path)
     READ_FILES.add(os.path.normpath(path))
     lines = content.split("\n")
     total = len(lines)
@@ -1297,7 +1390,7 @@ def do_write_file(args):
     preview = content if len(content) < 600 else content[:600] + "\n..."
     print(f"{C.DIM}{preview}{C.RESET}")
     if not confirm(f"Datei '{path}' schreiben?"):
-        return False, "Abgelehnt durch den Benutzer."
+        return False, user_reject_msg()
     warn = (_shrink_warning(path, len(content)) + _check_repetition(path, content)
             + _blind_overwrite_warning(path))
     try:
@@ -1358,7 +1451,7 @@ def do_write_files(args):
     for f in files:
         print(f"   {f.get('path','?')} ({len(f.get('content',''))} Zeichen)")
     if not confirm(f"{len(files)} Datei(en) schreiben?"):
-        return False, "Abgelehnt durch den Benutzer."
+        return False, user_reject_msg()
     written, errors, warns = [], [], []
     for f in files:
         path, content = f.get("path", ""), f.get("content", "")
@@ -1594,7 +1687,7 @@ def do_edit_file(args):
     print(f"{C.RED}- {old[:200]}{C.RESET}")
     print(f"{C.GREEN}+ {new[:200]}{C.RESET}")
     if not confirm(f"Aenderung in '{path}' anwenden?"):
-        return False, "Abgelehnt durch den Benutzer."
+        return False, user_reject_msg()
     try:
         updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
         with open(path, "w", encoding="utf-8") as f:
@@ -1978,7 +2071,7 @@ def do_run(args):
         print(f"{C.RED}✗ Generator-Konflikt erkannt{C.RESET}")
         return False, conflict
     if not confirm("Kommando ausfuehren?"):
-        return False, "Abgelehnt durch den Benutzer."
+        return False, user_reject_msg()
     if bg:
         # Dauerlaeufer (Dev-Server): starten, kurz warten, erste Ausgabe zeigen.
         # Der Prozess laeuft weiter; alle BG-Prozesse werden am Ende beendet.
@@ -2305,7 +2398,12 @@ def plan_phase(messages, model):
                 "Kommandos selbst (z.B. 'npm run build', 'curl -X DELETE .../999').")
     messages.append({"role": "user", "content": ask})
     print(f"\n{C.CYAN}{C.BOLD}── Plan ─────────────────────────────────{C.RESET}")
-    plan = chat_stream(messages, model)
+    try:
+        plan = chat_stream(messages, model)
+    except CtxOverflowError:
+        info("Kontext-Ueberlauf schon in der Plan-Phase — fahre ohne Plan fort.")
+        messages.pop()  # Plan-Aufforderung wieder entfernen
+        return True
     messages.append({"role": "assistant", "content": plan})
 
     if CHECK:
@@ -2701,6 +2799,7 @@ def run_task(messages, model):
     prose_end_nudged = False
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
+    ctx_overflows = 0   # vom Endpoint gemeldete Kontext-Ueberlaeufe
     budget_warned = False
     notes_probe_done = False
     check_finish_pending = False  # finish wurde nur mangels Pruefung abgelehnt
@@ -2745,7 +2844,26 @@ def run_task(messages, model):
                 "Aenderungsplan aus (plan-Aktion).")
         maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck (Prompt-Cache schonen)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
-        reply = chat_stream(messages, model)
+        try:
+            reply = chat_stream(messages, model)
+        except CtxOverflowError as e:
+            # Selbstkalibrierung: der Endpoint hat den Ueberlauf gemeldet —
+            # gemeldete Fenstergroesse uebernehmen, hart kuerzen, weiter.
+            ctx_overflows += 1
+            if e.tokens:
+                _LOADED_CTX_TOKENS[model] = e.tokens
+                _LOADED_CTX_CACHE.pop(model, None)
+                info(f"Endpoint meldet Kontextfenster: {e.tokens} Token — "
+                     f"Kuerzungs-Schwelle neu kalibriert.")
+            if ctx_overflows > 2:
+                print(f"{C.RED}Abbruch: {ctx_overflows}x Kontext-Ueberlauf trotz "
+                      f"harter Kuerzung — Modell mit groesserem Fenster laden "
+                      f"oder --keep-context senken.{C.RESET}")
+                return None
+            print(f"{C.YELLOW}⚠ Kontext-Ueberlauf vom Endpoint gemeldet — "
+                  f"beschneide aeltere Schritte hart und versuche es erneut …{C.RESET}")
+            prune_messages(messages, keep=1)
+            continue
 
         if not reply.strip():
             # LEERE Antwort heisst bei lokalen Servern fast immer: das GELADENE
@@ -3145,6 +3263,22 @@ def run_task(messages, model):
         messages.append({"role": "user", "content": obs})
 
     print(f"{C.RED}Schrittlimit ({MAX_STEPS}) erreicht.{C.RESET}")
+    # Erzwungene Uebergabe statt Abbruch mitten in einer Aktion: ein letzter
+    # Request, der ausdruecklich KEINE Aktion mehr erlaubt. So endet auch ein
+    # gescheiterter Lauf mit einem brauchbaren Zustandsbericht im Verlauf —
+    # und der Nutzer (oder ein Folge-Lauf) weiss, wo es weitergeht.
+    try:
+        messages.append({"role": "user", "content":
+            "SCHRITTLIMIT ERREICHT — es sind KEINE Aktionen mehr moeglich, "
+            "gib keinen action-Block mehr aus. Fasse als reiner Text zusammen: "
+            "(1) Was ist fertig und funktioniert? (2) Was fehlt oder ist "
+            "ungeprueft? (3) Womit sollte ein Folge-Lauf konkret weitermachen?"})
+        print(f"{C.CYAN}{C.BOLD}── Uebergabe ────────────────────────────{C.RESET}")
+        uebergabe = chat_stream(messages, model)
+        if uebergabe.strip():
+            messages.append({"role": "assistant", "content": uebergabe})
+    except (CtxOverflowError, NetRetryError, SystemExit):
+        pass  # Uebergabe ist Kuer — ein Fehler hier soll nichts verschlimmern
     return None
 
 
