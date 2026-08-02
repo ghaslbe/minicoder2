@@ -3261,6 +3261,49 @@ wie die Gewichte selbst. Wer Modelle nur nach Namen bucht, vergleicht
 Äpfel mit Birnen-Infrastruktur. Der größere Bruder gemma-4-31b lief
 dagegen tadellos durch — sauberes finish, volle Abnahme, 2,6 Cent.
 
+## 25. Der Schüchternen-Test: fünf wortkarge Eingaben, eine fertige App
+
+Menschen tippen ungern. Also eine interaktive Sitzung wie von jemandem,
+der genau das tut — keine Skills, keine langen Aufträge, `--yes`, das
+günstige Standard-Modell:
+
+```text
+du> todo liste
+du> mit kategorien
+du> mach schoener
+du> warum flask?
+du> sortierung fehlt
+du> exit
+```
+
+**Das Ergebnis nach 50 Schritten und 2,5 Cent:** eine richtig brauchbare
+CLI-Todo-App (`todo.py`, JSON-Persistenz, keine Dependencies) mit
+Kategorien in Rahmen-Boxen, Farben und ✔/◻-Symbolen („mach schoener"
+wurde wörtlich geliefert), alphabetischer Sortierung mit Erledigten am
+Ende — jede der fünf Mini-Eingaben kam an.
+
+**Der Knappheits-Stupser lief bilderbuchmäßig:** Auf „todo liste"
+stellte das Modell genau EINE ask-Frage (CLI oder Web-App?), bekam im
+`--yes`-Betrieb die Auto-Antwort „triff sinnvolle Annahmen", benannte
+seine Annahme in einem Satz und legte los. Genau der choreographierte
+Ablauf: erst eine gezielte Frage, dann Annahmen, dann Arbeit — statt
+zehn Schritte in die falsche Richtung. Die Frage-Weiche fing „warum
+flask?" als Frage ab (beantwortet, nichts geändert), und der neue
+Diff-Selbstreview meldete sich vor jedem finish.
+
+**Der Bonus-Fund:** Mitten in der Sitzung degenerierte ausgerechnet das
+zuverlässigste Modell des Feldes in **13.500 Tokens multilingualen
+Wortsalat** („조 Dach trailsphen alternate fa J cons row양 …"). Der
+Runaway-Wächter kappte die Antwort, der Parser rettete die brauchbare
+Aktion aus dem intakten Teil davor, die Sitzung lief weiter — aus einem
+potenziellen Totalschaden wurde eine Fußnote. Kein Modell ist davor
+gefeit; Leitplanken sind keine Option, sondern die halbe Miete.
+
+Zwei Beobachtbarkeits-Lücken hat der Test nebenbei aufgedeckt (und
+behoben): Im Pipe-Betrieb wurden die Eingaben nicht ins Log geechot, und
+Knappheits-Stupser/Frage-Weiche arbeiteten unsichtbar — beide melden
+sich jetzt mit einer Info-Zeile.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts

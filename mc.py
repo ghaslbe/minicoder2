@@ -3810,6 +3810,10 @@ def main():
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
         zusatz = terse_task_hint(task_text) + qa_task_hint(task_text)
+        if "knapp gehalten" in zusatz:
+            info("Knappheits-Stupser angehaengt (kurzer Auftrag, Bestand vorhanden).")
+        if "eine FRAGE" in zusatz:
+            info("Frage-Weiche aktiv: nur lesen und antworten.")
         messages.append({"role": "user", "content": task_text + hints + zusatz})
         if plan_mode and not plan_phase(messages, args.model):
             return
@@ -3830,6 +3834,8 @@ def main():
         except (EOFError, KeyboardInterrupt):
             print()
             break
+        if user and not sys.stdin.isatty():
+            print(user)  # Echo im Pipe-Betrieb — sonst fehlen die Eingaben im Log
         if not user:
             continue
         if user.lower() in ("exit", "quit", "q"):
@@ -3853,6 +3859,10 @@ def main():
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
         zusatz = terse_task_hint(user) + qa_task_hint(user)
+        if "knapp gehalten" in zusatz:
+            info("Knappheits-Stupser angehaengt (kurzer Auftrag, Bestand vorhanden).")
+        if "eine FRAGE" in zusatz:
+            info("Frage-Weiche aktiv: nur lesen und antworten.")
         messages.append({"role": "user", "content": user + hints + zusatz})
         if plan_mode and not plan_phase(messages, args.model):
             continue

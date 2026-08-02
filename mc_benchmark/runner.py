@@ -17,6 +17,7 @@ Modelle unten in MODELS eintragen (OpenRouter-ID, Kurzname).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -37,6 +38,12 @@ MODELS = [
     ("qwen/qwen3.7-flash", "qwen37-flash"),
     ("google/gemma-4-26b-a4b-it", "gemma4-26b"),
 ]
+
+if len(sys.argv) > 1:
+    # Modell-IDs als Argumente ueberschreiben die Liste oben:
+    #   python3 mc_benchmark/runner.py anbieter/modell [weitere ...]
+    MODELS = [(mid, re.sub(r"[^a-z0-9.-]+", "-", mid.split("/")[-1].lower()))
+              for mid in sys.argv[1:]]
 
 if not os.environ.get("MC_API_KEY"):
     sys.exit("MC_API_KEY fehlt (OpenRouter-Key als Env-Variable setzen).")
