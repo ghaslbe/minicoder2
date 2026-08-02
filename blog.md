@@ -3340,37 +3340,75 @@ Abnahme-Note trennt die Spreu kaum noch — fast jedes Modell, das
 finish?), Tempo und Preis — genau den drei Spalten, die dieser Blog
 inzwischen bei jedem Lauf misst.
 
-## Gesamttabelle: alle 14 Modelle im CRUD-Benchmark
+## 27. Vier aus der Oberklasse — und ein 52-Sekunden-Paukenschlag
 
-Alle Läufe der Kapitel 17–26 in einer Tabelle, sortiert nach Ausgang und
-Lauf-Kosten. Achtung: Die Läufe verteilen sich auf drei Harness-Stände
-(Kapitel 17/18 → 19 → 24/26) — Feinvergleiche mit Vorsicht.
+Auf Zuruf noch vier Premium-Modelle durch denselben Benchmark (das
+extreme claude-opus-4.7-**fast** mit $30/$150 pro Mio blieb nach kurzem
+Blick auf den Taschenrechner bewusst im Regal — ein Lauf hätte so viel
+gekostet wie alle bisherigen zusammen):
+
+| | gpt-5.6-terra | claude-sonnet-5 | gpt-5.6-sol | claude-opus-4.7 |
+|---|---|---|---|---|
+| Preis/Mio | $1/$6 | $2/$10 | $5/$30 | $5/$25 |
+| Dauer | **52 s** | 128 s | 106 s | 145 s |
+| Schritte | **6** | 16 | 11 | 16 |
+| Lauf-Kosten | $0.054 | $0.333 | $0.541 | $0.926 |
+| Abnahme | 8/8 · 3/3 | 8/8 · 3/3 | 7/8 · 3/3 | 7/8 · 3/3 |
+| finish | ✓ | ✓ | ✓ | ✓ |
+
+**gpt-5.6-terra ist der Paukenschlag:** 52 Sekunden, **sechs Schritte**
+— App in einem Wurf geschrieben, geprüft, fertig. Halbiert den
+Tempo-Rekord von kimi-k2.7-code und drittelt Lunas Effizienz-Bestmarke.
+Für 5,4 Cent ist das der neue Referenzpunkt für „schnell UND sauber".
+
+**Die Strenge-Schule der Oberklasse:** sol und opus-4.7 — die beiden
+teuersten des Quartetts — bauten unabhängig voneinander dieselbe
+maximal strenge API: Feld-Validierung VOR der Existenz-Prüfung (PUT auf
+unbekannte ID → 400 statt 404), POST nur mit vollständigen Feldern.
+Vertretbare Design-Schule, aber nach unserer Abnahme je ein
+Kern-Fehler — und wieder einmal: **mehr Geld heißt nicht bessere
+Benchmark-Note.** Das günstigere Schwestermodell terra schlägt sol in
+jeder Spalte.
+
+## Gesamttabelle: alle 18 Modelle im CRUD-Benchmark
+
+Alle Läufe der Kapitel 17–27 in einer Tabelle, sortiert nach Ausgang und
+Lauf-Kosten. Achtung: Die Läufe verteilen sich auf mehrere
+Harness-Stände (Kapitel 17/18 → 19 → 24/26 → 27) — Feinvergleiche mit
+Vorsicht.
 
 | Modell | Preis/Mio (P/C) | Dauer | Requests | Lauf-Kosten | Abnahme | Ausgang |
 |---|---|---|---|---|---|---|
-| deepseek-v4-flash ¹ | $0.09/$0.28 | n. gem. | 18 | **$0.007** | 8/8 · 1/3 | ✓ sauber |
+| nemotron-3-ultra (free) | gratis | 269 s | 30 | **$0.00** | 8/8 · 2/3 | ✓ sauber |
+| deepseek-v4-flash ¹ | $0.09/$0.28 | n. gem. | 18 | $0.007 | 8/8 · 1/3 | ✓ sauber |
 | deepseek-v4-flash-0731 | $0.09/$0.18 | 192 s | 20 | $0.008 | 8/8 · 3/3 | ✓ sauber |
-| gpt-5.6-luna | $0.10/$0.60 | n. gem. | **15** | $0.014 | 8/8 · 3/3 | ✓ sauber |
+| gpt-5.6-luna | $0.10/$0.60 | n. gem. | 15 | $0.014 | 8/8 · 3/3 | ✓ sauber |
 | tencent/hy3 | $0.13/$0.53 | 877 s | 15 | $0.025 | 8/8 · 3/3 | ✓ sauber |
 | gemma-4-31b-it | $0.10/$0.34 | 604 s | 22 | $0.026 | 8/8 · 3/3 | ✓ sauber |
 | deepseek-v4-pro | $0.43/$0.87 | 167 s | 19 | $0.028 | 8/8 · 3/3 ² | ✓ sauber |
-| kimi-k2.7-code | $0.73/$3.50 | **111 s** | 16 | $0.084 | 8/8 · 3/3 | ✓ sauber |
-| nemotron-3-ultra (free) | gratis | 269 s | 30 | $0.00 | 8/8 · 2/3 | ✓ sauber |
+| gpt-5.6-terra | $1.00/$6.00 | **52 s** | **6** | $0.054 | 8/8 · 3/3 | ✓ sauber |
+| kimi-k2.7-code | $0.73/$3.50 | 111 s | 16 | $0.084 | 8/8 · 3/3 | ✓ sauber |
+| claude-sonnet-5 | $2.00/$10.00 | 128 s | 16 | $0.333 | 8/8 · 3/3 | ✓ sauber |
+| gpt-5.6-sol | $5.00/$30.00 | 106 s | 11 | $0.541 | 7/8 · 3/3 ³ | ✓ sauber |
+| claude-opus-4.7 | $5.00/$25.00 | 145 s | 16 | $0.926 | 7/8 · 3/3 ³ | ✓ sauber |
+| xiaomi/mimo-v2.5 ⁴ | $0.14/$0.28 | 1724 s | 58 | $0.095 | 8/8 · 3/3 | ✗ Schrittlimit |
 | kimi-k3 | $3.00/$15.00 | 433 s | 41 | $0.909 | 8/8 · 3/3 | ✗ Limit, nie ein finish |
-| xiaomi/mimo-v2.5 ³ | $0.14/$0.28 | 1724 s | 58 | $0.095 | 8/8 · 3/3 | ✗ Schrittlimit |
 | z-ai/glm-5.2 | $0.28/$0.89 | 1200 s ⏱ | ~12 | unbek. | 8/8 · 3/3 | ✗ Timeout (App fertig!) |
 | qwen3.7-flash | $0.03/$0.13 | 641 s | n. erf. | n. erf. | 8/8 · 1/3, PUT→500 | ✗ hängender Server |
 | gemma-4-26b-a4b-it (Cloud) | $0.07/$0.34 | 1200 s ⏱ | — | $0.031 | **keine App** | ✗ Escape-Degeneration |
-| minimax-m3 | $0.30/$1.20 | 494 s | 42 | $0.109 | **keine App** | ✗ stilles Prosa-Ende ⁴ |
+| minimax-m3 | $0.30/$1.20 | 494 s | 42 | $0.109 | **keine App** | ✗ stilles Prosa-Ende ⁵ |
 
 ¹ einziger Lauf vor der Prompt-Schärfung (daher Valid 1/3, PUT partiell).
-² POST verlangt alle Felder. ³ Nachtest nach dem Harness-Crash-Fix.
-⁴ deckte die Prosa-Wächter-Lücke auf, inzwischen gefixt.
+² POST verlangt alle Felder. ³ Strenge-Schule: PUT auf unbekannte ID →
+400 statt 404, POST verlangt alle Felder. ⁴ Nachtest nach dem
+Harness-Crash-Fix. ⁵ deckte die Prosa-Wächter-Lücke auf, inzwischen
+gefixt.
 
 Die Kurzfassung: **Für die Rechnung deepseek-v4-flash-0731, für die Uhr
-kimi-k2.7-code, als Allrounder gpt-5.6-luna** (effizientester Lauf des
-Feldes: 15 Requests). Und lokal bleibt gemma-4-26b als mxfp4 der
-Referenz-Arbeiter — nur seiner Cloud-Variante sollte man nicht begegnen.
+gpt-5.6-terra (52 s, 6 Schritte!), als Effizienz-Allrounder weiterhin
+gpt-5.6-luna.** Gratis-Tipp: nemotron. Und lokal bleibt gemma-4-26b als
+mxfp4 der Referenz-Arbeiter — nur seiner Cloud-Variante sollte man
+nicht begegnen.
 
 ---
 
