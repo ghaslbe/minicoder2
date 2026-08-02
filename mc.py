@@ -1817,6 +1817,13 @@ Regeln:
   (anlegen bzw. per edit_file ergaenzen — kurz halten, keine Prosa). Steht
   in den Projekt-Notizen bereits eine Festlegung (z.B. ein fester Port),
   aendere sie NICHT, sondern passe abweichenden Code an die Festlegung an.
+- DATEN-/DB-PFADE im Code absolut zur Skript-Datei aufloesen (BASE_DIR-Muster:
+  os.path.join(os.path.dirname(os.path.abspath(__file__)), "daten.db")) statt
+  relativ zum Arbeitsverzeichnis — sonst haengt es davon ab, von WO gestartet
+  wird, und die App findet ihre eigene Datenbank nicht mehr.
+- Fertiger Code laeuft OHNE Debug-Modus (z.B. Flask: app.run ohne debug=True —
+  der Debugger erlaubt Code-Ausfuehrung im Browser und gehoert nicht in eine
+  fertige App).
 - Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
 - Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
 
@@ -1871,7 +1878,9 @@ nach der letzten Aenderung real ueberprueft hast (mind. ein run mit exit=0):
      node --check datei.js).
   3. Dienste mit {"action":"run","command":"…","background":true} starten
      und dann mit run + curl testen: Endpunkte aufrufen, Antworten pruefen —
-     auch Fehlerfaelle (unbekannte ID sollte 404 liefern, nicht Erfolg).
+     auch Fehlerfaelle (unbekannte ID sollte 404 liefern, nicht Erfolg) und
+     UNGUELTIGE EINGABEN: ein FEHLENDES und ein LEERES Pflichtfeld muessen
+     beide abgelehnt werden (400), nicht als Erfolg durchrutschen.
   4. Fehlermeldungen ERNST NEHMEN und beheben, dann erneut pruefen.
 Hintergrundprozesse werden am Ende automatisch beendet. Verlasse dich nicht
 auf dein Gedaechtnis, was eine Bibliothek 'haben muesste' — pruefe es

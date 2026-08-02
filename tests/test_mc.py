@@ -250,6 +250,20 @@ def test_system_prompt_lehrt_notizen():
     assert "MC-NOTIZEN.md" in mc.system_prompt(True)
 
 
+def test_system_prompt_lehrt_basedir_und_kein_debug():
+    # Lektionen aus dem OpenRouter-Testlauf: relative DB-Pfade und debug=True
+    # tauchten in fertigen Apps auf, weil der Prompt sie nicht verbot.
+    sp = mc.system_prompt(True)
+    assert "BASE_DIR" in sp
+    assert "debug=True" in sp
+
+
+def test_check_prompt_verlangt_eingabe_validierung():
+    # Kleine Modelle testen wortwoertlich, was der Prompt nennt — leeres
+    # Pflichtfeld muss deshalb explizit als Pruef-Fall dastehen.
+    assert "LEERES Pflichtfeld" in mc.CHECK_PROMPT
+
+
 # --------------------------- Kontext-Beschneidung ---------------------------
 
 def _historie(n_steps, size=900):
