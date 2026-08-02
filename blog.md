@@ -3400,6 +3400,32 @@ beim Abschluss ausdrücklich). Und **ling-2.6-flash** kam gar nicht erst
 an — der Upstream-Anbieter war rate-limited (HTTP 429 auf den ersten
 Request): ein Verfügbarkeits-, kein Fähigkeits-Urteil.
 
+## 29. Die Konsole wird erwachsen: /settings, /models und Profile
+
+Nach 24 Modell-Läufen war das Muster im Terminal immer dasselbe: Env-
+Variablen setzen, Flags tippen, Modell-IDs aus dem Katalog kopieren.
+Jetzt kann die Konsole das selbst:
+
+- **`/settings`** zeigt alle zehn Laufzeit-Einstellungen als
+  Label-Wert-Block; `/settings check true` ändert sofort. Ändert sich
+  etwas, das im System-Prompt steckt (fence/check), wird der Prompt
+  automatisch neu aufgebaut — und ein `base_url`-Wechsel leert die
+  Kontextfenster-Caches, sodass man mitten in der Sitzung von LM Studio
+  auf OpenRouter umschwenken kann.
+- **`/models`** listet die Modelle des Endpoints samt Preisen (die
+  Funktion dafür gab es seit dem OpenRouter-Kapitel — sie hatte nur nie
+  ein Kommando).
+- **`/profil speichern <name>`** sichert den kompletten
+  Einstellungs-Satz unter `~/.mc/profile/`, `/profil laden <name>`
+  stellt ihn **sitzungsübergreifend** wieder her. Der Praxisfall, für
+  den das gebaut ist: ein Profil „lokal" (LM Studio, gemma, geduldige
+  Limits) und eins „cloud" (OpenRouter, laguna, `--check`) — Umschalten
+  ist ein Kommando statt einer Zeile Env-Variablen.
+
+Suite: 114/114. Zusammen mit `/skills`, History und den Stupsern ist
+aus dem einstigen Ein-Zeilen-`input()`-Loop damit eine kleine, aber
+vollwertige Konsole geworden — ohne eine einzige Abhängigkeit.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
