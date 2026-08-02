@@ -3227,6 +3227,40 @@ er jetzt im Repo: `mc_benchmark/runner.py` (sequenzielle Modell-Läufe
 mit Zeitmessung) und `mc_benchmark/abnahme.py` (die Abnahme-Batterie:
 8 Kern-Fälle, 3 Validierungs-Fälle, PUT-Semantik, statische Checks).
 
+## 24. Nachtrag zum Benchmark: qwen3.7-flash, und der Cloud-Schock beim Hausmodell
+
+Drei Nachzügler durch denselben CRUD-Benchmark (Vorsicht beim Vergleich
+mit der Kapitel-19-Tabelle: diese Läufe nutzten bereits den neuesten
+Harness-Stand):
+
+| Modell | Dauer | Kosten | Abnahme (Kern·Valid) | Ausgang |
+|---|---|---|---|---|
+| qwen3.7-flash ($0.03/$0.13!) | 641 s | n. erfasst | 8/8 · 1/3, **PUT → 500** | unsauber¹ |
+| gemma-4-26b-a4b-it (Cloud) | 1200 s | $0.031 | **keine App** | Timeout |
+| gemma-4-31b-it | 604 s | $0.026 | 8/8 · 3/3 | ✓ sauber |
+
+¹ endete mit einem im Vordergrund gestarteten Dev-Server statt eines
+finish.
+
+**Der billigste Kandidat enttäuscht:** qwen3.7-flash kostet nur ein
+Drittel des bisherigen Preis-Leistungs-Siegers, liefert aber eine App
+mit echtem Bug (PUT stürzt mit 500 ab), akzeptiert leere Pflichtfelder —
+und beendete den Lauf, indem es den Server im Vordergrund startete und
+hängen blieb. Billig gekauft ist zweimal gelaufen; der Thron bleibt bei
+deepseek-v4-flash-0731.
+
+**Die eigentliche Geschichte ist gemma-4-26b.** Das ist exakt das
+Modell, das lokal (als mxfp4-Quantisierung in LM Studio) seit Wochen der
+zuverlässigste Arbeiter dieses Blogs ist — und in der Cloud-Variante
+**degenerierte es bis zum Timeout in Markdown-escapten Code**
+(`os\.path\.dirname\(...\)`, `\=\=` statt `==`), aus dem nie eine
+lauffähige Datei wurde. 20 Minuten, 3 Cent, keine App. Gleiche
+Gewichte-Familie, anderes Serving, gegenteiliges Ergebnis: Quantisierung,
+Chat-Template und Serving-Stack gehören offenbar genauso zum „Modell"
+wie die Gewichte selbst. Wer Modelle nur nach Namen bucht, vergleicht
+Äpfel mit Birnen-Infrastruktur. Der größere Bruder gemma-4-31b lief
+dagegen tadellos durch — sauberes finish, volle Abnahme, 2,6 Cent.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
