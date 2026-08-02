@@ -3090,6 +3090,12 @@ def run_task(messages, model):
         ok, result = handler(action)
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
         print(f"{marker}{C.RESET} {C.DIM}{result.splitlines()[0][:100]}{C.RESET}")
+        # Prosa-Waechter wieder scharf schalten: die Rueckfrage war bisher
+        # EINMALIG pro Lauf — real beobachtet, dass ein Modell sie frueh
+        # verbraucht und der Lauf viel spaeter (nach Dutzenden echten
+        # Aktionen) doch still per Prosa-Ankuendigung endet. Nach jeder
+        # ausgefuehrten Aktion ist eine erneute einmalige Rueckfrage fair.
+        prose_end_nudged = False
 
         # Check-Modus-Buchhaltung: nur ein VORDERGRUND-run mit exit=0 zaehlt als
         # Pruefung (ein gestarteter Server allein beweist nichts — der folgende
