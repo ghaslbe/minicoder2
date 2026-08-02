@@ -855,12 +855,29 @@ def _attach_fence_contents(action, tail):
     return ""
 
 
+FENCED_JSON_RE = re.compile(r"```(?:json)?[ \t]*\n\s*(\{.*?\})\s*```", re.DOTALL)
+
+
 def extract_action(text):
     """Findet den ersten ```action```-Block und parst das JSON daraus.
     Fehlende Dateiinhalte werden aus ```content Bloecken NACH dem
-    action-Block ergaenzt (Fence-Modus) — beide Formate gehen immer."""
+    action-Block ergaenzt (Fence-Modus) — beide Formate gehen immer.
+    Toleranz (real beobachtet): manche Modelle labeln den Block ```json
+    oder gar nicht — ein gefenctes JSON-Objekt MIT "action"-Feld zaehlt
+    deshalb ebenfalls, sonst endete der Lauf als vermeintliche Prosa."""
     m = ACTION_RE.search(text)
     if not m:
+        for fm in FENCED_JSON_RE.finditer(text):
+            raw = fm.group(1).strip()
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and "action" in obj:
+                err = _attach_fence_contents(obj, text[fm.end():])
+                if err:
+                    obj["_fence_error"] = err
+                return obj, raw
         return None, None
     raw = m.group(1).strip()
     try:
@@ -2365,7 +2382,13 @@ Regeln:
   POST /api/persons ergaenzen"). Keine vagen Punkte ('Code verbessern').
 - Der Plan wird erst akzeptiert, wenn du mindestens eine Datei gelesen hast.
 - Danach werden die Schreibaktionen freigeschaltet und du setzt die Punkte
-  NACHEINANDER um."""
+  NACHEINANDER um.
+
+Beispiel-Antwort:
+Ich schaue mir zuerst das Backend an.
+```action
+{"action":"read_file","path":"app.py"}
+```"""
 
 
 def system_prompt(fence, analyse=False):

@@ -42,6 +42,17 @@ def test_action_json_klassisch():
     assert action == {"action": "read_file", "path": "a.py"}
 
 
+def test_action_in_json_fence_wird_erkannt():
+    # Real beobachtet (E2E-Test): Modell labelt den Block ```json statt
+    # ```action — mit action-Feld zaehlt er trotzdem.
+    action, _ = mc.extract_action(
+        '```json\n{"action":"read_file","path":"app.py"}\n```')
+    assert action == {"action": "read_file", "path": "app.py"}
+    # Gefenctes JSON OHNE action-Feld bleibt Prosa (z.B. Beispiel-Payload)
+    action, _ = mc.extract_action('```json\n{"name":"test"}\n```')
+    assert action is None
+
+
 def test_write_file_content_fence():
     action, _ = mc.extract_action(
         '```action\n{"action":"write_file","path":"b.py"}\n```\n'
