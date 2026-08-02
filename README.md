@@ -559,7 +559,7 @@ vollständig (7 content-Blöcke, **0** JSON-content-Strings, **0**
 Parse-/Escaping-Fehler), 6/6 Dateien — wobei die Finish-Verifikation einmal
 eine vergessene Datei anmahnte, die das Modell dann nachlieferte.
 
-#### Kontext-Beschneidung: ältere Schritte kürzen
+#### Kontext-Beschneidung: ältere Schritte kürzen — aber cache-freundlich
 
 Die Message-Historie wächst pro Schritt kräftig, weil jede Tool-Ausgabe und
 jeder Schreib-Block (mit **komplettem Dateiinhalt**) dauerhaft mitgeschickt
@@ -574,6 +574,25 @@ vollständig. System-Prompt und Aufgabentext werden nie angetastet. Die
 Information geht nicht verloren — die Dateien liegen auf der Platte, und der
 Agent wird im Kurztext darauf hingewiesen, bei Bedarf `read_file`/`grep` zu
 nutzen. `--no-prune` schaltet das Verhalten ab.
+
+**Aber erst bei Kontextdruck.** LM Studio & Co. (llama.cpp) haben einen
+**Prompt-/KV-Cache**: Enthält ein Request den vorigen als *Präfix*, müssen
+nur die **neuen** Tokens verarbeitet werden — und ein Agenten-Schritt ist
+genau das (alte Historie + neue Antwort + neues Ergebnis). Eine frühere
+`mc`-Version kürzte vor *jedem* Schritt und zerstörte damit genau diesen
+Cache: pro Schritt wurde eine Nachricht **mitten in der Historie** verändert
+(die gerade aus dem Vollständig-Fenster fiel), ab dort musste der Server die
+kompletten letzten N Schritte — die größten Brocken — jedes Mal neu
+vorverarbeiten. Jetzt lässt `mc` die Historie **unangetastet wachsen**,
+solange sie sicher ins **geladene** Kontextfenster passt (via LM Studios
+`/api/v0/models` abgefragt), und kürzt erst beim Überschreiten von ~70 %
+davon **einmal im Batch** — danach ist das Präfix wieder stabil und der
+Cache baut sich einmalig neu auf. Ob es wirkt, zeigt das
+LM-Studio-Server-Log (Prompt-Cache-Treffer bzw. Zahl der zu verarbeitenden
+Tokens). Ist das Fenster nicht abfragbar (z.B. Ollama, Cloud-Endpoints),
+bleibt das alte Verhalten: dort ist Überlauf-Schutz wichtiger als
+Cache-Optimierung, und bei Cloud-Anbietern sparen gekürzte Prompts direkt
+Tokens und damit Geld.
 
 #### Auto-Continuation bei abgeschnittenen Antworten
 

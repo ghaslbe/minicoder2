@@ -4,6 +4,7 @@
 # Python-Code, der unabhaengig vom Modell funktionieren muss.
 
 import importlib.util
+import json
 import os
 import sys
 
@@ -251,17 +252,104 @@ def test_system_prompt_lehrt_notizen():
 
 # --------------------------- Kontext-Beschneidung ---------------------------
 
-def test_prune_kuerzt_alte_schritte_und_laesst_neue():
+def _historie(n_steps, size=900):
+    """Baut eine Message-Historie mit n Schritten (assistant-Action + Ergebnis)."""
     msgs = [{"role": "system", "content": "S"}]
-    for i in range(8):
+    for i in range(n_steps):
         msgs.append({"role": "assistant",
-                     "content": f'```action\n{{"action":"write_file","path":"f{i}","content":"{"x"*900}"}}\n```'})
-        msgs.append({"role": "user", "content": f"[Ergebnis von write_file]\n" + "y" * 900})
+                     "content": f'```action\n{{"action":"write_file","path":"f{i}","content":"{"x"*size}"}}\n```'})
+        msgs.append({"role": "user", "content": "[Ergebnis von write_file]\n" + "y" * size})
+    return msgs
+
+
+def test_prune_kuerzt_alte_schritte_und_laesst_neue():
+    msgs = _historie(8)
     alt_len = len(msgs[1]["content"])
     mc.prune_messages(msgs, keep=2)
     assert len(msgs[1]["content"]) < alt_len          # alt: gekuerzt
     assert len(msgs[-1]["content"]) > 600             # juengst: unangetastet
     assert msgs[0]["content"] == "S"                  # System-Prompt: nie
+
+
+def test_maybe_prune_laesst_passende_historie_unangetastet(monkeypatch):
+    # Grosses geladenes Fenster -> KEINE Kuerzung, das Praefix bleibt stabil
+    # (Voraussetzung fuer den Prompt-Cache-Hit des Servers).
+    monkeypatch.setitem(mc._LOADED_CTX_TOKENS, "m", 100000)
+    msgs = _historie(8)
+    vorher = [m["content"] for m in msgs]
+    mc.maybe_prune(msgs, "m")
+    assert [m["content"] for m in msgs] == vorher
+
+
+def test_maybe_prune_kuerzt_bei_kontextdruck(monkeypatch):
+    # Historie ~15k Zeichen, Fenster 8000 Token -> Schwelle (~10k) gerissen:
+    # aeltere Schritte werden im Batch gekuerzt, die juengsten bleiben voll.
+    monkeypatch.setitem(mc._LOADED_CTX_TOKENS, "m", 8000)
+    msgs = _historie(8)
+    mc.maybe_prune(msgs, "m")
+    assert len(msgs[1]["content"]) < 900              # alt: gekuerzt
+    assert len(msgs[-1]["content"]) > 600             # juengst: unangetastet
+
+
+def test_maybe_prune_notfallstufe_wenn_normale_kuerzung_nicht_reicht(monkeypatch):
+    # Winziges Fenster: selbst nach normaler Kuerzung (KEEP_CONTEXT volle
+    # Schritte) zu gross -> Notfall-Kuerzung auf den letzten Schritt.
+    monkeypatch.setitem(mc._LOADED_CTX_TOKENS, "m", 3000)
+    msgs = _historie(8)
+    mc.maybe_prune(msgs, "m")
+    assert len(msgs[-3]["content"]) < 900             # vorletzter Schritt: gekuerzt
+    assert len(msgs[-1]["content"]) > 600             # letzter Schritt: voll
+
+
+def test_maybe_prune_ohne_fensterinfo_wie_bisher(monkeypatch):
+    # Fenster nicht abfragbar (kein LM Studio) -> altes Verhalten:
+    # sofort kuerzen, Ueberlauf-Schutz vor Cache-Optimierung.
+    monkeypatch.setitem(mc._LOADED_CTX_TOKENS, "m", 0)
+    msgs = _historie(8)
+    mc.maybe_prune(msgs, "m")
+    assert len(msgs[1]["content"]) < 900
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_loaded_ctx_noch_nicht_geladen_wird_nicht_gecacht(monkeypatch):
+    # LM Studio laedt JIT erst beim ersten Chat-Request: davor ist
+    # loaded_context_length leer. Das darf NICHT als 0 gecacht werden,
+    # sonst bliebe das Lazy Pruning den ganzen Lauf deaktiviert.
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    payload = {"data": [{"id": "m", "loaded_context_length": None}]}
+    monkeypatch.setattr(mc.urllib.request, "urlopen",
+                        lambda req, timeout=5: _FakeResp(payload))
+    assert mc._loaded_ctx_tokens("m") == 0
+    assert "m" not in mc._LOADED_CTX_TOKENS          # transient: kein Cache
+    payload["data"][0]["loaded_context_length"] = 8192
+    assert mc._loaded_ctx_tokens("m") == 8192        # zieht nach dem Laden nach
+    assert mc._LOADED_CTX_TOKENS["m"] == 8192        # jetzt gecacht
+
+
+def test_loaded_ctx_kein_lm_studio_wird_gecacht(monkeypatch):
+    # Endpoint fehlt/unerreichbar (z.B. Ollama) -> definitiv: 0 cachen,
+    # damit nicht jeder Schritt einen vergeblichen HTTP-Versuch macht.
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+
+    def _boom(req, timeout=5):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _boom)
+    assert mc._loaded_ctx_tokens("m") == 0
+    assert mc._LOADED_CTX_TOKENS["m"] == 0
 
 
 # --------------------------- JSX/TSX-Validierung ----------------------------

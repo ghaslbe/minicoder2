@@ -174,14 +174,24 @@ FETCH_ANALYSIS_MAX_CHARS = 20000  # Fallback-Wert, falls das GELADENE
 # Rueckfall auf die Haelfte ab.
 CURRENT_MODEL = ""  # von run_task() gesetzt, fuer isolierte Sub-Calls in do_run()
 _LOADED_CTX_CACHE = {}  # model -> ermitteltes Zeichen-Limit (einmal pro Lauf abgefragt)
+_LOADED_CTX_TOKENS = {}  # model -> geladene Kontext-Tokens (0 = nicht abfragbar)
 
 # Kontext-Beschneidung: die Message-Historie waechst pro Schritt, weil jede
 # Tool-Ausgabe und jeder write-Block (mit komplettem Dateiinhalt!) dauerhaft
 # mitgeschickt wird. Auf lokalen Maschinen ist Prompt-Processing der
 # Flaschenhals -> aeltere Schritte werden auf Kurzfassungen reduziert; die
 # Dateien liegen ja auf der Platte und sind per read_file/grep erreichbar.
+# ABER cache-freundlich (siehe maybe_prune): LM Studio & Co. verarbeiten einen
+# Request, der den vorigen als Praefix enthaelt, fast ohne Prompt-Processing
+# (KV-Cache) — deshalb wird NICHT mehr vor jedem Schritt gekuerzt, sondern
+# erst, wenn die Historie die Schwelle des GELADENEN Kontextfensters reisst.
 KEEP_CONTEXT = int(_setting("MC_KEEP_CONTEXT", "keep_context", 3))  # letzte N Schritte bleiben voll
 PRUNE = True               # Kontext-Beschneidung an (--no-prune schaltet ab)
+CHARS_PER_TOKEN = 1.8      # konservative Umrechnung Zeichen/Token (Kalibrierung
+                           # siehe loaded_context_chars: deutsche Prosa + Code-Mix)
+PRUNE_CTX_FRACTION = 0.7   # Kuerzung erst, wenn die Historie diesen Anteil des
+                           # geladenen Kontextfensters ueberschreitet (Reserve
+                           # fuer Antwort + Ungenauigkeit der Umrechnung)
 
 # Fence-Modus: Dateiinhalte (und edit_file-old/new) als rohe ```-Bloecke statt
 # als escapte JSON-Strings. Seit den Weiterentwicklungs-Tests DEFAULT AN —
@@ -881,6 +891,43 @@ def prune_messages(messages, keep=None):
         log(f"Kontext beschnitten: {saved} Zeichen aus aelteren Schritten entfernt.")
 
 
+def maybe_prune(messages, model):
+    """Cache-freundliche Kontext-Beschneidung. LM Studio & Co. (llama.cpp)
+    verarbeiten einen Request fast ohne Prompt-Processing, wenn er den
+    vorigen als PRAEFIX enthaelt (KV-/Prompt-Cache) — ein Agenten-Schritt
+    ist genau das: alte Historie + neue Antwort + neues Ergebnis.
+    prune_messages() vor JEDEM Schritt zerstoerte diesen Cache: es kuerzte
+    pro Schritt genau die Nachricht, die gerade aus dem KEEP_CONTEXT-Fenster
+    fiel — also MITTEN in der Historie. Ab dort musste der Server die
+    kompletten letzten KEEP_CONTEXT Schritte (die groessten Brocken: volle
+    Tool-Ausgaben und write-Bloecke) bei jedem Schritt neu vorverarbeiten.
+    Deshalb: Historie unangetastet wachsen lassen, solange sie sicher ins
+    GELADENE Kontextfenster passt, und erst beim Reissen der Schwelle EINMAL
+    im Batch kuerzen — danach ist das Praefix wieder stabil und der Cache
+    baut sich einmalig neu auf. Ist das Fenster nicht abfragbar (kein
+    LM Studio), bleibt das bisherige Verhalten (jeden Schritt kuerzen):
+    dort ist Ueberlauf-Schutz wichtiger als Cache-Optimierung, und bei
+    Cloud-Endpoints sparen gekuerzte Prompts direkt Tokens/Kosten."""
+    if not PRUNE:
+        return
+    ctx = _loaded_ctx_tokens(model)
+    if not ctx:
+        prune_messages(messages)
+        return
+    budget = int(ctx * CHARS_PER_TOKEN * PRUNE_CTX_FRACTION)
+    total = sum(len(m.get("content", "")) for m in messages)
+    if total <= budget:
+        return
+    log(f"Historie {total} Zeichen > Schwelle {budget} "
+        f"({int(PRUNE_CTX_FRACTION * 100)}% von {ctx} Token geladen) — kuerze im Batch.")
+    prune_messages(messages)
+    rest = sum(len(m.get("content", "")) for m in messages)
+    if rest > budget:
+        # Auch nach normaler Kuerzung zu gross (z.B. wenige, riesige juengste
+        # Schritte) -> Notfall-Stufe wie beim Leere-Antwort-Fall.
+        prune_messages(messages, keep=1)
+
+
 # --------------------------- Tool-Ausfuehrung ------------------------------
 
 def truncate(s):
@@ -898,37 +945,56 @@ def truncate(s):
             + s[-tail:])
 
 
-def loaded_context_chars(model):
-    """Ermittelt ein sicheres Zeichen-Limit fuer den isolierten Analyse-Aufruf,
-    indem das TATSAECHLICH GELADENE Kontextfenster des Modells abgefragt wird
+def _loaded_ctx_tokens(model):
+    """Fragt das TATSAECHLICH GELADENE Kontextfenster des Modells in Token ab
     (LM Studios /api/v0/models liefert loaded_context_length getrennt vom
     theoretischen max_context_length). Real beobachtet: das Modell hatte
     262144 Token Maximum, war aber nur mit 8192 geladen — ein zu grosser
     Prompt lieferte dann eine stillschweigend LEERE Antwort statt eines
-    Fehlers. Umrechnung bewusst konservativ (~1.8 Zeichen/Token nach Abzug
-    einer Reserve fuer Prompt-Text und Antwort), kalibriert am beobachteten
-    Fall: bei 8192 Token geladen scheiterten 20000 Zeichen, 10000 gingen.
-    Nicht-LM-Studio-Server (z.B. Ollama) haben den Endpunkt nicht — dann
-    greift der Fallback FETCH_ANALYSIS_MAX_CHARS samt Halbierungs-Retry."""
-    if model in _LOADED_CTX_CACHE:
-        return _LOADED_CTX_CACHE[model]
-    limit = FETCH_ANALYSIS_MAX_CHARS
+    Fehlers. Gibt 0 zurueck, wenn der Endpunkt fehlt (z.B. Ollama) oder
+    nicht erreichbar ist. Cache-Verhalten: ein ERFOLGREICHER Wert und ein
+    FEHLGESCHLAGENER Abruf (kein LM Studio) werden gecacht — aber NICHT der
+    transiente Fall 'Endpoint da, Modell (noch) nicht geladen': LM Studio
+    laedt JIT erst beim ersten Chat-Request, davor ist loaded_context_length
+    schlicht leer. Ein Dauer-Cache von 0 haette das Lazy Pruning dann fuer
+    den ganzen Lauf deaktiviert; so zieht der Wert ab Schritt 2 nach."""
+    if model in _LOADED_CTX_TOKENS:
+        return _LOADED_CTX_TOKENS[model]
     try:
         base = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
         req = urllib.request.Request(base + "/api/v0/models")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        for m in data.get("data", []):
-            if m.get("id") == model:
-                ctx = m.get("loaded_context_length") or 0
-                if ctx > 2000:
-                    limit = max(4000, int((ctx - 1700) * 1.8))
-                    info(f"Geladenes Kontextfenster: {ctx} Token -> "
-                         f"Analyse-Limit {limit} Zeichen.")
-                break
     except Exception:
-        pass  # kein LM Studio / nicht erreichbar -> Fallback-Wert behalten
-    _LOADED_CTX_CACHE[model] = limit
+        _LOADED_CTX_TOKENS[model] = 0  # kein LM Studio / nicht erreichbar
+        return 0
+    ctx = 0
+    for m in data.get("data", []):
+        if m.get("id") == model:
+            ctx = int(m.get("loaded_context_length") or 0)
+            break
+    if ctx:
+        _LOADED_CTX_TOKENS[model] = ctx
+    return ctx
+
+
+def loaded_context_chars(model):
+    """Ermittelt ein sicheres Zeichen-Limit fuer den isolierten Analyse-Aufruf
+    aus dem geladenen Kontextfenster (_loaded_ctx_tokens). Umrechnung bewusst
+    konservativ (CHARS_PER_TOKEN nach Abzug einer Reserve fuer Prompt-Text und
+    Antwort), kalibriert am beobachteten Fall: bei 8192 Token geladen
+    scheiterten 20000 Zeichen, 10000 gingen. Ist das Fenster nicht abfragbar,
+    greift der Fallback FETCH_ANALYSIS_MAX_CHARS samt Halbierungs-Retry."""
+    if model in _LOADED_CTX_CACHE:
+        return _LOADED_CTX_CACHE[model]
+    limit = FETCH_ANALYSIS_MAX_CHARS
+    ctx = _loaded_ctx_tokens(model)
+    if ctx > 2000:
+        limit = max(4000, int((ctx - 1700) * CHARS_PER_TOKEN))
+        info(f"Geladenes Kontextfenster: {ctx} Token -> "
+             f"Analyse-Limit {limit} Zeichen.")
+    if model in _LOADED_CTX_TOKENS:  # nur definitive Werte cachen (s. dort)
+        _LOADED_CTX_CACHE[model] = limit
     return limit
 
 
@@ -2257,7 +2323,7 @@ def run_task(messages, model):
                 f"gib dann finish mit einer ehrlichen Zusammenfassung aus (offen "
                 f"Gebliebenes darin benennen).")
             print(f"{C.YELLOW}⚠ Budget-Hinweis: noch {remaining} Schritte.{C.RESET}")
-        prune_messages(messages)  # aeltere Schritte kuerzen (Tokens/Tempo)
+        maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck (Prompt-Cache schonen)
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         reply = chat_stream(messages, model)
 
@@ -2614,9 +2680,10 @@ def main():
     ap.add_argument("--no-validate", action="store_true",
                     help="Validierung geschriebener Dateien (py/json/yaml/php) abschalten")
     ap.add_argument("--keep-context", type=int, default=KEEP_CONTEXT, metavar="N",
-                    help=f"So viele letzte Schritte bleiben vollstaendig im Kontext "
-                         f"(default {KEEP_CONTEXT}); aeltere Tool-Ausgaben und "
-                         f"Schreib-Bloecke werden gekuerzt — spart Tokens und Zeit")
+                    help=f"So viele letzte Schritte bleiben bei einer Kuerzung "
+                         f"vollstaendig im Kontext (default {KEEP_CONTEXT}); gekuerzt "
+                         f"wird erst, wenn die Historie das geladene Kontextfenster "
+                         f"zu sprengen droht (schont den Prompt-Cache des Servers)")
     ap.add_argument("--no-prune", action="store_true",
                     help="Kontext-Beschneidung abschalten (volle Historie senden)")
     ap.add_argument("--fence", action="store_true",
@@ -2718,8 +2785,9 @@ def main():
     if VALIDATE:
         info("Validierung aktiv: py/json/yaml/php werden nach dem Schreiben geprueft.")
     if PRUNE:
-        info(f"Kontext-Beschneidung aktiv: letzte {KEEP_CONTEXT} Schritte bleiben "
-             f"vollstaendig, aeltere werden gekuerzt (--no-prune schaltet ab).")
+        info(f"Kontext-Beschneidung aktiv: gekuerzt wird erst bei Kontextdruck "
+             f"(schont den Prompt-Cache des Servers); dann bleiben die letzten "
+             f"{KEEP_CONTEXT} Schritte vollstaendig (--no-prune schaltet ab).")
     if FENCE:
         info("Fence-Modus aktiv: Dateiinhalte als rohe ```content Bloecke "
              "(kein JSON-Escaping).")
