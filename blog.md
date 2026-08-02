@@ -2982,6 +2982,139 @@ Anlauf. Und die eigentliche Erkenntnis ist modellunabhängig — was im
 Check-Prompt wörtlich steht, wird geprüft; was nicht dasteht, bleibt
 Glückssache. Die Prompts sind jetzt die Spezifikation.
 
+## 19. Neun Modelle, eine Aufgabe: Dauer, Zuverlässigkeit, Kosten
+
+Nach den Einzeltests aus Kapitel 17/18 der Rundumschlag: die
+meistgenutzten OpenRouter-Modelle, alle mit **derselben wortgleichen
+CRUD-Aufgabe**, `--yes --check`, unbeaufsichtigt, 20-Minuten-Limit pro
+Lauf, sequenziell (fester Port). Danach lief gegen jede fertige App die
+**identische Abnahme-Batterie**: 8 Kern-Fälle (CRUD inkl. 404er), 3
+Validierungs-Fälle (fehlendes/leeres Pflichtfeld, Nicht-JSON), dazu
+PUT-Semantik und statische Checks (`debug=True`, absoluter DB-Pfad).
+
+| Modell | Dauer | Kosten | Abnahme (Kern·Valid) | Sauberes finish? |
+|---|---|---|---|---|
+| deepseek-v4-flash *(Kap. 17)* | n. gem. | $0.007 | 8/8 · 1/3 | ✓ |
+| gpt-5.6-luna *(Kap. 18)* | n. gem. | $0.014 | 8/8 · 3/3 | ✓ |
+| deepseek-v4-flash-0731 | 192 s | $0.008 | 8/8 · 3/3 | ✓ |
+| deepseek-v4-pro | 167 s | $0.028 | 8/8 · 3/3 | ✓ |
+| nemotron-3-ultra (free) | 269 s | $0.00 | 8/8 · 2/3 | ✓ |
+| tencent/hy3 | 877 s | $0.025 | 8/8 · 3/3 | ✓ |
+| z-ai/glm-5.2 | 1200 s (Limit) | unbek.¹ | 8/8 · 3/3 | ✗ Timeout |
+| xiaomi/mimo-v2.5 | 33 s / 1724 s² | $0.095² | 8/8 · 3/3² | ✗ Schrittlimit |
+| minimax/minimax-m3 | 494 s | $0.109 | **keine App** | ✗ Prosa-Ende |
+
+¹ hart abgebrochen, keine Abrechnungszeile mehr. ² Erstlauf endete nach
+33 s in einem Harness-Crash (dazu gleich); Nachtest mit gefixtem `mc.py`.
+
+**Was die Tabelle lehrt:**
+
+**Qualität ist kaum noch das Unterscheidungsmerkmal — Zuverlässigkeit
+schon.** Acht von neun Apps, die überhaupt entstanden, bestehen alle
+8 Kern-Fälle. Aber nur sechs von neun Läufen endeten mit einem sauberen
+finish. glm-5.2 baute eine **fehlerfreie** App und verlor sich dann bis
+zum Timeout in Verifikations-Schleifen (langsames Thinking-Modell, das
+pro Schritt Minuten braucht); mimo-v2.5 lieferte im Nachtest ebenfalls
+eine perfekte App, brauchte dafür aber 58 Requests voller
+Selbstreparatur (14 Schreib-Anläufe, 34 Wächter-Warnungen) bis ans
+Schrittlimit. Das Werk kann stimmen, während der Weg desaströs ist —
+gemessen werden muss beides.
+
+**Der Preis sagt nichts über das Ergebnis.** Das teuerste Modell des
+Feldes (minimax-m3, $0.109) lieferte als einziges **gar keine App**:
+eine Schreib-Abbruch-Spirale, in der es sein eigenes Werk löschte und
+den Lauf schliesslich mit einer Ankündigungs-Prosa ohne Aktion beendete.
+Der Preis-Leistungs-Sieger heisst deepseek-v4-flash-0731: fehlerfreie
+App, 3/3 Validierung, 192 Sekunden, **0,8 Cent**. Und das Gratis-Modell
+(nemotron) liefert eine brauchbare App mit nur einer Validierungs-Lücke
+— fuer Benchmarks und Experimente voellig ausreichend.
+
+**Die Prompt-Schärfung aus Kapitel 17 wirkt über Modellgrenzen hinweg.**
+Sieben der acht entstandenen Apps lehnen das leere Pflichtfeld korrekt
+ab — vor der Schärfung tat das nicht einmal der Klassenprimus. Nur
+nemotron patzte hier.
+
+**Und der Benchmark war zugleich der härteste `mc.py`-Test seit
+Wochen — zwei echte Funde:** Erstens brachte mimo den Harness zum
+Absturz, indem es `write_files` mit blanken Strings statt Objekten
+aufrief (`AttributeError`, Lauf nach 33 s tot — jetzt wird normalisiert
+statt abgestürzt; der Nachtest bestätigt den Fix). Zweitens zeigte
+minimax eine Lücke im Prosa-Wächter: Der verbrauchte seine einmalige
+Rückfrage früh im Lauf, und Dutzende Aktionen später ging der stille
+Prosa-Ausstieg doch wieder durch — der Wächter schaltet sich jetzt nach
+jeder echten Aktion wieder scharf.
+
+**Ausblick:** Als nächste Disziplin neben Neubau und Weiterentwicklung
+bietet sich ein **Design-Vergleich** an — dieselbe Aufgabe mit
+Vite/React-Frontend, alle Apps mit identischen Beispieldaten befüllt,
+Screenshots bei gleicher Fenstergröße, und die Optik anonymisiert als
+Blind-Galerie bewertet (vom Menschen, optional zusätzlich von einer
+Vision-Modell-Jury). Notiert, aber bewusst noch nicht gebaut.
+
+## 20. Blick in fremde Werkstätten — und das Weiterentwicklungs-Paket
+
+Die offene Wunde von `mc` war seit dem Weiterentwicklungs-Testtag
+(Kapitel 13) bekannt: Bei **bestehendem** Code haben kleine Modelle einen
+Neubau-Reflex — statt die betroffene Stelle zu suchen und gezielt zu
+ändern, schreiben sie Dateien lieber komplett neu. Bevor ich dagegen
+etwas baute, habe ich zwei große quelloffene Coding-Agenten seziert
+(einen Rust-Klon eines bekannten CLI-Agenten mit ~120k Zeilen, und ein
+TypeScript-Schwergewicht mit ~600k Zeilen über 34 Pakete) — mit einer
+Leitfrage: *Wie machen die das mit dem Verstehen vor dem Ändern?*
+
+**Der überraschendste Befund: Eine Repo-Map hat keiner.** Kein
+AST-Index, keine Symbol-Übersicht, nichts dergleichen. Beide setzen auf
+andere Strategien: der eine auf **deterministische Steckbriefe**
+(Stack-Erkennung per Marker-Dateien, Git-Status und -Historie in den
+System-Prompt — alles ohne Modell-Aufruf) und darauf, Lese- und
+Schreib-Phasen über die **Tool-Liste selbst** zu trennen: im
+Analyse-Modus stehen Schreibwerkzeuge gar nicht erst im Protokoll. Der
+andere auf einen formalen **Plan-Modus** (erst erkunden, dann Plan als
+Datei schreiben, erst nach Freigabe umsetzen) und auf die raffinierteste
+**Edit-Fehlertoleranz**, die ich bisher gesehen habe: eine Kaskade aus
+neun Matching-Strategien, die fast-richtige `old`-Blöcke doch noch
+eindeutig zuordnet. Und ein Fund zum Schmunzeln: *Read-before-Write*
+predigen beide nur im Prompt — bei einem behauptet die Tool-Doku sogar
+eine Erzwingung, die im Code gar nicht (mehr) existiert. Die Gegenprobe
+fiel ohnehin freundlich aus: deterministisches Finish-Gate,
+Truncation-Fortsetzung, Runaway-Erkennung, Prosa-Wächter,
+Git-Absicherung — all das hat von beiden keiner.
+
+Aus beidem — den fremden Ideen und den eigenen Narben — ist das
+**Weiterentwicklungs-Paket** geworden, vier ineinandergreifende
+Mechanismen:
+
+1. **Bestands-Kontext ohne Modell-Aufruf**: Projekt-Steckbrief (Stack,
+   real vorhandene Kommandos, letzte Commits) plus **Code-Struktur** je
+   Quelldatei — Funktionen, Klassen, Routen mit Zeilennummern (Python
+   über die eingebaute `ast`-Bibliothek, JS/TS per Regex-Näherung). Ein
+   Modell, das Struktur statt nur Dateinamen sieht, startet mit der
+   Grundannahme *es gibt schon Code*.
+2. **`--analyse` — erst verstehen, dann planen, dann ändern**: Die
+   Analyse-Phase bekommt ein Protokoll **ohne Schreibaktionen**
+   (Weglassen ist bei kleinen Modellen zuverlässiger als Verbieten) und
+   endet mit einer `plan`-Aktion: nummerierte, konkrete Änderungen mit
+   Dateipfad. Der Plan wird erst akzeptiert, wenn mindestens eine Datei
+   gelesen wurde; beim `finish` wird das Modell einmalig an seinem
+   **eigenen Plan** gemessen — dasselbe Prinzip wie beim Check-Modus.
+3. **Neubau-Bremse**: Rein neue Dateien entstehen in Projekten mit
+   Bestandscode erst, nachdem mindestens einmal in den Bestand geschaut
+   wurde (`find`/`grep`/`read_file`/`list_dir` — auch ein leeres
+   Ergebnis schaltet frei). Dazu die Prompt-Regel: ein leeres
+   Suchergebnis heißt *Muster verbreitern und erneut suchen*, nicht
+   *gibt es nicht*.
+4. **Edit-Toleranz-Kaskade**: Nach dem exakten Match versucht
+   `edit_file` zeilenweise getrimmtes Matching (mit automatischer
+   Einrückungs-Anpassung von `new`), entfernt eine doppelte
+   Escape-Ebene, und matcht zuletzt per Block-Anker (erste und letzte
+   Zeile exakt, Mitte ≥ 75 % ähnlich). Jede Stufe verlangt
+   Eindeutigkeit, ein Größen-Wächter verhindert zu große Treffer. Denn
+   der harte Fehlschlag war bisher genau der Moment, in dem Modelle
+   aufgaben und die ganze Datei neu schrieben.
+
+Suite: 86/86. Der erste Praxistest des Pakets steht noch aus — das wird
+der nächste Weiterentwicklungs-Testtag.
+
 ---
 
 ## Anhang: Die `mc`-Aufrufe & Prompts
