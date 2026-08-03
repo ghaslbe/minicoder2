@@ -352,7 +352,20 @@ def create_project():
     name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
     if not name or name == 'workspace':
         return jsonify({'ok': False, 'error': 'Ungueltiger Projektname'}), 400
-    os.makedirs(os.path.join(PROJEKTE_ROOT, name), exist_ok=True)
+    project_path = os.path.join(PROJEKTE_ROOT, name)
+    os.makedirs(project_path, exist_ok=True)
+    with open(os.path.join(project_path, '.gitignore'), 'w', encoding='utf-8') as f:
+        f.write('node_modules/\ndist/\n*.log\n.DS_Store\n')
+    try:
+        subprocess.run(['git', 'init'], cwd=project_path, capture_output=True)
+        subprocess.run(['git', 'add', '-A'], cwd=project_path, capture_output=True)
+        subprocess.run(
+            ['git', 'commit', '-m', f'Erst-Commit: {name} aus vibelove', '--allow-empty'],
+            cwd=project_path,
+            capture_output=True
+        )
+    except Exception:
+        pass
     switch_project(name)
     return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
 
