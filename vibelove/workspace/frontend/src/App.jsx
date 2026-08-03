@@ -50,9 +50,27 @@ const Hero = () => (
       </div>
     </div>
   </section>
-);
+  );
 
-const Features = () => (
+  const ExampleDomain = () => (
+    <section
+      id="example-domain"
+      className="py-16 bg-white border-y border-gray-100"
+    >
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 className="text-3xl font-bold text-gray-900 mb-4">
+          Beispiel-Domain
+        </h2>
+        <p className="text-lg text-gray-600 max-w-xl mx-auto">
+          Diese Domain ist ausschließlich für Demonstrationszwecke gedacht —
+          ohne Garantie. In Produktivumgebungen ersetzen Sie sie durch Ihre
+          eigene Domain.
+        </p>
+      </div>
+    </section>
+  );
+
+  const Features = () => (
   <section id="features" className="py-20 bg-white">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="text-center mb-16">
