@@ -70,9 +70,28 @@ const Hero = () => (
     </section>
   );
 
+  const FoundationModels = () => (
+    <section
+      id="foundation-models"
+      className="py-16 bg-white border-y border-gray-100"
+    >
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <h2 className="text-3xl font-bold text-gray-900 mb-4">
+          Foundation Models
+        </h2>
+        <p className="text-lg text-gray-600 max-w-xl mx-auto">
+          Moderne Anwendungen setzen auf leistungsstarke Foundation-Modelle —
+          vortrainierte Netze, die als Generalisierungskern für vielfältige
+          Aufgaben dienen. Wählen Sie das passende Modell für Ihre Use-Case-
+          Anforderungen.
+        </p>
+      </div>
+    </section>
+  );
+
   const Features = () => (
-  <section id="features" className="py-20 bg-white">
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <section id="features" className="py-20 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="text-center mb-16">
         <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Was Sie im Workshop lernen</h2>
         <div className="w-20 h-1 bg-[#B02AC9] mx-auto"></div>
@@ -145,6 +164,7 @@ function App() {
       <main className="flex-grow">
         <Hero />
         <ExampleDomain />
+        <FoundationModels />
         <Features />
         <CTASection />
       </main>
