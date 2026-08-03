@@ -11,7 +11,6 @@ const Navbar = () => (
           <a href="#fuer-wen" className="text-gray-600 hover:text-[#B02AC9] font-medium">Zielgruppe</a>
           <a href="#ergebnisse" className="text-gray-600 hover:text-[#B02AC9] font-medium">Ergebnisse</a>
           <a href="#anmeldung" className="bg-[#B02AC9] text-white px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors">Jetzt anmelden</a>
-          <a href="#anmeldung" className="bg-[#B02AC9] text-white px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors">Jetzt anmelden</a>
         </div>
       </div>
     </div>

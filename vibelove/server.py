@@ -208,7 +208,7 @@ def build():
         "--dir", WORKSPACE_DIR,
         "--yes",
         "--check",
-        "--max-steps", "60",
+        "--max-steps", "100",
         "--base-url", base_url,
         "--model", model,
         full_instruction
