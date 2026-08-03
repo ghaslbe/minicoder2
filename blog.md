@@ -3460,6 +3460,37 @@ Text, sondern auf das **gerenderte Ergebnis** — „ist der neue Inhalt
 auch sichtbar?" ist eine Frage, die nur ein Screenshot oder
 DOM-Vergleich beantworten kann.
 
+## 31. Der tippfaule Mensch und der Verlust-Wächter
+
+Beim Ausbau des Lovable-Clones passierte der lehrreichste Unfall der
+Woche: Ein Modell sollte eine Werkzeugleiste **ergänzen** — und ersetzte
+dabei das komplette Preview-iframe. Der eigene Diff-Selbstreview nickte
+die Löschung ab. Beim nächsten Auftrag stand deshalb im Prompt: „Nur
+HINZUFÜGEN, nichts entfernen, iframe und Buttons müssen erhalten
+bleiben, prüfe das per grep" — und es klappte.
+
+Worauf der Projektbetreiber trocken anmerkte: **„‚Nur hinzufügen,
+nichts entfernen' ist aber schwierig, wenn der Mensch tippfaul ist."**
+Touché. Der sorgfältige Schutz-Prompt ist selbst Prompt-Fleiß — genau
+das, worauf man bei echten Menschen nicht bauen kann. Schutz gehört ins
+Werkzeug, nicht in die Aufgabenstellung. Also:
+
+- **Der Verlust-Wächter**: Jeder Schreibvorgang an einer bestehenden
+  Datei vergleicht benannte Elemente vorher/nachher — HTML-IDs,
+  Funktions- und Klassennamen, Struktur-Tags wie `<iframe>`.
+  Verschwindet etwas davon, obwohl die Aufgabe kein Entfernen verlangt
+  (Stichwort-Prüfung: löschen/entfernen/ersetzen/refactor …), bekommt
+  das Modell die Warnung direkt ins Aktions-Ergebnis: „Diese Elemente
+  wurden ENTFERNT — unbeabsichtigt Entferntes jetzt wiederherstellen,
+  Beabsichtigtes kurz begründen."
+- **Der Diff-Selbstreview** verlangt jetzt ausdrücklich Rechtfertigung
+  für jede gelöschte Zeile — „im Zweifel wiederherstellen". Ein
+  gefälliges Modell nickt sonst auch Löschungen ab.
+
+Der tippfaule Mensch darf jetzt wieder „bau nen zip download ein"
+tippen — die Leitplanke weiß auch ohne seinen Prompt, dass das iframe
+dabei nicht sterben sollte. Suite: 118/118.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

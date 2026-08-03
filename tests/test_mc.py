@@ -821,3 +821,40 @@ def test_settings_report_zeigt_alles():
     for k in ("model", "base_url", "check", "analyse", "max_steps", "yes"):
         assert k in rep
     assert "test-modell" in rep
+
+
+# --------------------------- Verlust-Waechter -------------------------------
+
+def test_verlust_waechter_meldet_verschwundene_elemente(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "ergaenze einen download-button")
+    alt = '<iframe id="previewFrame"></iframe>\n<button id="restartViteBtn">X</button>'
+    neu = '<button id="downloadBtn">Download</button>'
+    warnung = mc._loss_warning("index.html", alt, neu)
+    assert "VERLUST-WAECHTER" in warnung
+    assert "previewFrame" in warnung and "restartViteBtn" in warnung
+
+
+def test_verlust_waechter_schweigt_bei_loesch_auftrag(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "entferne das iframe bitte")
+    alt = '<iframe id="previewFrame"></iframe>'
+    assert mc._loss_warning("index.html", alt, "") == ""
+
+
+def test_verlust_waechter_schweigt_ohne_verlust(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "ergaenze etwas")
+    alt = 'def rechne():\n    pass\n'
+    neu = alt + '\ndef neu():\n    pass\n'
+    assert mc._loss_warning("a.py", alt, neu) == ""
+
+
+def test_verlust_waechter_greift_bei_edit_file(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "mach eine werkzeugleiste dazu")
+    with open("seite.html", "w") as f:
+        f.write('<div>\n<iframe id="previewFrame" src="x"></iframe>\n</div>\n')
+    mc.do_read_file({"path": "seite.html"})
+    ok, msg = mc.do_edit_file({
+        "path": "seite.html",
+        "old": '<iframe id="previewFrame" src="x"></iframe>',
+        "new": '<div id="toolbar">Leiste</div>'})
+    assert ok
+    assert "VERLUST-WAECHTER" in msg and "previewFrame" in msg

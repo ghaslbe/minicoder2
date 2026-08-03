@@ -1504,6 +1504,13 @@ def do_write_file(args):
     if gate:
         print(f"{C.RED}✗ Overwrite-Gate: {path} (existiert, nie gelesen){C.RESET}")
         return False, gate
+    alt_inhalt = ""
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                alt_inhalt = f.read()
+        except OSError:
+            pass
     print(f"{C.YELLOW}» write_file{C.RESET} {C.BOLD}{path}{C.RESET} ({len(content)} Zeichen)")
     preview = content if len(content) < 600 else content[:600] + "\n..."
     print(f"{C.DIM}{preview}{C.RESET}")
@@ -1517,6 +1524,8 @@ def do_write_file(args):
             os.makedirs(d, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
+        if alt_inhalt:
+            warn += _loss_warning(path, alt_inhalt, content)
         if warn:
             print(f"{C.RED}⚠{C.RESET} {warn.strip()}")
         return True, f"OK, {len(content)} Zeichen nach {path} geschrieben." + warn
@@ -1622,6 +1631,47 @@ def _closest_snippet(content, old, min_ratio=0.5):
     return (f"\nAEHNLICHSTE Stelle in der Datei (ab Zeile {best_i + 1}, "
             f"Aehnlichkeit {best:.0%}) — verwende fuer 'old' EXAKT diesen Text:\n"
             f"{snippet}")
+
+
+KENNUNG_RE = re.compile(
+    r"id=[\"']([\w-]+)[\"']"                       # HTML-IDs
+    r"|(?:function|def)\s+(\w+)"                    # Funktionsnamen
+    r"|(?:const|let|var)\s+(\w+)\s*="               # JS-Bindungen
+    r"|class\s+(\w+)[\s(:{]"                        # Klassennamen
+    r"|<(iframe|form|nav|main|footer|table|video|canvas)\b")  # Struktur-Tags
+REMOVAL_WORDS_RE = re.compile(
+    r"\b(loesch|lösch|entfern|ersetz|umbenenn|refactor|aufraeum|aufräum|"
+    r"weg damit|raus damit)", re.IGNORECASE)
+CURRENT_TASK = ""  # Aufgabentext des laufenden Auftrags (fuer den Verlust-Waechter)
+
+
+def _kennungen(text):
+    out = set()
+    for m in KENNUNG_RE.finditer(text or ""):
+        out.add(next(g for g in m.groups() if g))
+    return out
+
+
+def _loss_warning(path, alt, neu):
+    """Verlust-Waechter: Schreibvorgaenge an BESTEHENDEN Dateien, die
+    benannte Elemente (HTML-IDs, Funktions-/Klassennamen, Struktur-Tags)
+    verschwinden lassen, bekommen eine Warnung ins Aktions-Ergebnis — ausser
+    die Aufgabe verlangt erkennbar ein Entfernen. Hintergrund (real passiert):
+    ein Modell ersetzte beim 'Ergaenzen' einer Werkzeugleiste das komplette
+    Preview-iframe und nickte die Loeschung im Diff-Review selbst ab. Auf
+    sorgfaeltige Prompts ('nur hinzufuegen, nichts entfernen') kann man sich
+    bei tippfaulen Menschen nicht verlassen — der Schutz gehoert ins Tool."""
+    if REMOVAL_WORDS_RE.search(CURRENT_TASK or ""):
+        return ""  # Entfernen ist Teil des Auftrags
+    verloren = sorted(_kennungen(alt) - _kennungen(neu))
+    if not verloren:
+        return ""
+    return ("\nVERLUST-WAECHTER: dieser Schreibvorgang hat bestehende benannte "
+            "Elemente aus " + path + " ENTFERNT: " + ", ".join(verloren[:8])
+            + (" …" if len(verloren) > 8 else "") + ". Die Aufgabe verlangt "
+            "kein Entfernen. Pruefe das JETZT: unbeabsichtigt Entferntes im "
+            "naechsten Schritt wiederherstellen — beabsichtigtes Entfernen "
+            "kurz begruenden und weiterarbeiten.")
 
 
 def _shift_indent(text, delta):
@@ -1813,7 +1863,8 @@ def do_edit_file(args):
         return True, (f"OK, {count if replace_all else 1} Stelle(n) in {path} ersetzt "
                       f"(Datei jetzt {len(updated)} Zeichen)."
                       + (f" Hinweis: {fuzzy_note} — gib 'old' kuenftig exakt "
-                         f"aus der Datei an." if fuzzy_note else ""))
+                         f"aus der Datei an." if fuzzy_note else "")
+                      + _loss_warning(path, content, updated))
     except Exception as e:
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
@@ -3439,9 +3490,13 @@ def run_task(messages, model):
                            "Diff:\n" + zusammenfassung +
                            "\nLetzter Blick: Passt das vollstaendig zur Aufgabe "
                            "— nichts vergessen, keine Debug-Reste (print/"
-                           "console.log), keine ungewollten Aenderungen? Falls "
-                           "etwas auffaellt, korrigiere es JETZT und gib danach "
-                           "finish aus; sonst gib einfach erneut finish aus.")
+                           "console.log), keine ungewollten Aenderungen? "
+                           "GELOESCHTE Zeilen (-) brauchen besondere "
+                           "Rechtfertigung: nenne fuer JEDE Entfernung "
+                           "bestehender Funktionalitaet den Grund — im Zweifel "
+                           "wiederherstellen. Falls etwas auffaellt, korrigiere "
+                           "es JETZT und gib danach finish aus; sonst gib "
+                           "einfach erneut finish aus.")
                     print(f"{C.YELLOW}⚠ Diff-Selbstreview vor dem finish.{C.RESET}")
                     messages.append({"role": "user", "content": obs})
                     continue
@@ -3868,6 +3923,8 @@ def main():
                     info("Skill-Flags aktiv: " + ", ".join(
                         k for k in ("check", "analyse") if sflags.get(k)))
                 info(f"Skill expandiert ({len(task_text)} Zeichen Aufgabe).")
+        global CURRENT_TASK
+        CURRENT_TASK = task_text
         EXPECTED_FILES[:] = expected_files_from_task(task_text)
         if EXPECTED_FILES:
             info(f"Finish-Check aktiv: {len(EXPECTED_FILES)} in der Aufgabe "
@@ -3971,6 +4028,7 @@ def main():
             if art == "task":
                 user = wert
                 info(f"Skill expandiert ({len(user)} Zeichen Aufgabe).")
+        globals()["CURRENT_TASK"] = user
         EXPECTED_FILES[:] = expected_files_from_task(user)
         hints = task_hints(user)
         if hints:
