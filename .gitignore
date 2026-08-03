@@ -6,3 +6,4 @@ demo/
 test/
 mc_benchmark/laeufe/
 vibelove/*.log
+vibelove/mc_settings.json

@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import subprocess
@@ -9,7 +10,7 @@ import signal
 import socket
 import select
 import zipfile
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, jsonify, send_file
 
 app = Flask(__name__)
 
@@ -19,6 +20,41 @@ PORT_VITE = 5173
 WORKSPACE_DIR = os.path.join(os.getcwd(), 'workspace')
 # mc.py liegt eine Ebene hoeher
 MC_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'mc.py'))
+
+# ── Laufzeit-Einstellungen (konfigurierbar über /settings) ────────────────
+SETTINGS_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mc_settings.json')
+
+DEFAULT_MODEL = 'gemma-4-26b-a4b-it@mxfp4'
+DEFAULT_BASE_URL = 'http://localhost:1234/v1'
+
+MC_SETTINGS = {
+    'model': DEFAULT_MODEL,
+    'base_url': DEFAULT_BASE_URL,
+    'api_key': ''
+}
+
+def load_settings():
+    """Lädt Laufzeit-Einstellungen: erst Env-Variablen, dann mc_settings.json (hat Vorrang)."""
+    global MC_SETTINGS
+
+    # 1) Env-Variablen als Basis
+    for key, env_name in [('model', 'VIBELOVE_MODEL'), ('base_url', 'VIBELOVE_BASE_URL'), ('api_key', 'MC_API_KEY')]:
+        val = os.environ.get(env_name)
+        if val:
+            MC_SETTINGS[key] = val
+
+    # 2) Gespeicherte Datei hat Vorrang gegenüber Env-Variablen
+    try:
+        with open(SETTINGS_FILE_PATH, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+            for key in ('model', 'base_url', 'api_key'):
+                if key in saved and saved[key]:
+                    MC_SETTINGS[key] = saved[key]
+        print(f"[settings] mc_settings.json geladen: model={MC_SETTINGS['model']}, "
+              f"base_url={MC_SETTINGS['base_url']}, "
+              f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
+    except FileNotFoundError:
+        print("[settings] Keine mc_settings.json vorhanden – nutze Umgebungsvariablen/Defaults.")
 
 # Globaler Prozess-Speicher für den Vite-Server
 vite_process = None
@@ -69,8 +105,62 @@ def stop_vite_server():
         vite_process = None
 
 def ensure_vite_running():
-    if not is_port_in_use(PORT_VITE):
+    if not is_port_in_use(5173):
         start_vite_server()
+
+@app.route('/settings', methods=['GET'])
+def get_settings():
+    """Liefert Modell, Basis-URL und ob ein API-Key gesetzt ist – NIE den Key selbst."""
+    return jsonify({
+        'model': MC_SETTINGS.get('model', DEFAULT_MODEL),
+        'base_url': MC_SETTINGS.get('base_url', DEFAULT_BASE_URL),
+        'api_key_gesetzt': bool(MC_SETTINGS.get('api_key'))
+    })
+
+@app.route('/settings', methods=['POST'])
+def post_settings():
+    """Übernimmt neue MC-Einstellungen aus JSON und speichert sie persistent."""
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({'ok': False, 'error': 'JSON-Body erforderlich'}), 400
+
+    model = data.get('model')
+    base_url = data.get('base_url')
+    api_key = data.get('api_key')
+
+    if model is not None:
+        model = str(model).strip()
+        if model:
+            MC_SETTINGS['model'] = model
+        else:
+            MC_SETTINGS['model'] = DEFAULT_MODEL
+
+    if base_url is not None:
+        base_url = str(base_url).strip()
+        if base_url:
+            MC_SETTINGS['base_url'] = base_url
+        else:
+            MC_SETTINGS['base_url'] = DEFAULT_BASE_URL
+
+    # Leerer API-Key lasst den bestehenden unverändert
+    if api_key is not None and api_key != '':
+        MC_SETTINGS['api_key'] = str(api_key)
+
+    # Persistieren – der Key wird gespeichert (nur lokal, nicht über GET ausgeliefert)
+    try:
+        with open(SETTINGS_FILE_PATH, 'w', encoding='utf-8') as f:
+            json.dump({
+                'model': MC_SETTINGS['model'],
+                'base_url': MC_SETTINGS['base_url'],
+                'api_key': MC_SETTINGS['api_key']
+            }, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Speichern fehlgeschlagen: {e}'}), 500
+
+    print(f"[settings] Gespeichert: model={MC_SETTINGS['model']}, "
+          f"base_url={MC_SETTINGS['base_url']}, "
+          f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
+    return jsonify({'ok': True})
 
 @app.route('/')
 def index():
@@ -107,9 +197,9 @@ def build():
 
     print(f"Starte Bauprozess für: {instruction[:50]}...")
     
-    # Umgebungsvariablen auslesen
-    base_url = os.environ.get('VIBELOVE_BASE_URL', 'http://localhost:1234/v1')
-    model = os.environ.get('VIBELOVE_MODEL', 'gemma-4-26b-a4b-it@mxfp4')
+    # Laufzeit-Einstellungen verwenden (aus MC-Settings-Dict)
+    base_url = MC_SETTINGS['base_url']
+    model = MC_SETTINGS['model']
 
     # Befehl zusammenbauen
     command = [
@@ -130,12 +220,16 @@ def build():
         def generate():
             nonlocal output
             output_lines = []
+            env = os.environ.copy()
+            if MC_SETTINGS.get('api_key'):
+                env['MC_API_KEY'] = MC_SETTINGS['api_key']
             proc = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env
             )
 
             start_time = time.time()
@@ -255,7 +349,8 @@ def cleanup():
 atexit.register(cleanup)
 
 if __name__ == '__main__':
-    # Beim Start von server.py: Vite starten
+    # Beim Start von server.py: Einstellungen laden, dann Vite starten
+    load_settings()
     start_vite_server()
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)
     

@@ -41,6 +41,13 @@
         <div class="mt-4 flex-grow overflow-auto bg-gray-900 text-green-400 p-3 rounded font-mono text-sm">
             <pre id="logOutput" class="whitespace-pre-wrap">Warte auf Bauanweisung...</pre>
         </div>
+        <button
+            type="button"
+            id="settingsButton"
+            class="mt-2 w-full bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
+        >
+            Einstellungen
+        </button>
     </div>
 
     <!-- RIGHT: Live Preview mit Werkzeugleiste -->
@@ -73,6 +80,28 @@
             class="flex-grow"
             style="width:100%;border:none;"
         ></iframe>
+    </div>
+
+    <!-- MC-EINSTELLUNGEN MODAL (unsichtbar bis geoeffnet) -->
+    <div id="settingsModal" class="hidden fixed top-0 left-0 w-full h-full bg-gray-900/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
+            <h2 class="text-lg font-bold mb-4 text-gray-800">MC-Einstellungen</h2>
+            <form id="settingsForm" class="flex flex-col gap-3">
+                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Modell
+                    <input type="text" id="settingModel" placeholder="z.B. gemma3:12b" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Endpunkt / Base URL
+                    <input type="text" id="settingBaseUrl" placeholder="z.B. http://localhost:11434/api/chat" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">API Key
+                    <input type="password" id="settingApiKey" autocomplete="off" placeholder="API Key nicht gesetzt" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+                <div class="flex gap-2 mt-3 justify-end">
+                    <button type="button" id="cancelSettingsBtn" class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm">Abbrechen</button>
+                    <button type="submit" id="saveSettingsBtn" class="bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-sm">Speichern</button>
+                </div>
+            </form>
+        </div>
     </div>
 
     <script>
@@ -152,8 +181,58 @@
                 console.error('Reset failed:', err);
             }
         };
-    </script>
-<script>
+
+        // --- MC-Einstellungen Modal-Logik ---
+        const settingsButton = document.getElementById('settingsButton');
+        const settingsModal = document.getElementById('settingsModal');
+        const settingsForm = document.getElementById('settingsForm');
+        const cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
+
+        settingsButton.onclick = async () => {
+            try {
+                const res = await fetch('/settings');
+                if (!res.ok) throw new Error('GET /settings fehlgeschlagen');
+                const data = await res.json();
+                document.getElementById('settingModel').value = data.model || '';
+                document.getElementById('settingBaseUrl').value = data.base_url || '';
+                document.getElementById('settingApiKey').value = '';
+                document.getElementById('settingApiKey').placeholder =
+                    (data.api_key_gesetzt ? 'API Key bereits gesetzt' : 'API Key nicht gesetzt');
+            } catch (err) {
+                logOutput.textContent += '\nFehler beim Laden der Einstellungen: ' + err.message;
+            }
+            settingsModal.classList.remove('hidden');
+        };
+
+        cancelSettingsBtn.onclick = () => settingsModal.classList.add('hidden');
+
+        // Klick ausserhalb des Modals schliesst es
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) settingsModal.classList.add('hidden');
+        });
+
+        settingsForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const payload = {
+                model: document.getElementById('settingModel').value.trim(),
+                base_url: document.getElementById('settingBaseUrl').value.trim(),
+                api_key: document.getElementById('settingApiKey').value
+            };
+            try {
+                const res = await fetch('/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('POST /settings fehlgeschlagen');
+                logOutput.textContent += '\neinstellungen gespeichert ✓';
+                logOutput.scrollTop = logOutput.scrollHeight;
+            } catch (err) {
+                logOutput.textContent += '\neinstellungen speichern fehlgeschlagen: ' + err.message;
+            }
+            settingsModal.classList.add('hidden');
+        };
+    </script><script>
     function reloadPreview() {
         const frame = document.getElementById('previewFrame');
         if (frame) {
