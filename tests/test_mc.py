@@ -911,3 +911,44 @@ def test_generator_lenkt_punkt_ziel_um():
         f.write("node_modules/\n")
     msg = mc._generator_conflict("npm create vite@latest .")
     assert "UNTERORDNER" in msg and "frontend" in msg
+
+
+# --------------------------- Referenz-Waechter ------------------------------
+
+def test_referenz_waechter_meldet_klassen_ohne_regel():
+    os.makedirs("src")
+    with open("src/App.jsx", "w") as f:
+        f.write('const App = () => <div className="kachel titel">x</div>;\n')
+    with open("src/index.css", "w") as f:
+        f.write(".titel { color: red; }\n")
+    w = mc._reference_warning("src/App.jsx")
+    assert "REFERENZ-WAECHTER" in w and "kachel" in w and "titel" not in w.split(":")[2]
+
+
+def test_referenz_waechter_meldet_ungemountete_komponente():
+    os.makedirs("src")
+    with open("src/App.jsx", "w") as f:
+        f.write("const Sichtbar = () => <div/>;\nconst Verwaist = () => <p/>;\n"
+                "const App = () => <main><Sichtbar/></main>;\n"
+                "export default App;\n// <App/> wird in main gemountet\n")
+    w = mc._reference_warning("src/App.jsx")
+    assert "Verwaist" in w and "Sichtbar" not in w
+
+
+def test_referenz_waechter_schweigt_bei_tailwind_und_sauber():
+    os.makedirs("src")
+    with open("index.html", "w") as f:
+        f.write('<script src="https://cdn.tailwindcss.com"></script>\n')
+    with open("src/App.jsx", "w") as f:
+        f.write('const App = () => <div className="bg-red-500">x</div>; // <App/>\n')
+    assert mc._reference_warning("src/App.jsx") == ""  # Tailwind: kein Abgleich
+    os.remove("index.html")
+    with open("src/index.css", "w") as f:
+        f.write(".alles-da { color: red; }\n")
+    with open("src/App.jsx", "w") as f:
+        f.write('const App = () => <div className="alles-da">x</div>; // <App/>\n')
+    assert mc._reference_warning("src/App.jsx") == ""
+
+
+def test_referenz_waechter_ignoriert_backend_dateien():
+    assert mc._reference_warning("server.py") == ""

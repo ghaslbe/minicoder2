@@ -1527,6 +1527,7 @@ def do_write_file(args):
         if alt_inhalt:
             warn += _loss_warning(path, alt_inhalt, content)
             warn += _duplicate_warning(path, alt_inhalt, content)
+        warn += _reference_warning(path)
         if warn:
             print(f"{C.RED}⚠{C.RESET} {warn.strip()}")
         return True, f"OK, {len(content)} Zeichen nach {path} geschrieben." + warn
@@ -1702,6 +1703,75 @@ def _duplicate_warning(path, alt, neu):
             + beispiele + ". Pruefe, ob du ein Element doppelt eingefuegt "
             "hast (z.B. Button/Link erneut eingebaut, den es schon gab) — "
             "falls ja, entferne das Duplikat im naechsten Schritt.")
+
+
+def _projekt_frontend_texte(root=".", max_dateien=200):
+    """Sammelt Frontend-Quelltexte des Projekts: (jsx/html/js-Texte,
+    css-Texte inkl. <style>-Bloecke) — gedeckelt gegen Riesenprojekte."""
+    jsx, css, n = [], [], 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in IGNORE_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in (".jsx", ".tsx", ".html", ".css", ".js"):
+                continue
+            n += 1
+            if n > max_dateien:
+                return jsx, css
+            try:
+                with open(os.path.join(dirpath, fn), encoding="utf-8",
+                          errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            if ext == ".css":
+                css.append(text)
+            else:
+                jsx.append(text)
+                for m in re.finditer(r"<style[^>]*>(.*?)</style>", text, re.S):
+                    css.append(m.group(1))
+    return jsx, css
+
+
+def _reference_warning(path):
+    """Referenz-Waechter — gegen die 'Build ist gruen, Seite ist kaputt'-
+    Familie (alle drei real passiert): (A) Komponenten-Klassen benutzt, aber
+    nie im CSS definiert -> Seite rendert nackt. (B) Komponente definiert,
+    aber nie eingebunden -> unsichtbar. npm run build ist fuer beides blind;
+    dieser Abgleich ist reine Regex-Arithmetik ueber das Projekt."""
+    if os.path.splitext(path)[1].lower() not in (".jsx", ".tsx", ".html", ".css"):
+        return ""
+    jsx, css = _projekt_frontend_texte()
+    alles_jsx, alles_css = "\n".join(jsx), "\n".join(css)
+    if "tailwind" in (alles_jsx + alles_css).lower():
+        return ""  # Utility-Framework: Klassen sind absichtlich nirgends definiert
+    befunde = []
+    if css:
+        benutzt = set()
+        for m in re.finditer(r"class(?:Name)?=[\"']([^\"'{]+)[\"']", alles_jsx):
+            for k in m.group(1).split():
+                if re.fullmatch(r"[A-Za-z][\w-]*", k):
+                    benutzt.add(k)
+        definiert = set(re.findall(r"\.([A-Za-z][\w-]*)", alles_css))
+        fehlt = sorted(benutzt - definiert)
+        if fehlt:
+            befunde.append(f"{len(fehlt)} benutzte CSS-Klasse(n) OHNE Regel: "
+                           + ", ".join(fehlt[:6])
+                           + (" …" if len(fehlt) > 6 else ""))
+    definierte = set(re.findall(r"(?:const|function)\s+([A-Z]\w*)\s*[=(]",
+                                alles_jsx))
+    gemountet = set(re.findall(r"<([A-Z]\w*)", alles_jsx))
+    ungenutzt = sorted(definierte - gemountet)
+    if ungenutzt:
+        befunde.append("definierte, aber NIE eingebundene Komponente(n): "
+                       + ", ".join(ungenutzt[:6]))
+    if not befunde:
+        return ""
+    return ("\nREFERENZ-WAECHTER: " + " | ".join(befunde)
+            + ". Build-Checks sehen so etwas NICHT — ergaenze fehlende "
+            "CSS-Regeln bzw. binde die Komponenten ein (oder entferne sie "
+            "bewusst).")
 
 
 def _shift_indent(text, delta):
@@ -1895,7 +1965,8 @@ def do_edit_file(args):
                       + (f" Hinweis: {fuzzy_note} — gib 'old' kuenftig exakt "
                          f"aus der Datei an." if fuzzy_note else "")
                       + _loss_warning(path, content, updated)
-                      + _duplicate_warning(path, content, updated))
+                      + _duplicate_warning(path, content, updated)
+                      + _reference_warning(path))
     except Exception as e:
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
@@ -3151,6 +3222,7 @@ def run_task(messages, model):
     parse_error_streak = 0
     check_probe_done = False
     prose_end_nudged = False
+    prose_nudges = 0
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     ctx_overflows = 0   # vom Endpoint gemeldete Kontext-Ueberlaeufe
@@ -3276,6 +3348,24 @@ def run_task(messages, model):
             # sonst naechste echte Aktion. Eine zweite aktionslose Antwort
             # gilt als bewusstes Prosa-Ende. Reine Frage-Antwort-Laeufe
             # (nichts davon trifft zu) enden wie bisher sofort.
+            kaputt = [p for p in set(TOUCHED) if os.path.isfile(p)
+                      and validate_path(p)[0] == "bad"]
+            if kaputt and prose_nudges < 3:
+                # Hartnaeckig statt hoeflich: solange geschriebene Dateien
+                # nachweislich UNGUELTIG sind, beendet Prosa den Lauf nicht
+                # (real beobachtet: 'ist nur ein Linting-Problem' + Ausstieg
+                # mit 5 kaputten Dateien).
+                prose_nudges += 1
+                obs = ("Deine Antwort enthielt KEINEN action-Block — und es "
+                       "sind noch UNGUELTIGE Dateien offen: "
+                       + ", ".join(sorted(kaputt)[:5]) +
+                       ". Ein Prosa-Ende wird deshalb NICHT akzeptiert. "
+                       "Korrigiere die Dateien jetzt (read_file + edit_file) "
+                       "und gib danach finish aus.")
+                print(f"{C.RED}⚠ Prosa-Ende abgelehnt: ungueltige Dateien "
+                      f"offen ({prose_nudges}/3).{C.RESET}")
+                messages.append({"role": "user", "content": obs})
+                continue
             if (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
                 prose_end_nudged = True
                 obs = ("Deine Antwort enthielt KEINEN action-Block — blosse "
