@@ -211,8 +211,7 @@ const Hero = () => (
         </div>
         <p className="text-center text-sm text-gray-500 mt-10 max-w-2xl mx-auto">
           Benchmarks: Offizielle Evaluationen von poolside.ai auf den jeweils verlinkten
-          öffentlichen Benchmark-Suiten (Stand: Modellrelease 2.1).
-          öffentlichen Leaderboards. Höhere Werte sind besser.
+          öffentlichen Benchmark-Suiten (Stand: Modellrelease 2.1). Höhere Werte sind besser.
         </p>
       </div>
     </section>
@@ -249,7 +248,7 @@ const Reviews = () => (
         <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Das sagen unsere Teilnehmer</h2>
         <div className="w-20 h-1 bg-[#B02AC9] mx-auto mb-4"></div>
         <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-          Über 500 Fachkräfte haben unseren Workshop bereits erfolgreich absolviert.
+          Über 1.200 Fachkräfte haben unseren Workshop bereits erfolgreich absolviert.
         </p>
       </div>
       <div className="grid md:grid-cols-3 gap-8">
@@ -329,8 +328,8 @@ const HowItWorks = () => (
         </div>
         <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
           <div className="w-14 h-14 rounded-full bg-[#B02AC9] text-white text-2xl font-bold flex items-center justify-center mx-auto mb-6">3</div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-3">Sofort umsetzen &amp; begeistern</h3>
-          <p className="text-gray-600">Direkt nach dem Workshop zeigen deine Fotos den Unterschied — Familie und Freunde staunen.</p>
+          <h3 className="text-xl font-semibold text-gray-900 mb-3">Sofort produktiv umsetzen</h3>
+          <p className="text-gray-600">Direkt nach dem Workshop setzen Sie Ihr erstes KI-Projekt um — mit konkreten Ergebnissen, die Ihr Team begeistern.</p>
         </div>
       </div>
     </div>
@@ -390,7 +389,7 @@ const CTASection = () => {
           Ihr Zugang ist heute kostenlos und bleibt es für immer — für alle Early-Access-Teilnehmer.
           Nach dem offiziellen Launch kostet Vibelove 49€/Monat.
         </p>
-        <p className="text-sm font-medium text-[#B02AC9] mb-6">✓ Keine Kreditkarte ✓ Jederzeit kündbar ✓ Zugang in unter 24h</p>
+        <p className="text-sm font-medium text-[#B02AC9] mb-6">✓ Sofortiger Zugang ✓ Keine Kreditkarte ✓ Jederzeit kündbar</p>
         <p className="text-lg text-gray-600 mb-10 font-semibold">
           Die 90 Minuten Investition sparen Ihnen Monate an Trial &amp; Error.
         </p>
