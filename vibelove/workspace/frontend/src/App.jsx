@@ -169,6 +169,54 @@ const Hero = () => (
   </section>
 );
 
+const Reviews = () => (
+  <section id="reviews" className="py-20 bg-[#fdf4ff]">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center mb-16">
+        <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Das sagen unsere Teilnehmer</h2>
+        <div className="w-20 h-1 bg-[#B02AC9] mx-auto mb-4"></div>
+        <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+          Über 500 Fachkräfte haben unseren Workshop bereits erfolgreich absolviert.
+        </p>
+      </div>
+      <div className="grid md:grid-cols-3 gap-8">
+        {[
+          {
+            name: 'Anna Weber',
+            role: 'CTO, TechNova GmbH',
+            quote: 'Der Workshop hat uns den Einstieg in Laguna enorm erleichtert. Innerhalb weniger Wochen konnten wir unsere erste RAG-Pipeline produktiv einsetzen — die Qualität der Inhalte ist herausragend.',
+            stars: 5
+          },
+          {
+            name: 'Markus Schneider',
+            role: 'Lead Data Scientist, FinCore AG',
+            quote: 'Endlich eine praxisnahe Einführung, die nicht nur Theorie vermittelt. Die Hands-on-Sessions mit echten Modellen haben mir sofort geholfen, die Architektur zu verstehen und in unserem Team anzuwenden.',
+            stars: 5
+          },
+          {
+            name: 'Julia Hoffmann',
+            role: 'Head of AI, MedInsight Health',
+            quote: 'Sehr gut strukturierter Workshop mit exzellenten Trainern. Besonders beeindruckt hat mich die Tiefe bei den Foundation Models — die Benchmarks und Vergleiche waren Gold wert.',
+            stars: 5
+          }
+        ].map((review, idx) => (
+          <div key={idx} className="bg-white rounded-2xl p-8 shadow-sm hover:shadow-md transition-shadow border border-[#fcecfb] flex flex-col">
+            <div className="flex text-[#B02AC9] text-lg mb-4" aria-label={`${review.stars} von 5 Sternen`}>
+              {'★'.repeat(review.stars)}
+              {'☆'.repeat(5 - review.stars)}
+            </div>
+            <p className="text-gray-600 leading-relaxed mb-6 flex-grow italic">&ldquo;{review.quote}&rdquo;</p>
+            <div className="pt-6 border-t border-gray-100">
+              <div className="font-bold text-gray-900">{review.name}</div>
+              <div className="text-sm text-[#B02AC9] font-medium mt-1">{review.role}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
 const CTASection = () => (
   <section id="anmeldung" className="py-20 bg-gray-50">
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -222,6 +270,7 @@ function App() {
         <ExampleDomain />
         <FoundationModels />
         <Features />
+        <Reviews />
         <CTASection />
       </main>
       <Footer />
