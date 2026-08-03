@@ -23,7 +23,7 @@ const Hero = () => (
       <div className="lg:grid lg:grid-cols-2 lg:gap-12 items-center">
         <div className="text-left">
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-extrabold text-gray-900 leading-tight mb-6">
-            Operational AI: <span className="text-[#B02AC9]">From Tools to Infrastructure</span>
+            vibelove laeuft jetzt mit laguna
           </h1>
           <p className="text-lg md:text-xl text-gray-600 mb-8 leading-relaxed">
             Meistern Sie den Übergang von einfachen KI-Tools zu einer skalierbaren KI-Infrastruktur in Ihrem Unternehmen. Nehmen Sie an unserem exklusiven Workshop teil.
