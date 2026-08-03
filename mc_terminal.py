@@ -288,3 +288,11 @@ def save_history():
         readline.write_history_file(HISTORY_FILE)
     except OSError:
         pass
+
+
+if __name__ == "__main__":
+    print("mc_terminal ist ein Zusatz-Modul und wird nicht direkt gestartet.\n"
+          "Der Einstieg ist mc.py (laedt dieses Modul automatisch, wenn es "
+          "daneben liegt):\n\n"
+          "  python3 mc.py            # interaktiv: /help, /settings, /skills ...\n"
+          "  python3 mc.py \"aufgabe\"  # Einmal-Modus")
