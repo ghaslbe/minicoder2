@@ -8,8 +8,9 @@ const Navbar = () => (
           <span className="text-[#B02AC9] font-bold text-xl tracking-tight">VIBELOVE</span>
         </div>
         <div className="hidden md:flex space-x-8">
-          <a href="#features" className="text-gray-600 hover:text-[#B02AC9] font-medium">Vorteile</a>
-          <a href="#details" className="text-gray-600 hover:text-[#B02AC9] font-medium">Details</a>
+          <a href="#fuer-wen" className="text-gray-600 hover:text-[#B02AC9] font-medium">Zielgruppe</a>
+          <a href="#ergebnisse" className="text-gray-600 hover:text-[#B02AC9] font-medium">Ergebnisse</a>
+          <a href="#anmeldung" className="bg-[#B02AC9] text-white px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors">Jetzt anmelden</a>
           <a href="#anmeldung" className="bg-[#B02AC9] text-white px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors">Jetzt anmelden</a>
         </div>
       </div>
@@ -22,35 +23,44 @@ const Hero = () => (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="lg:grid lg:grid-cols-2 lg:gap-12 items-center">
         <div className="text-left">
+          <p className="inline-block bg-[#B02AC9]/10 text-[#B02AC9] px-3 py-1 rounded-full font-semibold text-sm mb-6">
+            🎓 Kostenloser Online-Workshop – begrenzte Plätze
+          </p>
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-extrabold text-gray-900 leading-tight mb-6">
-            vibelove läuft jetzt mit laguna
+            In 90 Minuten zur produktiven KI – ohne IT-Abteilung
           </h1>
           <p className="text-lg md:text-xl text-gray-600 mb-8 leading-relaxed">
-            Laguna ist eine moderne, skalierbare KI-Infrastruktur-Plattform, die Unternehmen den Übergang von einfachen KI-Tools zu einer robusten, produktiven KI-Architektur ermöglicht. Mit Laguna orchestrieren Sie Modelle, verwalten Sie Vektor-Datenbanken und bauen Sie RAG-Pipelines auf – von der Entwicklung bis zum produktiven Einsatz.
+            Erfahren Sie in unserem kostenlosen Workshop, wie Sie mit Laguna KI-Modelle, Vektor-Datenbanken und RAG-Pipelines praktisch einsetzen – Schritt für Schritt erklärt, ohne Vorwissen.
           </p>
-          <p className="text-lg md:text-xl text-gray-600 mb-8 leading-relaxed">
-            Meistern Sie diesen Übergang in unserem exklusiven Workshop und entdecken Sie, wie Laguna Ihr Unternehmen für die KI-Zukunft fit macht.
-          </p>
+          <ul className="space-y-3 mb-8 text-gray-700">
+            <li>✅ Live-Demo statt trockener Theorie</li>
+            <li>✅ Schritt-für-Schritt-Anleitung für den sofortigen Start</li>
+            <li>✅ Keine Vorkenntnisse nötig</li>
+          </ul>
           <div className="flex flex-col sm:flex-row gap-4">
-            <a href="#anmeldung" className="bg-[#B02AC9] text-white px-8 py-4 rounded-lg text-center font-bold text-lg hover:bg-[#9a1fb3] transition-all shadow-lg">
-              Kostenloser Workshop
+            <a href="#anmeldung" className="bg-[#B02AC9] text-white px-8 py-4 rounded-lg text-center font-bold text-lg hover:bg-[#9a1fb3] transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+              Jetzt kostenlos anmelden →
             </a>
-            <a href="#details" className="bg-white border-2 border-[#B02AC9] text-[#B02AC9] px-8 py-4 rounded-lg text-center font-bold text-lg hover:bg-[#fdf4ff] transition-all">
-              Mehr erfahren
+            <a href="#fuer-wen" className="bg-white border-2 border-[#B02AC9] text-[#B02AC9] px-8 py-4 rounded-lg text-center font-bold text-lg hover:bg-[#fdf4ff] transition-all">
+              Für wen ist das?
             </a>
           </div>
+          <div className="flex items-center gap-3 mt-8 pt-6 border-t border-gray-200">
+            <div className="flex -space-x-2">
+              {["👩‍💻","👨‍💻","👩‍🔬","👨‍🎓"].map((e) => (
+                <span key={e} className="w-10 h-10 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center">{e}</span>
+              ))}
+            </div>
+            <p className="text-sm text-gray-500">Schon <strong>1.200+</strong> Teilnehmer:innen haben teilgenommen</p>
+          </div>
         </div>
-        <div className="mt-12 lg:mt-0">
-          <img 
-            src="https://placehold.co/600x450/B02AC9/white?text=AI+Workshop+Hero" 
-            alt="AI Workshop Hero" 
-            className="rounded-2xl shadow-2xl w-full object-cover"
-          />
+        <div className="hidden lg:block relative">
+            {/* Bild wird in App.css als decorative hero definiert */}
         </div>
       </div>
     </div>
   </section>
-  );
+);
 
   const ExampleDomain = () => (
     <section
@@ -236,25 +246,29 @@ const Reviews = () => (
 );
 
 const CTASection = () => (
-  <section id="anmeldung" className="py-20 bg-gray-50">
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-      <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-6">Sichern Sie sich Ihren Platz</h2>
+  <section id="anmeldung" className="py-20 bg-gradient-to-br from-purple-50 to-white">
+    <div className="max-w-xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+      <span className="inline-block bg-[#B02AC9]/10 text-[#B02AC9] px-4 py-1 rounded-full text-sm font-semibold mb-6">
+        ✨ Begrenztes Early-Access-Kontingent
+      </span>
+      <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-6">
+        Starten Sie Ihre KI-Reise in unter 5 Minuten
+      </h2>
       <p className="text-lg text-gray-600 mb-10">
-        Die Plätze sind begrenzt. Melden Sie sich jetzt an, um keine Informationen zu verpassen.
+        Durchschnittliche Zeit bis zur ersten Antwort nach der Anmeldung: unter 24 Stunden.
+        Kein Credit-Card-Zwang, jederzeit kündbar.
       </p>
-      <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md mx-auto">
-        <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
-          <div>
-            <label className="block text-left text-sm font-semibold text-gray-700 mb-1">Vorname & Nachname</label>
-            <input type="text" className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#B02AC9] outline-none" placeholder="Max Mustermann" />
-          </div>
-          <div>
-            <label className="block text-left text-sm font-semibold text-gray-700 mb-1">E-Mail Adresse</label>
-            <input type="email" className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#B02AC9] outline-none" placeholder="max@beispiel.de" />
-          </div>
-          <button type="submit" className="w-full bg-[#B02AC9] text-white py-4 rounded-lg font-bold text-lg hover:bg-[#9a1fb3] transition-all">
-            Jetzt kostenlos anmelden
+      <div className="bg-white p-8 rounded-xl shadow-md max-w-md mx-auto">
+        <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
+          <input type="text" placeholder="Ihr Name" required
+                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
+          <input type="email" placeholder="Ihre E-Mail-Adresse" required
+                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
+          <button type="submit"
+                  className="w-full bg-[#B02AC9] text-white py-3 rounded-lg font-bold hover:bg-[#9a1fb3] transition-colors shadow-md uppercase tracking-wide">
+            Jetzt kostenlos starten →
           </button>
+          <p className="text-xs text-gray-500 mt-2">✓ Keine Kreditkarte nötig ✓ Sofortiger Zugang</p>
         </form>
       </div>
     </div>
