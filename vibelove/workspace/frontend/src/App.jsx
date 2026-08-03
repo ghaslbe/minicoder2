@@ -144,6 +144,7 @@ function App() {
       <Navbar />
       <main className="flex-grow">
         <Hero />
+        <ExampleDomain />
         <Features />
         <CTASection />
       </main>
