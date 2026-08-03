@@ -382,6 +382,101 @@ def activate_project():
     return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
 
 
+def aktives_projekt_hat_eigenes_git_repo():
+    """Prüft, ob das aktive Projekt ein eigenes Git-Repository besitzt."""
+    return os.path.isdir(os.path.join(projekt_dir(CURRENT_PROJECT), '.git'))
+
+
+def git_repo_fehler():
+    """Verhindert Git-Operationen auf workspace bzw. Projekten ohne eigenes Repo."""
+    if not aktives_projekt_hat_eigenes_git_repo():
+        return jsonify({'ok': False, 'error': 'Projekt hat kein eigenes Git-Repo'}), 400
+    return None
+
+
+@app.route('/projects/remote', methods=['GET'])
+def get_project_remote():
+    """Liefert die Origin-URL des aktiven Projekt-Repositories."""
+    fehler = git_repo_fehler()
+    if fehler:
+        return fehler
+
+    try:
+        result = subprocess.run(
+            ['git', 'remote', 'get-url', 'origin'],
+            cwd=projekt_dir(CURRENT_PROJECT),
+            capture_output=True,
+            text=True
+        )
+        url = result.stdout.strip() if result.returncode == 0 else ''
+    except Exception:
+        url = ''
+    return jsonify({'url': url})
+
+
+@app.route('/projects/remote', methods=['POST'])
+def post_project_remote():
+    """Setzt oder entfernt die Origin-URL des aktiven Projekt-Repositories."""
+    fehler = git_repo_fehler()
+    if fehler:
+        return fehler
+
+    data = request.get_json(silent=True) or {}
+    url = str(data.get('url', '')).strip()
+    project_path = projekt_dir(CURRENT_PROJECT)
+
+    try:
+        if url:
+            exists = subprocess.run(
+                ['git', 'remote', 'get-url', 'origin'],
+                cwd=project_path,
+                capture_output=True,
+                text=True
+            ).returncode == 0
+            command = ['git', 'remote', 'set-url' if exists else 'add', 'origin', url]
+            subprocess.run(command, cwd=project_path, capture_output=True, text=True)
+        else:
+            subprocess.run(
+                ['git', 'remote', 'remove', 'origin'],
+                cwd=project_path,
+                capture_output=True,
+                text=True
+            )
+    except Exception:
+        pass
+    return jsonify({'ok': True})
+
+
+@app.route('/projects/push', methods=['POST'])
+def push_project():
+    """Pusht den aktuellen HEAD des aktiven Projekt-Repositories zu Origin."""
+    fehler = git_repo_fehler()
+    if fehler:
+        return fehler
+
+    try:
+        result = subprocess.run(
+            ['git', 'push', '-u', 'origin', 'HEAD'],
+            cwd=projekt_dir(CURRENT_PROJECT),
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        ausgabe = (result.stdout + result.stderr).strip()
+        return jsonify({
+            'ok': result.returncode == 0,
+            'ausgabe': '\n'.join(ausgabe.splitlines()[-20:])
+        })
+    except subprocess.TimeoutExpired as e:
+        ausgabe = ((e.stdout or '') + (e.stderr or '')).strip()
+        return jsonify({
+            'ok': False,
+            'ausgabe': '\n'.join((ausgabe + '\nPush hat das Timeout von 60 Sekunden überschritten.').splitlines()[-20:])
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'ausgabe': str(e)})
+
+
 @app.route('/restart-vite', methods=['POST'])
 def restart_vite():
     global vite_process
