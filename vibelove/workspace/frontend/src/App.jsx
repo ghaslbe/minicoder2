@@ -198,6 +198,24 @@ const Reviews = () => (
             role: 'Head of AI, MedInsight Health',
             quote: 'Sehr gut strukturierter Workshop mit exzellenten Trainern. Besonders beeindruckt hat mich die Tiefe bei den Foundation Models — die Benchmarks und Vergleiche waren Gold wert.',
             stars: 5
+          },
+          {
+            name: 'Thomas Berger',
+            role: 'IT-Leiter, LogistikPro GmbH',
+            quote: 'Selten einen so praxisorientierten Workshop erlebt. Die Übungen zur Modell-Orchestrierung konnte ich direkt in unserem Lagerverwaltungssystem umsetzen.',
+            stars: 4
+          },
+          {
+            name: 'Sandra Klein',
+            role: 'Machine Learning Engineer, CloudScale Solutions',
+            quote: 'Der Workshop hat mir die Augen geöffnet, wie einfach der Einstieg in eine moderne KI-Infrastruktur sein kann. Die Betreuung war erstklassig und sehr individuell.',
+            stars: 5
+          },
+          {
+            name: 'Michael Braun',
+            role: 'Chief Architect, FinFlow Systems',
+            quote: 'Fundiertes Know-how vom ersten Tag an. Besonders hilfreich fand ich die Hands-on-Sessions zu RAG-Pipelines – das hat uns Monate an Entwicklungszeit gespart.',
+            stars: 5
           }
         ].map((review, idx) => (
           <div key={idx} className="bg-white rounded-2xl p-8 shadow-sm hover:shadow-md transition-shadow border border-[#fcecfb] flex flex-col">
