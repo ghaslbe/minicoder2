@@ -3491,6 +3491,45 @@ Der tippfaule Mensch darf jetzt wieder „bau nen zip download ein"
 tippen — die Leitplanke weiß auch ohne seinen Prompt, dass das iframe
 dabei nicht sterben sollte. Suite: 118/118.
 
+## 32. Dritter Werkstatt-Besuch: das Toleranz-Paket
+
+Noch ein grosses Agent-Harness seziert (ein TypeScript-Monorepo mit
+138k Zeilen, Frontier-Modelle, natives Tool-Calling) — diesmal mit hoch
+gelegter Messlatte: Der Recherche-Auftrag enthielt die komplette
+aktuelle mc-Merkmalsliste, gemeldet wurde nur, was uns wirklich fehlt.
+Die Gegenprobe fiel deutlich aus (keinerlei finish-Verifikation, kein
+Check-Modus, null Wächter, Cache-feindliche Kompaktierung — unsere
+4000 Stdlib-Zeilen stehen erstaunlich gut da), aber an den Rändern
+lagen fünf Fundstücke, jetzt alle eingebaut:
+
+1. **Argument-Koerzierung**: `"5"` wird `5`, `"true"` wird `True`,
+   Einzelwert wird Liste — je Aktions-Feldschema, bevor die Aktion
+   läuft. Und scheitert es doch, spiegelt der Fehler dem Modell **seine
+   eigenen Argumente wörtlich zurück** statt nur „ungültig" zu sagen.
+2. **Form-Reparatur** eine Schicht davor: Aktions-Aliase (`bash`→`run`,
+   `write`→`write_file`), `write_files` als Dict, doppelt
+   JSON-kodierte Felder — deklarierte Toleranz statt Einzelfall-Flicken.
+3. **Die Trunkierungs-Wache** schliesst ein echtes Datenverlust-Loch:
+   Blieb eine Antwort trotz aller automatischen Fortsetzungen
+   unvollständig, sah ein abgeschnittenes `write_file` bisher oft wie
+   valides JSON aus — und schrieb eine halbe Datei. Jetzt werden
+   schreibende Aktionen aus solchen Antworten verweigert und kleiner
+   neu angefordert.
+4. **Das Datei-Kontobuch**: Nach jeder Kontext-Kürzung wird
+   deterministisch wieder eingespielt, welche Dateien der Lauf gelesen
+   und geschrieben hat — null Tokens Modellarbeit, null
+   Halluzinationsrisiko. Es adressiert die Wurzel des doppelten
+   Buttons aus Kapitel 31: das Modell, das nach der Kürzung die
+   eigenen Edits vergisst.
+5. **Feinschliff für die Edit-Kaskade**: Unicode-Drift (Smart Quotes,
+   Gedankenstriche, geschützte Leerzeichen) wird gefaltet, und
+   JSON-Strings mit rohen Steuerzeichen parst der Aktions-Parser jetzt
+   klaglos.
+
+Suite: 133/133. Der dritte Werkstatt-Besuch bestätigt das Muster der
+ersten beiden: Gelernt wird an den Rändern — der Kern der Leitplanken-
+Philosophie musste noch nirgends nachgebessert werden.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
