@@ -858,3 +858,37 @@ def test_verlust_waechter_greift_bei_edit_file(monkeypatch):
         "new": '<div id="toolbar">Leiste</div>'})
     assert ok
     assert "VERLUST-WAECHTER" in msg and "previewFrame" in msg
+
+
+# --------------------------- Duplikat-Waechter ------------------------------
+
+def test_duplikat_waechter_meldet_verdoppelte_zeile():
+    zeile = '<a href="#anmeldung" className="bg-purple">Jetzt anmelden</a>'
+    alt = "<nav>\n  " + zeile + "\n</nav>\n"
+    neu = "<nav>\n  " + zeile + "\n  " + zeile + "\n</nav>\n"
+    w = mc._duplicate_warning("App.jsx", alt, neu)
+    assert "DUPLIKAT-WAECHTER" in w and "Jetzt anmelden" in w
+
+
+def test_duplikat_waechter_schweigt_bei_neuem_und_bestand():
+    zeile = '<a href="#anmeldung" className="bg-purple">Jetzt anmelden</a>'
+    # neue einmalige Zeile: kein Duplikat
+    assert mc._duplicate_warning("a", "<nav>\n</nav>", "<nav>\n" + zeile + "\n</nav>") == ""
+    # Duplikat existierte schon vorher: nicht nachtreten
+    doppelt = zeile + "\n" + zeile
+    assert mc._duplicate_warning("a", doppelt, doppelt + "\nx") == ""
+    # kurze Wiederholungen (</div>) sind normal
+    assert mc._duplicate_warning("a", "</div>", "</div>\n</div>") == ""
+
+
+def test_duplikat_waechter_greift_bei_edit_file(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "bau die navbar um")
+    zeile = '<a href="#kauf" className="cta-button-gross">Jetzt kaufen und sparen</a>'
+    with open("s.html", "w") as f:
+        f.write("<nav>\n" + zeile + "\n<span>Menu-Ende-Markierung hier</span>\n</nav>\n")
+    mc.do_read_file({"path": "s.html"})
+    ok, msg = mc.do_edit_file({"path": "s.html",
+                               "old": "<span>Menu-Ende-Markierung hier</span>",
+                               "new": zeile + "\n<span>Menu-Ende-Markierung hier</span>"})
+    assert ok
+    assert "DUPLIKAT-WAECHTER" in msg

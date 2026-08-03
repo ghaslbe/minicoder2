@@ -1526,6 +1526,7 @@ def do_write_file(args):
             f.write(content)
         if alt_inhalt:
             warn += _loss_warning(path, alt_inhalt, content)
+            warn += _duplicate_warning(path, alt_inhalt, content)
         if warn:
             print(f"{C.RED}⚠{C.RESET} {warn.strip()}")
         return True, f"OK, {len(content)} Zeichen nach {path} geschrieben." + warn
@@ -1672,6 +1673,35 @@ def _loss_warning(path, alt, neu):
             "kein Entfernen. Pruefe das JETZT: unbeabsichtigt Entferntes im "
             "naechsten Schritt wiederherstellen — beabsichtigtes Entfernen "
             "kurz begruenden und weiterarbeiten.")
+
+
+def _duplicate_warning(path, alt, neu):
+    """Duplikat-Waechter — das Gegenstueck zum Verlust-Waechter. Real passiert:
+    ein Modell fuegte einen Button ein, verlor die eigene Einfuegung nach
+    vielen Schritten aus dem (gekuerzten) Kontext und fuegte ihn beim Umbau
+    derselben Region ERNEUT ein. Edits sind lokal, der Build akzeptiert
+    Duplikate, der Verlust-Waechter prueft nur Verschwundenes. Deshalb:
+    Zeilen, die durch einen Schreibvorgang MEHRFACH vorhanden werden, obwohl
+    sie vorher genau einmal existierten, werden gemeldet (nur substanzielle
+    Zeilen ab 30 Zeichen — '</div>' & Co. duerfen sich wiederholen)."""
+    def zaehlung(text):
+        z = {}
+        for zeile in (text or "").split("\n"):
+            t = zeile.strip()
+            if len(t) >= 30:
+                z[t] = z.get(t, 0) + 1
+        return z
+    vorher, nachher = zaehlung(alt), zaehlung(neu)
+    verdoppelt = [z for z, n in nachher.items()
+                  if n >= 2 and vorher.get(z, 0) == 1]
+    if not verdoppelt:
+        return ""
+    beispiele = "; ".join(z[:80] for z in verdoppelt[:3])
+    return ("\nDUPLIKAT-WAECHTER: durch diesen Schreibvorgang existieren "
+            "Zeilen jetzt MEHRFACH, die vorher genau einmal da waren: "
+            + beispiele + ". Pruefe, ob du ein Element doppelt eingefuegt "
+            "hast (z.B. Button/Link erneut eingebaut, den es schon gab) — "
+            "falls ja, entferne das Duplikat im naechsten Schritt.")
 
 
 def _shift_indent(text, delta):
@@ -1864,7 +1894,8 @@ def do_edit_file(args):
                       f"(Datei jetzt {len(updated)} Zeichen)."
                       + (f" Hinweis: {fuzzy_note} — gib 'old' kuenftig exakt "
                          f"aus der Datei an." if fuzzy_note else "")
-                      + _loss_warning(path, content, updated))
+                      + _loss_warning(path, content, updated)
+                      + _duplicate_warning(path, content, updated))
     except Exception as e:
         return False, f"FEHLER beim Schreiben von {path}: {e}"
 
