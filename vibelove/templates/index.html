@@ -10,6 +10,20 @@
     <!-- LEFT: Form & Logs -->
     <div class="w-1/2 h-full flex flex-col p-4 border-r border-gray-300 bg-white">
         <h1 class="text-xl font-bold mb-4">Vibelove Builder</h1>
+        <div class="flex items-center gap-2 mb-3">
+            <label for="projektSelect" class="text-sm font-medium text-gray-600">Projekt:</label>
+            <select
+                id="projektSelect"
+                class="flex-1 p-1.5 border border-gray-300 rounded text-sm bg-white"
+            ></select>
+            <button
+                type="button"
+                id="neuesProjektBtn"
+                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
+            >
+                Neues Projekt
+            </button>
+        </div>
         <form id="buildForm" class="flex flex-col gap-2">
             <textarea
                 id="instruction"
@@ -304,6 +318,64 @@
                 if (btn) btn.disabled = false;
             });
     }
+
+    // ── Projekt-Verwaltung ─────────────────────────────────────────────
+    const projektSelect = document.getElementById('projektSelect');
+    const neuesProjektBtn = document.getElementById('neuesProjektBtn');
+
+    async function ladeProjekte() {
+        try {
+            const res = await fetch('/projects');
+            const daten = await res.json();
+            projektSelect.innerHTML = '';
+            for (const p of daten.projekte) {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.textContent = p;
+                if (p === daten.aktiv) opt.selected = true;
+                projektSelect.appendChild(opt);
+            }
+        } catch (e) {
+            console.error('Projektliste nicht ladbar:', e);
+        }
+    }
+
+    async function projektAktivieren(name) {
+        const res = await fetch('/projects/aktiv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+            document.getElementById('logOutput').textContent =
+                'Projekt gewechselt zu "' + name + '".\nWarte auf Bauanweisung...';
+            setTimeout(reloadPreview, 3500); // Vite braucht einen Moment
+        }
+    }
+
+    projektSelect.addEventListener('change', function () {
+        projektAktivieren(projektSelect.value);
+    });
+
+    neuesProjektBtn.addEventListener('click', async function () {
+        const name = prompt('Name des neuen Projekts (Buchstaben/Zahlen/-/_):');
+        if (!name) return;
+        const res = await fetch('/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+            await ladeProjekte();
+            document.getElementById('logOutput').textContent =
+                'Neues Projekt "' + name + '" angelegt und aktiv.\nWarte auf Bauanweisung...';
+            reloadPreview();
+        } else {
+            alert('Projekt konnte nicht angelegt werden.');
+        }
+    });
+
+    ladeProjekte();
 </script>
 </body>
 </html>
