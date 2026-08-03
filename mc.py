@@ -36,6 +36,7 @@ verbose, max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
 import argparse
 import ast
 import difflib
+import unicodedata
 import tempfile
 import json
 import os
@@ -416,6 +417,7 @@ MAX_REPLY_CHARS = int(_setting("MC_MAX_REPLY_CHARS", "max_reply_chars", 40000))
 DEGEN_CHAR_RE = re.compile(r"(.)\1{119,}", re.DOTALL)     # 120x dasselbe Zeichen
 DEGEN_WORD_RE = re.compile(r"(\b\w{1,20})(?:[ \t]+\1\b){19,}")  # 20x dasselbe Wort
 DEGEN_MARKER = "\n[mc: Antwort abgebrochen — Endlos-Ausgabe erkannt]"
+TRUNC_MARKER = "\n[mc: Antwort blieb trotz Fortsetzungen unvollstaendig]"
 
 
 def _looks_runaway(text):
@@ -658,6 +660,11 @@ def chat_stream(messages, model):
         more, fr = _chat_once_retry(cont_msgs, model)
         text += more
     print()
+    if _looks_truncated(text, fr):
+        # Fortsetzungen ausgeschoepft, Antwort weiterhin unvollstaendig:
+        # markieren, damit der Loop schreibende Aktionen daraus verweigert
+        # (halbe Datei sieht als JSON oft komplett aus — Datenverlust-Falle).
+        text += TRUNC_MARKER
     if len(text) > MAX_REPLY_CHARS or _looks_runaway(text):
         print(f"{C.RED}⚠ Antwort ausser Kontrolle (Endlos-Ausgabe oder zu lang) "
               f"— gekappt.{C.RESET}")
@@ -864,6 +871,93 @@ def _attach_fence_contents(action, tail):
 
 FENCED_JSON_RE = re.compile(r"```(?:json)?[ \t]*\n\s*(\{.*?\})\s*```", re.DOTALL)
 
+# Aktions-Toleranz: kleine Modelle liefern staendig richtige Absichten in
+# leicht falscher Form — Zahlen als Strings, Einzelwerte statt Listen,
+# doppelt JSON-kodierte Felder, alternative Aktionsnamen. Statt harter
+# Fehler: erst REPARIEREN (Form), dann KOERZIEREN (Typ), und nur wenn das
+# scheitert ein Fehler, der dem Modell seine eigenen Argumente woertlich
+# zurueckzeigt.
+ACTION_ALIASE = {"write": "write_file", "create_file": "write_file",
+                 "read": "read_file", "edit": "edit_file",
+                 "bash": "run", "shell": "run", "execute": "run",
+                 "search": "grep", "list": "list_dir"}
+ACTION_FELDTYPEN = {
+    "read_file": {"from": int, "to": int},
+    "read_files": {"paths": list},
+    "write_file": {"overwrite": bool},
+    "write_files": {"overwrite": bool, "files": list},
+    "edit_file": {"replace_all": bool},
+    "run": {"background": bool, "timeout": int},
+    "plan": {"punkte": list},
+}
+
+
+def _koerziere_wert(wert, ziel):
+    if ziel is int:
+        if isinstance(wert, bool) or isinstance(wert, (int, float)):
+            return int(wert)
+        if isinstance(wert, str) and wert.strip().lstrip("-").isdigit():
+            return int(wert.strip())
+    elif ziel is bool:
+        if isinstance(wert, bool):
+            return wert
+        if isinstance(wert, (int, float)):
+            return bool(wert)
+        if isinstance(wert, str):
+            low = wert.strip().lower()
+            if low in ("true", "1", "yes", "ja", "wahr"):
+                return True
+            if low in ("false", "0", "no", "nein", "falsch", ""):
+                return False
+    elif ziel is list:
+        if isinstance(wert, list):
+            return wert
+        if isinstance(wert, str) and wert.strip().startswith("["):
+            try:
+                geparst = json.loads(wert, strict=False)
+                if isinstance(geparst, list):
+                    return geparst
+            except json.JSONDecodeError:
+                pass
+        return [wert]
+    raise ValueError(f"nicht als {ziel.__name__} interpretierbar")
+
+
+def repair_and_coerce_action(action):
+    """Form-Reparatur + Typ-Koerzierung einer Aktion (mutiert das Dict).
+    Rueckgabe: leerer String bei Erfolg, sonst eine Fehlermeldung, die dem
+    Modell die empfangenen Argumente woertlich spiegelt."""
+    name = action.get("action")
+    if isinstance(name, str) and name.lower() in ACTION_ALIASE:
+        action["action"] = ACTION_ALIASE[name.lower()]
+        name = action["action"]
+    # write_files: {"a.py": "inhalt", ...} als Dict statt Liste
+    if name == "write_files" and isinstance(action.get("files"), dict):
+        action["files"] = [{"path": p, "content": c}
+                          for p, c in action["files"].items()]
+    # doppelt JSON-kodierte Struktur-Felder ("files": "[{...}]")
+    for feld in ("files", "paths", "punkte"):
+        w = action.get(feld)
+        if isinstance(w, str) and w.strip()[:1] in "[{":
+            try:
+                action[feld] = json.loads(w, strict=False)
+            except json.JSONDecodeError:
+                pass
+    typen = ACTION_FELDTYPEN.get(name, {})
+    for feld, ziel in typen.items():
+        if feld not in action or action[feld] is None:
+            continue
+        try:
+            action[feld] = _koerziere_wert(action[feld], ziel)
+        except (ValueError, TypeError):
+            versuch = {k: v for k, v in action.items()
+                       if not str(k).startswith("_")}
+            return (f"FEHLER: Argument '{feld}' ist unbrauchbar "
+                    f"(erwartet {ziel.__name__}). Deine Argumente waren: "
+                    + json.dumps(versuch, ensure_ascii=False)[:400]
+                    + " — sende die Aktion korrigiert erneut.")
+    return ""
+
 
 def extract_action(text):
     """Findet den ersten ```action```-Block und parst das JSON daraus.
@@ -877,7 +971,7 @@ def extract_action(text):
         for fm in FENCED_JSON_RE.finditer(text):
             raw = fm.group(1).strip()
             try:
-                obj = json.loads(raw)
+                obj = json.loads(raw, strict=False)
             except json.JSONDecodeError:
                 continue
             if isinstance(obj, dict) and "action" in obj:
@@ -888,7 +982,7 @@ def extract_action(text):
         return None, None
     raw = m.group(1).strip()
     try:
-        action = json.loads(raw)
+        action = json.loads(raw, strict=False)
     except json.JSONDecodeError as e:
         return {"_parse_error": str(e), "_raw": raw}, raw
     if isinstance(action, dict):
@@ -919,7 +1013,7 @@ def _shrink_action(content):
     prose = content[:m.start()].strip()
     raw = m.group(1).strip()
     try:
-        obj = json.loads(raw)
+        obj = json.loads(raw, strict=False)
         name = obj.get("action", "?")
         if name == "write_files":
             parts = [str(f.get("path", "?")) +
@@ -967,6 +1061,7 @@ def prune_messages(messages, keep=None):
         saved += old_len - len(msg["content"])
     if saved > 0:
         log(f"Kontext beschnitten: {saved} Zeichen aus aelteren Schritten entfernt.")
+    return saved > 0
 
 
 def maybe_prune(messages, model):
@@ -990,12 +1085,11 @@ def maybe_prune(messages, model):
         return
     ctx = _loaded_ctx_tokens(model)
     if not ctx:
-        prune_messages(messages)
-        return
+        return bool(prune_messages(messages))
     budget = int(ctx * CHARS_PER_TOKEN * PRUNE_CTX_FRACTION)
     total = sum(len(m.get("content", "")) for m in messages)
     if total <= budget:
-        return
+        return False
     log(f"Historie {total} Zeichen > Schwelle {budget} "
         f"({int(PRUNE_CTX_FRACTION * 100)}% von {ctx} Token geladen) — kuerze im Batch.")
     prune_messages(messages)
@@ -1004,6 +1098,7 @@ def maybe_prune(messages, model):
         # Auch nach normaler Kuerzung zu gross (z.B. wenige, riesige juengste
         # Schritte) -> Notfall-Stufe wie beim Leere-Antwort-Fall.
         prune_messages(messages, keep=1)
+    return True
 
 
 # --------------------------- Tool-Ausfuehrung ------------------------------
@@ -1796,6 +1891,20 @@ def _unescape_once(s):
             .replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\"))
 
 
+_UNI_MAP = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u00a0": " ", "\u2009": " ", "\u202f": " "})
+
+
+def _uni(s):
+    """Unicode-tolerant vergleichen: Smart Quotes, Gedankenstriche und
+    gesch. Leerzeichen auf ASCII-Gegenstuecke falten (Modelle tippen die
+    staendig 'schoener' als die Datei sie hat)."""
+    return unicodedata.normalize("NFKC", s).translate(_UNI_MAP)
+
+
 def _fuzzy_edit_match(content, old, new):
     """Edit-Toleranz-Kaskade: findet 'old' mit steigender Nachsicht, wenn der
     woertliche Text nicht in der Datei steht. Hintergrund (real beobachtet und
@@ -1815,9 +1924,9 @@ def _fuzzy_edit_match(content, old, new):
 
     # Stufe 1: zeilenweise getrimmt — deckt Einrueckungs-Drift (Modell hat den
     # Block aus anderer Verschachtelungstiefe kopiert) UND Whitespace-Reste ab.
-    o_trim = [l.strip() for l in o_lines]
+    o_trim = [_uni(l.strip()) for l in o_lines]
     hits = [i for i in range(len(lines) - n + 1)
-            if [l.strip() for l in lines[i:i + n]] == o_trim]
+            if [_uni(l.strip()) for l in lines[i:i + n]] == o_trim]
     if len(hits) > 1:
         return None, None, (f"FEHLER: 'old' passt (zeilenweise getrimmt) auf "
                             f"{len(hits)} Stellen — nicht eindeutig. Nimm mehr "
@@ -1853,10 +1962,10 @@ def _fuzzy_edit_match(content, old, new):
     if n >= 3 and o_trim[0] and o_trim[-1]:
         cands = []
         for i in range(len(lines)):
-            if lines[i].strip() != o_trim[0]:
+            if _uni(lines[i].strip()) != o_trim[0]:
                 continue
             for j in range(i + 2, min(i + n + 3, len(lines))):
-                if lines[j].strip() == o_trim[-1]:
+                if _uni(lines[j].strip()) == o_trim[-1]:
                     mid_file = "\n".join(x.strip() for x in lines[i + 1:j])
                     mid_old = "\n".join(o_trim[1:-1])
                     r = difflib.SequenceMatcher(None, mid_file, mid_old).ratio()
@@ -3176,6 +3285,27 @@ def git_commit_run(summary):
         print(f"{C.DIM}Kein Git-Commit (evtl. keine Aenderungen): {out.strip()[:100]}{C.RESET}")
 
 
+def _ledger_block():
+    """Datei-Kontobuch fuer die Zeit NACH einer Kontext-Kuerzung: welche
+    Dateien dieser Lauf gelesen bzw. geschrieben hat. Die Kuerzung entfernt
+    genau diese Erinnerung — und ein Modell, das die eigenen Edits vergisst,
+    legt Dateien neu an oder fuegt Elemente doppelt ein (real passiert).
+    Deterministisch aus READ_FILES/TOUCHED, null Halluzinationsrisiko."""
+    if not (READ_FILES or TOUCHED):
+        return ""
+    teile = ["\n\n[KONTOBUCH VOM TOOL — Stand nach Kontext-Kuerzung]"]
+    if TOUCHED:
+        teile.append("Von dir bereits GESCHRIEBEN/GEAENDERT: "
+                     + ", ".join(sorted(set(TOUCHED))[:20]))
+    gelesen = sorted(READ_FILES
+                     - {os.path.normpath(p) for p in TOUCHED})[:20]
+    if gelesen:
+        teile.append("Von dir bereits GELESEN: " + ", ".join(gelesen))
+    teile.append("Diese Dateien existieren — NICHT neu anlegen; bei "
+                 "Unsicherheit ueber den aktuellen Inhalt erneut lesen.")
+    return "\n".join(teile)
+
+
 def _save_transcript(messages):
     """Sichert den Verlauf (--resume) nach jedem Schritt — so bleibt auch ein
     hart abgebrochener Lauf fortsetzbar."""
@@ -3269,7 +3399,12 @@ def run_task(messages, model):
                 "\n\n[HINWEIS VOM TOOL] Du bist seit 10 Schritten in der "
                 "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
                 "Aenderungsplan aus (plan-Aktion).")
-        maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck (Prompt-Cache schonen)
+        if (maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck
+                and messages and messages[-1]["role"] == "user"):
+            # Kontobuch: die Kuerzung nimmt dem Modell die Erinnerung an die
+            # eigenen Dateizugriffe — deterministisch wieder einspielen
+            # (kostet fast nichts, kann nicht halluzinieren).
+            messages[-1]["content"] += _ledger_block()
         _save_transcript(messages)    # --resume: Stand nach jedem Schritt sichern
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
         try:
@@ -3311,8 +3446,13 @@ def run_task(messages, model):
                   f"geladenen Modells ueberschritten) — beschneide aeltere "
                   f"Schritte hart und versuche es erneut …{C.RESET}")
             prune_messages(messages, keep=1)
+            if messages and messages[-1]["role"] == "user":
+                messages[-1]["content"] += _ledger_block()
             continue
         empty_replies = 0
+        war_unvollstaendig = reply.endswith(TRUNC_MARKER)
+        if war_unvollstaendig:
+            reply = reply[: -len(TRUNC_MARKER)]
         messages.append({"role": "assistant", "content": reply})
 
         action, raw = extract_action(reply)
@@ -3449,7 +3589,26 @@ def run_task(messages, model):
             messages.append({"role": "user", "content": obs})
             continue
 
+        koerz_fehler = repair_and_coerce_action(action)
+        if koerz_fehler:
+            print(f"{C.RED}{koerz_fehler.splitlines()[0][:120]}{C.RESET}")
+            messages.append({"role": "user", "content": koerz_fehler})
+            continue
+
         name = action.get("action")
+
+        if war_unvollstaendig and name in ("write_file", "write_files",
+                                           "edit_file"):
+            # Halbe Datei sieht als JSON oft komplett aus — nicht schreiben.
+            obs = ("Deine Antwort blieb trotz automatischer Fortsetzungen "
+                   "UNVOLLSTAENDIG — die Schreibaktion wird deshalb NICHT "
+                   "ausgefuehrt (Gefahr halber Dateiinhalte). Sende sie "
+                   "erneut und KLEINER: weniger Dateien pro Block bzw. die "
+                   "Datei in mehreren edit_file-Schritten aufbauen.")
+            print(f"{C.RED}⚠ Schreibaktion aus unvollstaendiger Antwort "
+                  f"verweigert.{C.RESET}")
+            messages.append({"role": "user", "content": obs})
+            continue
 
         if name == "plan" and not analyse_active:
             # plan ausserhalb der Analyse-Phase: kein Fehler, sondern sanft

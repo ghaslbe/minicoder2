@@ -952,3 +952,69 @@ def test_referenz_waechter_schweigt_bei_tailwind_und_sauber():
 
 def test_referenz_waechter_ignoriert_backend_dateien():
     assert mc._reference_warning("server.py") == ""
+
+
+# --------------------------- Toleranz-Paket ---------------------------------
+
+def test_koerzierung_typen():
+    a = {"action": "read_file", "path": "a.py", "from": "10", "to": "20"}
+    assert mc.repair_and_coerce_action(a) == ""
+    assert a["from"] == 10 and a["to"] == 20
+    a = {"action": "edit_file", "path": "x", "old": "a", "new": "b",
+         "replace_all": "true"}
+    assert mc.repair_and_coerce_action(a) == "" and a["replace_all"] is True
+    a = {"action": "run", "command": "ls", "timeout": "abc"}
+    fehler = mc.repair_and_coerce_action(a)
+    assert "timeout" in fehler and "abc" in fehler  # eigene Argumente gespiegelt
+
+
+def test_form_reparatur():
+    # Aliase
+    a = {"action": "bash", "command": "ls"}
+    mc.repair_and_coerce_action(a)
+    assert a["action"] == "run"
+    # files als Dict
+    a = {"action": "write_files", "files": {"a.py": "x", "b.py": "y"}}
+    mc.repair_and_coerce_action(a)
+    assert a["files"] == [{"path": "a.py", "content": "x"},
+                          {"path": "b.py", "content": "y"}]
+    # doppelt JSON-kodierte Liste
+    a = {"action": "read_files", "paths": '["a.py", "b.py"]'}
+    mc.repair_and_coerce_action(a)
+    assert a["paths"] == ["a.py", "b.py"]
+    # Einzelwert -> Liste
+    a = {"action": "read_files", "paths": "nur-eine.py"}
+    mc.repair_and_coerce_action(a)
+    assert a["paths"] == ["nur-eine.py"]
+
+
+def test_json_mit_rohen_steuerzeichen_parst():
+    action, _ = mc.extract_action(
+        '```action\n{"action":"write_file","path":"a.txt","content":"zeile1\nzeile2"}\n```')
+    assert action["action"] == "write_file"
+    assert "zeile1" in action["content"]
+
+
+def test_edit_kaskade_unicode_toleranz():
+    with open("a.js", "w") as f:
+        f.write('const s = "Hallo – Welt";\n')  # echter Gedankenstrich
+    mc.do_read_file({"path": "a.js"})
+    ok, msg = mc.do_edit_file({"path": "a.js",
+                               "old": 'const s = "Hallo - Welt";',
+                               "new": 'const s = "Servus";'})
+    assert ok, msg
+    assert "Servus" in open("a.js").read()
+
+
+def test_ledger_block():
+    mc.READ_FILES.add("gelesen.py")
+    mc.TOUCHED.append("geschrieben.py")
+    block = mc._ledger_block()
+    assert "KONTOBUCH" in block
+    assert "geschrieben.py" in block and "gelesen.py" in block
+    mc.TOUCHED.clear(); mc.READ_FILES.clear()
+    assert mc._ledger_block() == ""
+
+
+def test_trunc_marker_konstante():
+    assert mc.TRUNC_MARKER.startswith("\n[mc:")
