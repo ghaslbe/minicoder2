@@ -47,6 +47,10 @@
     <div class="w-1/2 h-full flex flex-col">
         <div class="flex items-center gap-2 bg-gray-100 border-b border-gray-300 px-3 py-2">
             <span class="text-sm font-medium text-gray-600 mr-auto">Preview</span>
+            <span id="buildStatus" class="text-sm text-yellow-600 font-medium hidden items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span>
+                arbeitet …
+            </span>
             <button
                 type="button"
                 onclick="reloadPreview()"
@@ -84,7 +88,15 @@
             if (!instruction) return;
 
             buildButton.disabled = true;
-            buildButton.innerText = 'Baue...';
+            buildButton.innerText = 'Baut …';
+            buildButton.classList.add('animate-pulse');
+
+            const statusEl = document.getElementById('buildStatus');
+            const statusDot = statusEl.querySelector('span');
+            statusEl.classList.remove('hidden');
+            statusEl.classList.add('flex');
+            statusDot.className = 'w-2 h-2 rounded-full bg-yellow-500 inline-block animate-pulse';
+            statusEl.lastChild.textContent = ' arbeitet …';
 
             const separator = '\n\n=== Anweisung: ' + instruction + ' ===\n';
             logOutput.textContent += separator;
@@ -111,6 +123,18 @@
             } finally {
                 buildButton.disabled = false;
                 buildButton.innerText = 'Bauen';
+                buildButton.classList.remove('animate-pulse');
+
+                // Fertig-Meldung im Status-Indikator, dann Preview laden und kurz danach ausblenden
+                statusDot.className = 'w-2 h-2 rounded-full bg-green-500 inline-block';
+                statusEl.lastChild.textContent = ' fertig — Preview neu geladen';
+                reloadPreview();
+                setTimeout(() => {
+                    statusEl.classList.add('hidden');
+                    statusEl.classList.remove('flex');
+                    statusDot.className = '';
+                    statusEl.lastChild.textContent = '';
+                }, 2500);
             }
         };
 
