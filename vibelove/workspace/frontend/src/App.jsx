@@ -5,7 +5,7 @@ const Navbar = () => (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div className="flex justify-between h-16 items-center">
         <div className="flex-shrink-0 flex items-center">
-          <span className="text-[#B02AC9] font-bold text-xl tracking-tight">NEURAWORK</span>
+          <span className="text-[#B02AC9] font-bold text-xl tracking-tight">VIBELOVE</span>
         </div>
         <div className="hidden md:flex space-x-8">
           <a href="#features" className="text-gray-600 hover:text-[#B02AC9] font-medium">Vorteile</a>
@@ -70,20 +70,76 @@ const Hero = () => (
     </section>
   );
 
+  const ModelCard = ({ name, params, description, benchmarks }) => (
+    <div className="bg-[#fdf4ff] border border-[#fcecfb] rounded-2xl p-8 shadow-sm hover:shadow-md transition-shadow">
+      <div className="mb-6">
+        <h3 className="text-2xl font-bold text-gray-900">{name}</h3>
+        <p className="text-sm font-semibold text-[#B02AC9] mt-1">{params}</p>
+      </div>
+      <p className="text-gray-600 text-sm leading-relaxed mb-6">{description}</p>
+      <div className="bg-white rounded-xl p-5 border border-[#fcecfb]">
+        <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-3">Offizielle Poolside-Benchmarks</h4>
+        {benchmarks.map((b) => (
+          <div key={b.label} className="flex items-center justify-between gap-4 py-2.5 border-b border-gray-100 last:border-b-0">
+            <span className="text-sm font-medium text-gray-600 flex-1">{b.label}</span>
+            {b.detail && <span className="text-xs text-gray-400">{b.detail}</span>}
+            <span className="text-lg font-extrabold text-[#B02AC9]">{b.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   const FoundationModels = () => (
     <section
       id="foundation-models"
       className="py-16 bg-white border-y border-gray-100"
     >
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-        <h2 className="text-3xl font-bold text-gray-900 mb-4">
-          Foundation Models
-        </h2>
-        <p className="text-lg text-gray-600 max-w-xl mx-auto">
-          Moderne Anwendungen setzen auf leistungsstarke Foundation-Modelle —
-          vortrainierte Netze, die als Generalisierungskern für vielfältige
-          Aufgaben dienen. Wählen Sie das passende Modell für Ihre Use-Case-
-          Anforderungen.
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl font-bold text-gray-900 mb-4">
+            Foundation Models
+          </h2>
+          <div className="w-20 h-1 bg-[#B02AC9] mx-auto mb-4"></div>
+          <p className="text-lg text-gray-600 max-w-xl mx-auto">
+            Moderne Anwendungen setzen auf leistungsstarke Foundation-Modelle —
+            vortrainierte Netze, die als Generalisierungskern für vielfältige
+            Aufgaben dienen. poolside.ai trainiert dafür die Laguna-Familie —
+            agentische Coding-Modelle mit State-of-the-Art-Ergebnissen auf den
+            öffentlichen Software-Benchmarks.
+          </p>
+        </div>
+        <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+          <ModelCard
+            name="Laguna S 2.1"
+            params="118B-A8B · aktivierter MoE"
+            description="Das leistungsstärkste Modell von poolside.ai für komplexe, mehrstufige Softwareentwicklung, tiefe Code-Architektur und agentische Tool-Nutzung."
+            benchmarks={[
+              { label: 'Terminal-Bench 2.1', value: '70.2' },
+              { label: 'SWE-bench Multi', value: '78.5' },
+              { label: 'SWE-bench Pro', value: '59.4' },
+              { label: 'DeepSWE-bench', value: '40.4' },
+              { label: 'SWE-bench Atlas', value: '46.2' },
+              { label: 'Toolathlon', value: '49.7' },
+            ]}
+          />
+          <ModelCard
+            name="Laguna XS 2.1"
+            params="33B-A3B · aktivierter MoE"
+            description="Das effiziente Modell von poolside.ai für gängige Coding-Aufgaben mit herausragendem Preis-Leistungs-Verhältnis im agentischen Betrieb."
+            benchmarks={[
+              { label: 'SWE-bench Verified', value: '70.9', detail: 'XS 2.1 vs. XS.2: 69.9' },
+              { label: 'SWE-bench Multi', value: '63.1', detail: 'XS 2.1 vs. XS.2: 57.7' },
+              { label: 'SWE-bench Pro', value: '47.6', detail: 'XS 2.1 vs. XS.2: 46.3' },
+              { label: 'Terminal-Bench 2.0', value: '37.5', detail: 'XS 2.1 vs. XS.2: 35.7' },
+              { label: 'Terminal-Bench 2.1', value: '33.4' },
+            ]}
+          />
+        </div>
+        <p className="text-center text-sm text-gray-500 mt-10 max-w-2xl mx-auto">
+          Benchmarks: Offizielle Evaluationen von poolside.ai auf den jeweils verlinkten
+          öffentlichen Benchmark-Suiten (Stand: Modellrelease 2.1).
+          öffentlichen Leaderboards. Höhere Werte sind besser.
         </p>
       </div>
     </section>
@@ -143,7 +199,7 @@ const Footer = () => (
   <footer className="bg-gray-900 text-white py-12">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
       <div className="mb-8">
-        <span className="text-[#B02AC9] font-bold text-xl tracking-tight">NEURAWORK</span>
+        <span className="text-[#B02AC9] font-bold text-xl tracking-tight">VIBELOVE</span>
       </div>
       <div className="flex justify-center space-x-6 text-gray-400 text-sm">
         <a href="#" className="hover:text-white">Impressum</a>
@@ -151,7 +207,7 @@ const Footer = () => (
         <a href="#" className="hover:text-white">Kontakt</a>
       </div>
       <p className="mt-8 text-gray-500 text-xs">
-        &copy; {new Date().getFullYear()} Neurawork. Alle Rechte vorbehalten.
+        &copy; {new Date().getFullYear()} Vibelove. Alle Rechte vorbehalten.
       </p>
     </div>
   </footer>
