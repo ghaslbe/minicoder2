@@ -23,10 +23,13 @@ const Hero = () => (
       <div className="lg:grid lg:grid-cols-2 lg:gap-12 items-center">
         <div className="text-left">
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-extrabold text-gray-900 leading-tight mb-6">
-            vibelove laeuft jetzt mit laguna
+            vibelove läuft jetzt mit laguna
           </h1>
           <p className="text-lg md:text-xl text-gray-600 mb-8 leading-relaxed">
-            Meistern Sie den Übergang von einfachen KI-Tools zu einer skalierbaren KI-Infrastruktur in Ihrem Unternehmen. Nehmen Sie an unserem exklusiven Workshop teil.
+            Laguna ist eine moderne, skalierbare KI-Infrastruktur-Plattform, die Unternehmen den Übergang von einfachen KI-Tools zu einer robusten, produktiven KI-Architektur ermöglicht. Mit Laguna orchestrieren Sie Modelle, verwalten Sie Vektor-Datenbanken und bauen Sie RAG-Pipelines auf – von der Entwicklung bis zum produktiven Einsatz.
+          </p>
+          <p className="text-lg md:text-xl text-gray-600 mb-8 leading-relaxed">
+            Meistern Sie diesen Übergang in unserem exklusiven Workshop und entdecken Sie, wie Laguna Ihr Unternehmen für die KI-Zukunft fit macht.
           </p>
           <div className="flex flex-col sm:flex-row gap-4">
             <a href="#anmeldung" className="bg-[#B02AC9] text-white px-8 py-4 rounded-lg text-center font-bold text-lg hover:bg-[#9a1fb3] transition-all shadow-lg">

@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,6 +27,12 @@ BUILD_HISTORY = []
 def reset_history():
     global BUILD_HISTORY
     BUILD_HISTORY = []
+
+def extract_urls(text, max_urls=3):
+    """Finde http(s)-URLs in einem Text und gib die ersten max_urls zurück."""
+    pattern = r'https?://\S+'
+    matches = re.findall(pattern, text)
+    return matches[:max_urls]
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -89,6 +96,12 @@ def build():
     # Der geforderte Zusatztext
     suffix = "\n\nStarte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
     full_instruction += suffix
+
+    found_urls = extract_urls(instruction)
+    if found_urls:
+        url_list = "\n".join(f"- {url}" for url in found_urls)
+        url_hint = f"\n\nHinweis: Die Anweisung enthält {len(found_urls)} URL(s):\n{url_list}\nBitte diese URLs ZUERST mit 'curl -sL' abrufen und die abgerufenen Inhalte als Vorlage für die Umsetzung nutzen."
+        full_instruction += url_hint
 
     print(f"Starte Bauprozess für: {instruction[:50]}...")
     
