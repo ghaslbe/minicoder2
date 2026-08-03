@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const Navbar = () => (
   <nav className="bg-white border-b border-gray-100 sticky top-0 z-50">
@@ -7,11 +7,14 @@ const Navbar = () => (
         <div className="flex-shrink-0 flex items-center">
           <span className="text-[#B02AC9] font-bold text-xl tracking-tight">VIBELOVE</span>
         </div>
-        <div className="hidden md:flex space-x-8">
-          <a href="#fuer-wen" className="text-gray-600 hover:text-[#B02AC9] font-medium">Zielgruppe</a>
-          <a href="#ergebnisse" className="text-gray-600 hover:text-[#B02AC9] font-medium">Ergebnisse</a>
-          <a href="#anmeldung" className="bg-[#B02AC9] text-white px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors">Jetzt anmelden</a>
+        <div className="hidden md:flex space-x-8 items-center">
+          <a href="#fuer-wen" className="text-gray-600 hover:text-[#B02AC9] font-medium">Für wen</a>
+          <a href="#features" className="text-gray-600 hover:text-[#B02AC9] font-medium">Lerninhalte</a>
+          <a href="#so-gehts" className="text-gray-600 hover:text-[#B02AC9] font-medium">So geht's</a>
+          <a href="#reviews" className="text-gray-600 hover:text-[#B02AC9] font-medium">Stimmen</a>
+          <a href="#faq" className="text-gray-600 hover:text-[#B02AC9] font-medium">FAQ</a>
         </div>
+        <a href="#anmeldung" className="bg-[#B02AC9] text-white px-4 md:px-5 py-2 rounded-full font-bold hover:bg-[#9a1fb3] transition-colors whitespace-nowrap">Gratis anmelden</a>
       </div>
     </div>
   </nav>
@@ -54,27 +57,88 @@ const Hero = () => (
           </div>
         </div>
         <div className="hidden lg:block relative">
-            {/* Bild wird in App.css als decorative hero definiert */}
+          <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-100 p-6 max-w-md ml-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">Mein Lernfortschritt</p>
+                <p className="text-lg font-bold text-gray-900 mt-1">KI-Praktiker Kurs</p>
+              </div>
+              <span className="bg-green-100 text-green-700 text-xs font-bold px-3 py-1 rounded-full">● Aktiv</span>
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4 mb-4">
+              <div className="flex justify-between text-sm mb-2">
+                <span className="font-medium text-gray-700">Prompt-Übungen</span>
+                <span className="text-[#B02AC9] font-bold">3/5</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="bg-[#B02AC9] h-2 rounded-full" style={{ width: '60%' }} />
+              </div>
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4 mb-4">
+              <div className="flex justify-between text-sm mb-2">
+                <span className="font-medium text-gray-700">RAG-Pipeline bauen</span>
+                <span className="text-[#B02AC9] font-bold">1/7</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="bg-[#B02AC9] h-2 rounded-full" style={{ width: '14%' }} />
+              </div>
+            </div>
+            <div className="flex -space-x-3 mb-4">
+              {["👩‍💻","👨‍💻","👩‍🔬"].map((e) => (
+                <span key={e} className="w-9 h-9 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center">{e}</span>
+              ))}
+              <span className="w-9 h-9 rounded-full bg-[#B02AC9] text-white text-xs font-bold border-2 border-white flex items-center justify-center">+12</span>
+            </div>
+            <p className="text-xs text-gray-500 text-center">
+              🔒 Live-Ergebnisse aus dem Workshop · anonymisiert
+            </p>
+            <div className="absolute -top-4 -right-4 bg-yellow-400 text-gray-900 text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg rotate-3">
+              🎯 98 % würden weiterempfehlen
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 );
 
-  const ExampleDomain = () => (
-    <section
-      id="example-domain"
-      className="py-16 bg-white border-y border-gray-100"
-    >
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-        <h2 className="text-3xl font-bold text-gray-900 mb-4">
-          Beispiel-Domain
-        </h2>
-        <p className="text-lg text-gray-600 max-w-xl mx-auto">
-          Diese Domain ist ausschließlich für Demonstrationszwecke gedacht —
-          ohne Garantie. In Produktivumgebungen ersetzen Sie sie durch Ihre
-          eigene Domain.
-        </p>
+  const TargetAudience = () => (
+    <section id="fuer-wen" className="py-20 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Für wen ist dieser Workshop?</h2>
+          <div className="w-20 h-1 bg-[#B02AC9] mx-auto"></div>
+        </div>
+        <div className="grid md:grid-cols-3 gap-8">
+          {[
+            {
+              title: 'Fach- & Führungskräfte',
+              text: 'Sie möchten verstehen, wie KI Ihre Abläufe konkret verbessert — ohne sich in technische Details zu verlieren.',
+              icon: '💼'
+            },
+            {
+              title: 'Entwickler:innen & IT-Teams',
+              text: 'Sie wollen KI-Modelle, Vektor-Datenbanken und RAG-Pipelines produktiv einsetzen — mit klarer Schritt-für-Schritt-Anleitung.',
+              icon: '👩‍💻'
+            },
+            {
+              title: 'Entscheider:innen',
+              text: 'Sie planen KI-Projekte und brauchen fundierte Grundlagen, um die richtigen Investitionsentscheidungen zu treffen.',
+              icon: '🎯'
+            }
+          ].map((item, idx) => (
+            <div key={idx} className="p-8 bg-[#fdf4ff] rounded-xl border border-[#fcecfb] hover:shadow-md transition-shadow">
+              <div className="text-4xl mb-4">{item.icon}</div>
+              <h3 className="text-xl font-bold text-gray-900 mb-3">{item.title}</h3>
+              <p className="text-gray-600">{item.text}</p>
+            </div>
+          ))}
+        </div>
+        <div className="text-center mt-12">
+          <p className="text-lg text-gray-600 max-w-2xl mx-auto mb-6">
+            <strong>Keine Vorkenntnisse nötig</strong> — nur Interesse und 90 Minuten Zeit.
+          </p>
+        </div>
       </div>
     </section>
   );
@@ -244,35 +308,120 @@ const Reviews = () => (
   </section>
 );
 
-const CTASection = () => (
-  <section id="anmeldung" className="py-20 bg-gradient-to-br from-purple-50 to-white">
-    <div className="max-w-xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-      <span className="inline-block bg-[#B02AC9]/10 text-[#B02AC9] px-4 py-1 rounded-full text-sm font-semibold mb-6">
-        ✨ Begrenztes Early-Access-Kontingent
-      </span>
-      <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-6">
-        Starten Sie Ihre KI-Reise in unter 5 Minuten
-      </h2>
-      <p className="text-lg text-gray-600 mb-10">
-        Durchschnittliche Zeit bis zur ersten Antwort nach der Anmeldung: unter 24 Stunden.
-        Kein Credit-Card-Zwang, jederzeit kündbar.
-      </p>
-      <div className="bg-white p-8 rounded-xl shadow-md max-w-md mx-auto">
-        <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
-          <input type="text" placeholder="Ihr Name" required
-                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
-          <input type="email" placeholder="Ihre E-Mail-Adresse" required
-                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
-          <button type="submit"
-                  className="w-full bg-[#B02AC9] text-white py-3 rounded-lg font-bold hover:bg-[#9a1fb3] transition-colors shadow-md uppercase tracking-wide">
-            Jetzt kostenlos starten →
-          </button>
-          <p className="text-xs text-gray-500 mt-2">✓ Keine Kreditkarte nötig ✓ Sofortiger Zugang</p>
-        </form>
+const HowItWorks = () => (
+  <section id="so-gehts" className="py-20 bg-gray-50">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center mb-16">
+        <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">In 3 einfachen Schritten zu besseren Ergebnissen</h2>
+        <div className="w-20 h-1 bg-[#B02AC9] mx-auto"></div>
+        <p className="text-gray-600 mt-4 max-w-2xl mx-auto">Kein Vorwissen nötig — du startest direkt durch und siehst nach jedem Schritt Fortschritt.</p>
+      </div>
+      <div className="grid md:grid-cols-3 gap-8">
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
+          <div className="w-14 h-14 rounded-full bg-[#B02AC9] text-white text-2xl font-bold flex items-center justify-center mx-auto mb-6">1</div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-3">In 60 Sekunden anmelden</h3>
+          <p className="text-gray-600">Nur Name und E-Mail — keine Kreditkarte, kein Risiko, sofortiger Zugang.</p>
+        </div>
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
+          <div className="w-14 h-14 rounded-full bg-[#B02AC9] text-white text-2xl font-bold flex items-center justify-center mx-auto mb-6">2</div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-3">Live-Workshop in 90 Minuten</h3>
+          <p className="text-gray-600">Gemeinsam mit den Coaches und anderen Teilnehmenden — Schritt für Schritt zum Profi-Ergebnis.</p>
+        </div>
+        <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
+          <div className="w-14 h-14 rounded-full bg-[#B02AC9] text-white text-2xl font-bold flex items-center justify-center mx-auto mb-6">3</div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-3">Sofort umsetzen &amp; begeistern</h3>
+          <p className="text-gray-600">Direkt nach dem Workshop zeigen deine Fotos den Unterschied — Familie und Freunde staunen.</p>
+        </div>
       </div>
     </div>
   </section>
 );
+
+const FAQSection = () => (
+  <section id="faq" className="py-20 bg-white">
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+      <h2 className="text-3xl md:text-4xl font-bold text-gray-900 text-center mb-12">
+        Häufige Fragen
+      </h2>
+      <div className="space-y-6">
+        {[
+          {
+            q: 'Brauche ich Vorkenntnisse?',
+            a: 'Nein. Vibelove erklärt KI-Konzepte schrittweise und in einfacher Sprache. Sie lernen genau so schnell, wie Sie möchten — vom ersten Prompt bis zur eigenen KI-Anwendung.'
+          },
+          {
+            q: 'Was kostet Vibelove?',
+            a: 'Starten Sie kostenlos! Die Early-Access-Phase ist komplett kostenlos. Danach können Sie jederzeit auf einen kostenpflichtigen Plan upgraden oder einfach kündigen.'
+          },
+          {
+            q: 'Wie schnell bekomme ich Zugang?',
+            a: 'Nach der Anmeldung erhalten Sie sofort eine E-Mail mit Ihrem Zugang. Die durchschnittliche Antwortzeit unseres Teams liegt unter 24 Stunden.'
+          },
+          {
+            q: 'Kann ich jederzeit kündigen?',
+            a: 'Ja, absolut. Keine Kündigungsfrist, kein Admin-Aufwand — ein Klick genügt. Ihre Daten werden auf Wunsch komplett gelöscht.'
+          }
+        ].map((item) => (
+          <details key={item.q} className="group bg-gray-50 rounded-xl p-6 transition-colors hover:bg-gray-100">
+            <summary className="flex justify-between items-center cursor-pointer font-semibold text-gray-900 text-lg">
+              {item.q}
+              <span className="text-[#B02AC9] text-2xl transition-transform group-open:rotate-45">+</span>
+            </summary>
+            <p className="mt-4 text-gray-600 leading-relaxed">{item.a}</p>
+          </details>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+const CTASection = () => {
+  const [submitted, setSubmitted] = useState(false);
+  return (
+    <section id="anmeldung" className="py-20 bg-gradient-to-br from-purple-50 to-white">
+      <div className="max-w-xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <span className="inline-block bg-[#B02AC9]/10 text-[#B02AC9] px-4 py-1 rounded-full text-sm font-semibold mb-6">
+          ⏳ Early Access — nur noch wenige Plätze
+        </span>
+        <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-6">
+          Jetzt 0€ sichern — später 49€/Monat
+        </h2>
+        <p className="text-lg text-gray-600 mb-6">
+          Ihr Zugang ist heute kostenlos und bleibt es für immer — für alle Early-Access-Teilnehmer.
+          Nach dem offiziellen Launch kostet Vibelove 49€/Monat.
+        </p>
+        <p className="text-sm font-medium text-[#B02AC9] mb-6">✓ Keine Kreditkarte ✓ Jederzeit kündbar ✓ Zugang in unter 24h</p>
+        <p className="text-lg text-gray-600 mb-10 font-semibold">
+          Die 90 Minuten Investition sparen Ihnen Monate an Trial &amp; Error.
+        </p>
+        <div className="bg-white p-8 rounded-xl shadow-md max-w-md mx-auto">
+          {submitted ? (
+            <div className="py-6">
+              <div className="text-5xl mb-4">🎉</div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-2">Fast geschafft!</h3>
+              <p className="text-gray-600 mb-6">
+                Bitte bestätigen Sie die soeben gesendete E-Mail, um Ihren Zugang freizuschalten.
+              </p>
+              <p className="text-xs text-gray-500">✓ Keine Kreditkarte nötig ✓ Sofortiger Zugang</p>
+            </div>
+          ) : (
+            <form onSubmit={(e) => { e.preventDefault(); setSubmitted(true); }} className="space-y-4">
+              <input type="text" placeholder="Ihr Name" required
+                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
+              <input type="email" placeholder="Ihre E-Mail-Adresse" required
+                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-[#B02AC9] focus:border-[#B02AC9]" />
+              <button type="submit"
+                      className="w-full bg-[#B02AC9] text-white py-3 rounded-lg font-bold hover:bg-[#9a1fb3] transition-colors shadow-md uppercase tracking-wide">
+                Jetzt kostenlos starten →
+              </button>
+              <p className="text-xs text-gray-500 mt-2">✓ Keine Kreditkarte nötig ✓ Sofortiger Zugang</p>
+            </form>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+};
 
 const Footer = () => (
   <footer className="bg-gray-900 text-white py-12">
@@ -281,9 +430,9 @@ const Footer = () => (
         <span className="text-[#B02AC9] font-bold text-xl tracking-tight">VIBELOVE</span>
       </div>
       <div className="flex justify-center space-x-6 text-gray-400 text-sm">
-        <a href="#" className="hover:text-white">Impressum</a>
-        <a href="#" className="hover:text-white">Datenschutz</a>
-        <a href="#" className="hover:text-white">Kontakt</a>
+        <span className="cursor-default">Impressum</span>
+        <span className="cursor-default">Datenschutz</span>
+        <a href="mailto:hallo@vibelove.app" className="hover:text-white">Kontakt</a>
       </div>
       <p className="mt-8 text-gray-500 text-xs">
         &copy; {new Date().getFullYear()} Vibelove. Alle Rechte vorbehalten.
@@ -298,10 +447,12 @@ function App() {
       <Navbar />
       <main className="flex-grow">
         <Hero />
-        <ExampleDomain />
+        <TargetAudience />
         <FoundationModels />
         <Features />
+        <HowItWorks />
         <Reviews />
+        <FAQSection />
         <CTASection />
       </main>
       <Footer />
