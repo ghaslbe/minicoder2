@@ -18,6 +18,8 @@ app = Flask(__name__)
 PORT_VIBELOVE = 5050
 PORT_VITE = 5173
 WORKSPACE_DIR = os.path.join(os.getcwd(), 'workspace')
+PROJEKTE_ROOT = os.path.join(os.getcwd(), 'projekte')
+CURRENT_PROJECT = 'workspace'
 # mc.py liegt eine Ebene hoeher
 MC_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'mc.py'))
 
@@ -66,6 +68,43 @@ def reset_history():
     global BUILD_HISTORY
     BUILD_HISTORY = []
 
+def projekt_dir(name):
+    """Bereinigt den Projektnamen und liefert den zugehörigen Verzeichnispfad."""
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
+    if name == 'workspace':
+        return WORKSPACE_DIR
+    return os.path.join(PROJEKTE_ROOT, name)
+
+def stop_vite_processes():
+    """Beendet alle laufenden Vite-Prozesse dieses Projekts (pkill + gemerktes Handle)."""
+    global vite_process
+    try:
+        subprocess.run(['pkill', '-f', 'node_modules/.bin/vite'], capture_output=True)
+    except Exception as e:
+        print(f'pkill vite: {e}')
+    if vite_process:
+        try:
+            os.killpg(os.getpgid(vite_process.pid), signal.SIGTERM)
+        except Exception as e:
+            print(f'Fehler beim Stoppen des gemerkten Vite-Prozesses: {e}')
+        vite_process = None
+
+def switch_project(name):
+    """Wechselt das aktive Projekt, setzt die Historie zurück und startet Vite neu."""
+    global CURRENT_PROJECT
+    cleaned = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
+    if not cleaned:
+        raise ValueError('Ungültiger Projektname')
+    CURRENT_PROJECT = cleaned
+    reset_history()
+    stop_vite_processes()
+    # Kurz warten bis der Vite-Port freigegeben wurde (max ~5s)
+    for _ in range(50):
+        if not is_port_in_use(PORT_VITE):
+            break
+        time.sleep(0.1)
+    start_vite_server()
+
 def extract_urls(text, max_urls=3):
     """Finde http(s)-URLs in einem Text und gib die ersten max_urls zurück."""
     pattern = r'https?://\S+'
@@ -81,14 +120,18 @@ def start_vite_server():
     if is_port_in_use(PORT_VITE):
         return
     
+    # Verzeichnis des AKTIVEN Projekts nutzen
+    proj = projekt_dir(CURRENT_PROJECT)
+    front_dir = os.path.join(proj, 'frontend')
+    if not os.path.isfile(os.path.join(front_dir, 'package.json')):
+        print(f"[vite] Kein frontend/package.json in '{CURRENT_PROJECT}' – Vite wird nicht gestartet.")
+        return
+    
     print(f"Starte Vite-Server auf Port {PORT_VITE}...")
     try:
-        # Wir starten den Vite-Server im Verzeichnis workspace/frontend
-        vite_dir = os.path.join(WORKSPACE_DIR, 'frontend')
-        # Nutze start_new_session=True, damit der Prozess unabhängig bleibt
         vite_process = subprocess.Popen(
             ["npm", "run", "dev", "--", "--port", str(PORT_VITE), "--", "--strict", "--", "--host"],
-            cwd=vite_dir,
+            cwd=front_dir,
             start_new_session=True
         )
     except Exception as e:
@@ -201,11 +244,15 @@ def build():
     base_url = MC_SETTINGS['base_url']
     model = MC_SETTINGS['model']
 
+    # Bauziel: das aktive Projekt (Verzeichnis sicherstellen)
+    aktives_projekt_dir = projekt_dir(CURRENT_PROJECT)
+    os.makedirs(aktives_projekt_dir, exist_ok=True)
+
     # Befehl zusammenbauen
     command = [
         "python3", "-u", 
         MC_PATH,
-        "--dir", WORKSPACE_DIR,
+        "--dir", aktives_projekt_dir,
         "--yes",
         "--check",
         "--max-steps", "100",
@@ -285,6 +332,43 @@ def build():
         BUILD_HISTORY.append({"instruction": instruction, "result_summary": output})
         return output
 
+@app.route('/projects', methods=['GET'])
+def list_projects():
+    """Alle Projekte (workspace + Unterverzeichnisse von projekte/) + aktives."""
+    projekte = ['workspace']
+    try:
+        if os.path.isdir(PROJEKTE_ROOT):
+            projekte += sorted(d for d in os.listdir(PROJEKTE_ROOT)
+                               if os.path.isdir(os.path.join(PROJEKTE_ROOT, d)))
+    except OSError:
+        pass
+    return jsonify({'projekte': projekte, 'aktiv': CURRENT_PROJECT})
+
+
+@app.route('/projects', methods=['POST'])
+def create_project():
+    """Legt ein neues Projekt an und macht es aktiv."""
+    data = request.get_json(silent=True) or {}
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
+    if not name or name == 'workspace':
+        return jsonify({'ok': False, 'error': 'Ungueltiger Projektname'}), 400
+    os.makedirs(os.path.join(PROJEKTE_ROOT, name), exist_ok=True)
+    switch_project(name)
+    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
+
+
+@app.route('/projects/aktiv', methods=['POST'])
+def activate_project():
+    """Wechselt das aktive Projekt."""
+    data = request.get_json(silent=True) or {}
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
+    if not name or (name != 'workspace'
+                    and not os.path.isdir(os.path.join(PROJEKTE_ROOT, name))):
+        return jsonify({'ok': False, 'error': 'Projekt nicht gefunden'}), 404
+    switch_project(name)
+    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
+
+
 @app.route('/restart-vite', methods=['POST'])
 def restart_vite():
     global vite_process
@@ -317,12 +401,15 @@ def reset():
 
 @app.route('/download-zip', methods=['GET'])
 def download_zip():
-    """Packt das komplette workspace/-Verzeichnis in ein ZIP im Speicher und liefert es aus."""
+    """Packt das aktive Projektverzeichnis in ein ZIP im Speicher und liefert es aus."""
+    projekt = projekt_dir(CURRENT_PROJECT)
+    if not os.path.isdir(projekt):
+        return "Projektverzeichnis nicht gefunden", 404
     zip_buffer = io.BytesIO()
     excluded_dirs = {'node_modules', 'dist', '.git', '__pycache__'}
 
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for root, dirs, files in os.walk(WORKSPACE_DIR):
+        for root, dirs, files in os.walk(projekt):
             # Ausgeschlossene Verzeichnisse entfernen (os.walk: Einträge in dirs überspringen)
             dirs[:] = [d for d in dirs if d not in excluded_dirs]
             for filename in files:
@@ -330,7 +417,7 @@ def download_zip():
                     continue
                 file_path = os.path.join(root, filename)
                 # Relativen Pfad als Archivnamen verwenden
-                arcname = os.path.relpath(file_path, WORKSPACE_DIR)
+                arcname = os.path.relpath(file_path, projekt)
                 zip_file.write(file_path, arcname)
 
     zip_buffer.seek(0)
