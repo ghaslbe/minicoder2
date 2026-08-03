@@ -147,6 +147,11 @@
                 <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">API Key
                     <input type="password" id="settingApiKey" autocomplete="off" placeholder="API Key nicht gesetzt" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
                 </label>
+                <button type="button" id="resetApiKeyBtn" class="self-start text-xs text-blue-600 hover:text-blue-800 underline">Key auf Env zurücksetzen</button>
+                <p id="resetApiKeyStatus" class="hidden text-xs text-green-600"></p>
+                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Max. Schritte
+                    <input type="number" id="settingMaxSteps" min="1" step="1" value="100" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
                 <div class="flex gap-2 mt-3 justify-end">
                     <button type="button" id="cancelSettingsBtn" class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm">Abbrechen</button>
                     <button type="submit" id="saveSettingsBtn" class="bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-sm">Speichern</button>
@@ -256,6 +261,8 @@
         const settingsModal = document.getElementById('settingsModal');
         const settingsForm = document.getElementById('settingsForm');
         const cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
+        const resetApiKeyBtn = document.getElementById('resetApiKeyBtn');
+        const settingsFeedback = document.getElementById('resetApiKeyStatus');
 
         settingsButton.onclick = async () => {
             try {
@@ -264,9 +271,12 @@
                 const data = await res.json();
                 document.getElementById('settingModel').value = data.model || '';
                 document.getElementById('settingBaseUrl').value = data.base_url || '';
+                document.getElementById('settingMaxSteps').value = data.max_steps || 100;
                 document.getElementById('settingApiKey').value = '';
                 document.getElementById('settingApiKey').placeholder =
                     (data.api_key_gesetzt ? 'API Key bereits gesetzt' : 'API Key nicht gesetzt');
+                settingsFeedback.textContent = '';
+                settingsFeedback.classList.add('hidden');
             } catch (err) {
                 logOutput.textContent += '\nFehler beim Laden der Einstellungen: ' + err.message;
             }
@@ -285,7 +295,8 @@
             const payload = {
                 model: document.getElementById('settingModel').value.trim(),
                 base_url: document.getElementById('settingBaseUrl').value.trim(),
-                api_key: document.getElementById('settingApiKey').value
+                api_key: document.getElementById('settingApiKey').value,
+                max_steps: document.getElementById('settingMaxSteps').value
             };
             try {
                 const res = await fetch('/settings', {
@@ -300,6 +311,26 @@
                 logOutput.textContent += '\neinstellungen speichern fehlgeschlagen: ' + err.message;
             }
             settingsModal.classList.add('hidden');
+        };
+
+        resetApiKeyBtn.onclick = async () => {
+            try {
+                const res = await fetch('/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reset_api_key: true })
+                });
+                if (!res.ok) throw new Error('POST /settings fehlgeschlagen');
+                document.getElementById('settingApiKey').value = '';
+                document.getElementById('settingApiKey').placeholder = 'API Key aus Umgebung übernommen';
+                settingsFeedback.textContent = 'Key aus Umgebung übernommen ✓';
+                settingsFeedback.classList.remove('hidden', 'text-red-600');
+                settingsFeedback.classList.add('text-green-600');
+            } catch (err) {
+                settingsFeedback.textContent = 'Zurücksetzen fehlgeschlagen: ' + err.message;
+                settingsFeedback.classList.remove('hidden', 'text-green-600');
+                settingsFeedback.classList.add('text-red-600');
+            }
         };
     </script>
 <script>

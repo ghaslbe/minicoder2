@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from collections import deque
 import re
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import signal
 import socket
 import select
 import zipfile
+from collections import deque
 from flask import Flask, render_template, request, jsonify, send_file
 
 app = Flask(__name__)
@@ -32,8 +34,14 @@ DEFAULT_BASE_URL = 'http://localhost:1234/v1'
 MC_SETTINGS = {
     'model': DEFAULT_MODEL,
     'base_url': DEFAULT_BASE_URL,
-    'api_key': ''
+    'api_key': '',
+    'max_steps': 100
 }
+
+def save_settings():
+    """Speichert alle Laufzeit-Einstellungen einschließlich des aktiven Projekts."""
+    with open(SETTINGS_FILE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(MC_SETTINGS, f, indent=2, ensure_ascii=False)
 
 def load_settings():
     """Lädt Laufzeit-Einstellungen: erst Env-Variablen, dann mc_settings.json (hat Vorrang)."""
@@ -49,9 +57,15 @@ def load_settings():
     try:
         with open(SETTINGS_FILE_PATH, 'r', encoding='utf-8') as f:
             saved = json.load(f)
-            for key in ('model', 'base_url', 'api_key'):
+            for key in ('model', 'base_url', 'api_key', 'projekt'):
                 if key in saved and saved[key]:
                     MC_SETTINGS[key] = saved[key]
+            try:
+                saved_max_steps = int(saved.get('max_steps', MC_SETTINGS['max_steps']))
+                if saved_max_steps >= 1:
+                    MC_SETTINGS['max_steps'] = saved_max_steps
+            except (TypeError, ValueError):
+                pass
         print(f"[settings] mc_settings.json geladen: model={MC_SETTINGS['model']}, "
               f"base_url={MC_SETTINGS['base_url']}, "
               f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
@@ -63,6 +77,14 @@ vite_process = None
 
 # Chat-Verlauf
 BUILD_HISTORY = []
+
+# Status eines laufenden Bauauftrags für das Polling bei Stream-Abbrüchen.
+BUILD_STATUS = {'laeuft': False, 'zeilen': deque(maxlen=200)}
+
+def add_build_lines(text):
+    """Speichert gestreamte Ausgabe zeilenweise für den Status-Endpunkt."""
+    for line in text.splitlines():
+        BUILD_STATUS['zeilen'].append(line)
 
 def reset_history():
     global BUILD_HISTORY
@@ -89,14 +111,18 @@ def stop_vite_processes():
             print(f'Fehler beim Stoppen des gemerkten Vite-Prozesses: {e}')
         vite_process = None
 
-def switch_project(name):
-    """Wechselt das aktive Projekt, setzt die Historie zurück und startet Vite neu."""
+def switch_project(name, start_vite=True):
+    """Wechselt das aktive Projekt und startet Vite bei Bedarf neu."""
     global CURRENT_PROJECT
     cleaned = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
     if not cleaned:
         raise ValueError('Ungültiger Projektname')
     CURRENT_PROJECT = cleaned
+    MC_SETTINGS['projekt'] = CURRENT_PROJECT
+    save_settings()
     reset_history()
+    if not start_vite:
+        return
     stop_vite_processes()
     # Kurz warten bis der Vite-Port freigegeben wurde (max ~5s)
     for _ in range(50):
@@ -157,10 +183,11 @@ def ensure_vite_running():
 
 @app.route('/settings', methods=['GET'])
 def get_settings():
-    """Liefert Modell, Basis-URL und ob ein API-Key gesetzt ist – NIE den Key selbst."""
+    """Liefert Modell, Basis-URL, Schrittlimit und ob ein API-Key gesetzt ist – NIE den Key selbst."""
     return jsonify({
         'model': MC_SETTINGS.get('model', DEFAULT_MODEL),
         'base_url': MC_SETTINGS.get('base_url', DEFAULT_BASE_URL),
+        'max_steps': MC_SETTINGS.get('max_steps', 100),
         'api_key_gesetzt': bool(MC_SETTINGS.get('api_key'))
     })
 
@@ -174,6 +201,7 @@ def post_settings():
     model = data.get('model')
     base_url = data.get('base_url')
     api_key = data.get('api_key')
+    max_steps = data.get('max_steps')
 
     if model is not None:
         model = str(model).strip()
@@ -189,29 +217,43 @@ def post_settings():
         else:
             MC_SETTINGS['base_url'] = DEFAULT_BASE_URL
 
-    # Leerer API-Key lasst den bestehenden unverändert
+    # Leerer API-Key lasst den bestehenden unverändert.
     if api_key is not None and api_key != '':
         MC_SETTINGS['api_key'] = str(api_key)
 
+    if data.get('reset_api_key') is True:
+        MC_SETTINGS['api_key'] = os.environ.get('MC_API_KEY', '')
+
+    if max_steps is not None:
+        try:
+            parsed_max_steps = int(max_steps)
+            if parsed_max_steps >= 1:
+                MC_SETTINGS['max_steps'] = parsed_max_steps
+        except (TypeError, ValueError):
+            pass
+
     # Persistieren – der Key wird gespeichert (nur lokal, nicht über GET ausgeliefert)
     try:
-        with open(SETTINGS_FILE_PATH, 'w', encoding='utf-8') as f:
-            json.dump({
-                'model': MC_SETTINGS['model'],
-                'base_url': MC_SETTINGS['base_url'],
-                'api_key': MC_SETTINGS['api_key']
-            }, f, indent=2, ensure_ascii=False)
+        save_settings()
     except Exception as e:
         return jsonify({'ok': False, 'error': f'Speichern fehlgeschlagen: {e}'}), 500
 
     print(f"[settings] Gespeichert: model={MC_SETTINGS['model']}, "
           f"base_url={MC_SETTINGS['base_url']}, "
+          f"max_steps={MC_SETTINGS['max_steps']}, "
           f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
     return jsonify({'ok': True})
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/build-status')
+def build_status():
+    return jsonify({
+        'laeuft': BUILD_STATUS['laeuft'],
+        'letzte_zeilen': list(BUILD_STATUS['zeilen'])[-15:],
+    })
 
 @app.route('/build', methods=['POST'])
 def build():
@@ -259,7 +301,7 @@ def build():
         "--dir", aktives_projekt_dir,
         "--yes",
         "--check",
-        "--max-steps", "100",
+        "--max-steps", str(MC_SETTINGS['max_steps']),
         "--base-url", base_url,
         "--model", model,
         full_instruction
@@ -271,61 +313,57 @@ def build():
         def generate():
             nonlocal output
             output_lines = []
+            BUILD_STATUS['laeuft'] = True
+            BUILD_STATUS['zeilen'].clear()
+
+            def emit(text):
+                output_lines.append(text)
+                add_build_lines(text)
+                return text
+
             env = os.environ.copy()
             if MC_SETTINGS.get('api_key'):
                 env['MC_API_KEY'] = MC_SETTINGS['api_key']
             proc = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=env
             )
-
             start_time = time.time()
             timeout_duration = 900
-
             try:
                 while True:
                     if time.time() - start_time > timeout_duration:
                         proc.terminate()
-                        yield "\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n"
+                        yield emit("\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n")
                         break
-                    
-                    # Prüfe mit select, ob Daten verfügbar sind, um Blockieren zu vermeiden
                     ready, _, _ = select.select([proc.stdout], [], [], 1.0)
                     if ready:
                         line = proc.stdout.readline()
                         if line:
-                            output_lines.append(line)
-                            yield line
+                            yield emit(line)
                         elif proc.poll() is not None:
                             remaining = proc.stdout.read()
                             if remaining:
-                                output_lines.append(remaining)
+                                yield emit(remaining)
                             break
                     elif proc.poll() is not None:
-                        # Falls kein Input bereit ist, aber der Prozess beendet wurde
                         remaining = proc.stdout.read()
                         if remaining:
-                            output_lines.append(remaining)
+                            yield emit(remaining)
                         break
                     else:
-                        # Falls kein Input bereit ist und Prozess noch läuft, kurz warten
                         time.sleep(0.1)
             except Exception as e:
-                yield f"\nFehler während des Prozesses: {str(e)}"
+                yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
                 if proc.poll() is None:
                     proc.terminate()
-                
+                BUILD_STATUS['laeuft'] = False
                 ensure_vite_running()
                 full_output = "".join(output_lines)
                 output = full_output
                 summary = full_output[-500:] if len(full_output) > 500 else full_output
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
-
             yield ""
 
         output = ""
@@ -550,6 +588,12 @@ atexit.register(cleanup)
 if __name__ == '__main__':
     # Beim Start von server.py: Einstellungen laden, dann Vite starten
     load_settings()
+    # Gespeichertes aktives Projekt anwenden (fehlte: laden ohne anwenden)
+    _gespeichert = re.sub(r'[^a-zA-Z0-9_-]', '', str(MC_SETTINGS.get('projekt', '')))
+    if _gespeichert and (_gespeichert == 'workspace'
+                         or os.path.isdir(os.path.join(PROJEKTE_ROOT, _gespeichert))):
+        CURRENT_PROJECT = _gespeichert
+        print(f"[projekt] Aktives Projekt wiederhergestellt: {CURRENT_PROJECT}")
     start_vite_server()
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)
     
