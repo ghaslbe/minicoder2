@@ -3426,6 +3426,40 @@ Suite: 114/114. Zusammen mit `/skills`, History und den Stupsern ist
 aus dem einstigen Ein-Zeilen-`input()`-Loop damit eine kleine, aber
 vollwertige Konsole geworden — ohne eine einzige Abhängigkeit.
 
+## 30. mc baut an seinem eigenen Wrapper — und der Fehler, den kein Text-Check sieht
+
+Zum Abschluss die schönste Schleife des Projekts: Der Lovable-Clone
+(Kapitel 10) sollte lernen, in Bau-Anweisungen erwähnte **URLs per curl
+abzurufen**. Eingebaut hat das nicht ich — sondern **mc selbst**:
+`laguna-s-2.1` bekam per `--analyse` den Auftrag, `server.py` zu
+erweitern. Es lieferte einen 3-Punkte-Plan (import, Hilfsfunktion,
+Einbindung in build()), setzte ihn mit gezielten Edits um, bestand den
+Diff-Selbstreview — **$0.0063**. Der Diff: mustergültig minimal.
+
+Der End-to-End-Test saß auf Anhieb: Bauauftrag mit „orientiere dich an
+https://example.com" — erste Aktion des Modells war `curl -sL
+https://example.com`, und die neue Sektion enthielt den echten
+iana.org-Link der Seite statt halluziniertem Inhalt.
+
+**Und dann der Lehrbuch-Fund:** Die Sektion stand im Code, der Build
+lief mit exit 0 durch, der Diff-Review war zufrieden — aber im Browser
+fehlte sie. Das Modell hatte die Komponente **definiert, aber nie in
+App() eingebunden**. Eine unbenutzte Komponente ist valides JavaScript;
+`npm run build`, Syntax-Validierung, Diff-Review — **alle Text-Checks
+sind dafür blind.** Nur der Blick auf die gerenderte Seite entlarvt es.
+Die Reparatur lief dann wieder durch den Lovable-Flow selbst („die
+Sektion wird nicht angezeigt — binde sie ein", $0.0010, ein Edit) und
+die Sektion erschien.
+
+Zwei Lehren: Erstens funktioniert die ganze neue Maschinerie auch im
+Wrapper-Kontext — Analyse-Phase, Edit-Disziplin, Selbstreview,
+Git-Sicherungspunkte (die „mc:"-Commits im Repo-Verlauf stammen
+woertlich vom Agenten). Zweitens hat der Ausblick aus Kapitel 19 jetzt
+seinen Beweis: Die naechste Leitplanken-Generation schaut nicht auf
+Text, sondern auf das **gerenderte Ergebnis** — „ist der neue Inhalt
+auch sichtbar?" ist eine Frage, die nur ein Screenshot oder
+DOM-Vergleich beantworten kann.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
