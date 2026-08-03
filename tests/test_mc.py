@@ -892,3 +892,22 @@ def test_duplikat_waechter_greift_bei_edit_file(monkeypatch):
                                "new": zeile + "\n<span>Menu-Ende-Markierung hier</span>"})
     assert ok
     assert "DUPLIKAT-WAECHTER" in msg
+
+
+def test_generator_toleriert_werkzeug_zubehoer():
+    # Neues Projekt kommt seit Auto-Git mit .git/.gitignore zur Welt —
+    # fuer Generatoren ist so ein Ordner trotzdem praktisch leer.
+    os.makedirs("frontend/.git")
+    with open("frontend/.gitignore", "w") as f:
+        f.write("node_modules/\n")
+    assert mc._generator_conflict("npm create vite@latest frontend -- --template react") == ""
+    with open("frontend/echte-datei.js", "w") as f:
+        f.write("x")
+    assert "ABGELEHNT" in mc._generator_conflict("npm create vite@latest frontend")
+
+
+def test_generator_lenkt_punkt_ziel_um():
+    with open(".gitignore", "w") as f:
+        f.write("node_modules/\n")
+    msg = mc._generator_conflict("npm create vite@latest .")
+    assert "UNTERORDNER" in msg and "frontend" in msg

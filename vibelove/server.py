@@ -229,7 +229,7 @@ def build():
         full_instruction = instruction
 
     # Der geforderte Zusatztext
-    suffix = "\n\nStarte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
+    suffix = "\n\nLege ein NEUES Projektgeruest (npm create ...) IMMER in einen Unterordner wie frontend/ an, nie direkt ins Wurzelverzeichnis (dort liegt Git-Zubehoer, der Generator wuerde interaktiv haengen). Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
     full_instruction += suffix
 
     found_urls = extract_urls(instruction)

@@ -2176,12 +2176,37 @@ def _generator_conflict(cmd):
     benennt, gilt als Konflikt."""
     if not GENERATOR_RE.search(cmd):
         return ""
+    # Werkzeug-Zubehoer zaehlt nicht als Projektinhalt: seit dem Auto-Git der
+    # Projektverwaltung kommen neue Projektordner mit .git/.gitignore zur
+    # Welt — fuer Generatoren sind solche Ordner trotzdem 'praktisch leer'
+    # (real beobachtet: die Bremse bzw. npm selbst blockierte den ERSTEN
+    # Bauauftrag eines frischen Projekts).
+    ZUBEHOER = {".git", ".gitignore", "MC-NOTIZEN.md", "mc_plan.md",
+                "mc_verlauf.json", ".DS_Store"}
+
+    def echter_inhalt(d):
+        try:
+            return [f for f in os.listdir(d) if f not in ZUBEHOER]
+        except OSError:
+            return []
+
+    # Ziel '.': npm/vite fragen bei JEDEM vorhandenen Inhalt interaktiv nach
+    # (auch bei blossem .git) und haengen dann — deshalb hier aktiv auf einen
+    # Unterordner umlenken, statt es haengen zu lassen.
+    if re.search(r"\s\.\s*($|&&|;)", cmd) or cmd.rstrip().endswith(" ."):
+        if os.listdir("."):
+            return ("ABGELEHNT: der Generator soll ins AKTUELLE Verzeichnis "
+                    "schreiben, das ist aber nicht leer (u.a. Git-Zubehoer) — "
+                    "er wuerde interaktiv nach 'Overwrite?' fragen und haengen. "
+                    "Nutze stattdessen einen UNTERORDNER, z.B. "
+                    "'npm create vite@latest frontend -- --template vanilla', "
+                    "und arbeite dann in frontend/ weiter.")
     skip = {"npm", "npx", "yarn", "pnpm", "create", "init", "--", "&&", ";", "."}
     for t in re.split(r"\s+", cmd):
         if not t or t.startswith("-") or "@" in t or "/" in t or t in skip:
             continue
         try:
-            if os.path.isdir(t) and os.listdir(t):
+            if os.path.isdir(t) and echter_inhalt(t):
                 return (f"ABGELEHNT: das Zielverzeichnis '{t}' existiert bereits und "
                         f"ist nicht leer — der Generator wuerde interaktiv nach "
                         f"'Overwrite?' fragen und haengen. Das Projekt ist also schon "
