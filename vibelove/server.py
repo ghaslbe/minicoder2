@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import subprocess
@@ -7,7 +8,8 @@ import atexit
 import signal
 import socket
 import select
-from flask import Flask, render_template, request
+import zipfile
+from flask import Flask, render_template, request, send_file
 
 app = Flask(__name__)
 
@@ -217,6 +219,33 @@ def restart_vite():
 def reset():
     reset_history()
     return "OK"
+
+
+@app.route('/download-zip', methods=['GET'])
+def download_zip():
+    """Packt das komplette workspace/-Verzeichnis in ein ZIP im Speicher und liefert es aus."""
+    zip_buffer = io.BytesIO()
+    excluded_dirs = {'node_modules', 'dist', '.git', '__pycache__'}
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for root, dirs, files in os.walk(WORKSPACE_DIR):
+            # Ausgeschlossene Verzeichnisse entfernen (os.walk: Einträge in dirs überspringen)
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
+            for filename in files:
+                if filename.endswith('.log'):
+                    continue
+                file_path = os.path.join(root, filename)
+                # Relativen Pfad als Archivnamen verwenden
+                arcname = os.path.relpath(file_path, WORKSPACE_DIR)
+                zip_file.write(file_path, arcname)
+
+    zip_buffer.seek(0)
+    return send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='vibelove-projekt.zip'
+    )
 
 
 def cleanup():
