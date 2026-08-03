@@ -58,6 +58,35 @@
                 <span class="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span>
                 arbeitet …
             </span>
+            <div class="flex items-center gap-1">
+                <button
+                    type="button"
+                    data-width="375"
+                    onclick="setPreviewWidth('375')"
+                    class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                    title="Mobil (375px)"
+                >
+                    375px
+                </button>
+                <button
+                    type="button"
+                    data-width="768"
+                    onclick="setPreviewWidth('768')"
+                    class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                    title="Tablet (768px)"
+                >
+                    768px
+                </button>
+                <button
+                    type="button"
+                    data-width="desktop"
+                    onclick="setPreviewWidth('desktop')"
+                    class="preview-width-btn bg-gray-700 text-white font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                    title="Volle Breite"
+                >
+                    Desktop
+                </button>
+            </div>
             <button
                 type="button"
                 onclick="reloadPreview()"
@@ -74,12 +103,13 @@
                 Vite neu starten
             </button>
         </div>
-        <iframe
-            id="previewFrame"
-            src="http://localhost:5173"
-            class="flex-grow"
-            style="width:100%;border:none;"
-        ></iframe>
+        <div id="previewWrapper" class="flex-grow flex items-center justify-center bg-gray-200 overflow-auto">
+            <iframe
+                id="previewFrame"
+                src="http://localhost:5173"
+                style="width:100%;height:100%;border:none;transition:width 0.3s;background:white;"
+            ></iframe>
+        </div>
     </div>
 
     <!-- MC-EINSTELLUNGEN MODAL (unsichtbar bis geoeffnet) -->
@@ -232,13 +262,37 @@
             }
             settingsModal.classList.add('hidden');
         };
-    </script><script>
+    </script>
+<script>
     function reloadPreview() {
         const frame = document.getElementById('previewFrame');
         if (frame) {
             frame.src = frame.src;
         }
     }
+
+    function setPreviewWidth(width) {
+        const frame = document.getElementById('previewFrame');
+        if (!frame) return;
+        const wrapper = document.getElementById('previewWrapper');
+        if (width === 'desktop' || width === null || width === undefined) {
+            frame.style.width = '100%';
+            if (wrapper) wrapper.style.justifyContent = 'center';
+        } else {
+            frame.style.width = width + 'px';
+            if (wrapper) wrapper.style.justifyContent = 'center';
+        }
+        document.querySelectorAll('.preview-width-btn').forEach(function (btn) {
+            var isActive = btn.dataset.width === String(width);
+            btn.classList.toggle('bg-gray-700', isActive);
+            btn.classList.toggle('text-white', isActive);
+            btn.classList.toggle('bg-gray-200', !isActive);
+            btn.classList.toggle('text-gray-700', !isActive);
+        });
+    }
+
+    // Standard: Desktop beim Laden aktivieren
+    setPreviewWidth('desktop');
 
     function restartVite() {
         const btn = document.getElementById('restartViteBtn');
