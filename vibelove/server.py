@@ -189,6 +189,30 @@ def build():
         BUILD_HISTORY.append({"instruction": instruction, "result_summary": output})
         return output
 
+@app.route('/restart-vite', methods=['POST'])
+def restart_vite():
+    global vite_process
+    # Alle laufenden Vite-Prozesse dieses Projekts beenden
+    try:
+        subprocess.run(['pkill', '-f', 'node_modules/.bin/vite'], capture_output=True)
+    except Exception as e:
+        print(f'pkill vite: {e}')
+    # Auch das gemerkte Handle terminieren, falls vorhanden
+    if vite_process:
+        try:
+            os.killpg(os.getpgid(vite_process.pid), signal.SIGTERM)
+        except Exception as e:
+            print(f'Fehler beim Stoppen des gemerkten Vite-Prozesses: {e}')
+        vite_process = None
+    # Kurz warten, bis Port 5173 frei ist (max ~5s)
+    for _ in range(50):
+        if not is_port_in_use(PORT_VITE):
+            break
+        time.sleep(0.1)
+    # Vite neu starten
+    start_vite_server()
+    return 'Vite-Server wurde neu gestartet.'
+
 @app.route('/reset', methods=['POST'])
 def reset():
     reset_history()

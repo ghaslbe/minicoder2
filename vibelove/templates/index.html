@@ -37,14 +37,7 @@
         </div>
     </div>
 
-    <!-- RIGHT: Live Preview -->
-    <div class="w-1/2 h-full">
-        <iframe
-            id="previewFrame"
-            src="http://localhost:5173"
-            style="width:100%;height:100%;border:none;"
-        ></iframe>
-    </div>
+
 
     <script>
         const form = document.getElementById('buildForm');
@@ -104,5 +97,24 @@
             }
         };
     </script>
+<script>
+    function reloadPreview() {
+        const frame = document.getElementById('previewFrame');
+        if (frame) {
+            frame.src = frame.src;
+        }
+    }
+
+    function restartVite() {
+        const btn = document.getElementById('restartViteBtn');
+        if (btn) btn.disabled = true;
+        fetch('/restart-vite', { method: 'POST' })
+            .then(function () { return new Promise(function (r) { setTimeout(r, 3000); }); })
+            .then(function () { reloadPreview(); })
+            .finally(function () {
+                if (btn) btn.disabled = false;
+            });
+    }
+</script>
 </body>
 </html>
