@@ -124,8 +124,12 @@ def start_vite_server():
     proj = projekt_dir(CURRENT_PROJECT)
     front_dir = os.path.join(proj, 'frontend')
     if not os.path.isfile(os.path.join(front_dir, 'package.json')):
-        print(f"[vite] Kein frontend/package.json in '{CURRENT_PROJECT}' – Vite wird nicht gestartet.")
-        return
+        # Fallback: manche Projekte liegen direkt im Wurzelverzeichnis
+        if os.path.isfile(os.path.join(proj, 'package.json')):
+            front_dir = proj
+        else:
+            print(f"[vite] Kein package.json in '{CURRENT_PROJECT}' (frontend/ oder Wurzel) – Vite wird nicht gestartet.")
+            return
     
     print(f"Starte Vite-Server auf Port {PORT_VITE}...")
     try:
