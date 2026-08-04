@@ -3772,6 +3772,37 @@ LM-Studio-Server blieb offen — der Werkstatt-Server haengte just in dem
 Moment an `/v1/chat/completions` fest (vermutlich Nachwirkung der vielen
 Kontext-Reload-Tests aus Kapitel 34), unabhaengig von dieser Aenderung.
 
+**Nachtrag: die 4352 endgueltig erklaert.** Ein Neustart des Werkstatt-
+Mac-mini behob den haengenden Server — aber `/model-reset` mit 32768
+angefordert landete sofort wieder bei den bekannten 4.352 Token, ACHTUNG-
+Meldung inklusive. Kein Server-Haenger-Artefakt also, sondern reproduzierbar
+ueber einen Neustart hinweg. Diesmal aber mit der vollstaendigen Erklaerung
+direkt aus LM Studios eigenem Log:
+
+```
+[context_fit][INFO]: Model context auto-fit: family=gemma4 max=262,144
+fitted=4,352 working_set=17.76GiB reserve=3.00GiB safe_ceiling=14.76GiB
+baseline=13.82GiB full_kv=20480B/token prompt_inputs=5632B/token
+attention=65536B/token rotating_peak=0.59GiB fixed_ssm=0.00GiB
+estimated_peak=14.78GiB
+[cache_store][INFO]: VLM prompt cache context target: configured=15,953
+fitted=4,352 effective=15,953
+```
+
+Kein Bug, sondern LM Studios eigener Speicher-Schutzmechanismus:
+Die Modellgewichte selbst (`baseline`) belegen bereits 13.82GiB von
+17.76GiB verfuegbarem Speicher; nach der 3GiB-Reserve bleiben nur rund
+0.94GiB fuer den KV-Cache. Bei ~91KB Speicherbedarf pro Token
+(20480+5632+65536 Byte, ueberwiegend Attention) passen da schlicht nur
+4.352 Token hinein — voellig unabhaengig davon, was `configured` war
+(15.953 im Log, 32768 in unserer Anfrage: beides wird gleichermassen auf
+`fitted` gekappt). Die "n_keep greater than context length"-Meldung war
+also die ganze Zeit nur ein irrefuehrender Folgefehler eines stillen,
+speicherbedingten Auto-Fit-Downgrades — und der einzige echte Hebel liegt
+ausserhalb von mc.py: mehr freier Speicher auf der Maschine, eine
+speicherguenstigere Quantisierung dieses Modells, oder ein Modell mit
+kleinerem `baseline`-Fussabdruck wie `gemma-4-12b`.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
