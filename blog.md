@@ -3555,6 +3555,18 @@ Markern, mit denen man readline explizit sagt „das hier ist unsichtbar,
 nicht mitzaehlen". Vier `input()`-Aufrufe umgestellt, 133 Tests weiter
 gruen.
 
+Nachtrag ein paar Tage spaeter: Pfeil-hoch/-runter blieb trotzdem
+fehlerhaft — der Cursor kam beim History-Wechsel nicht mehr ganz nach
+links, Reste blieben stehen. Zweite Ursache, unabhaengig von den
+ANSI-Codes: Zwei der vier Prompts (`du>` und die Plan-Bestaetigung)
+enthielten ein eingebettetes `\n` IM Prompt-String selbst, um vor der
+Eingabe eine Leerzeile zu erzeugen. Ein rohes Newline im Prompt ist fuer
+readline aber kein unsichtbares Zeichen wie ein Farbcode, sondern ein
+echter Zeilenumbruch, den es fuer die Zeilen-/Spaltenrechnung beim
+Redraw mitfuehren muss — genau dabei verzaehlt es sich zusaetzlich. Fix:
+den Zeilenumbruch per `print()` VOR `input()` ausgeben statt im Prompt
+selbst unterzubringen, damit der eigentliche Prompt einzeilig bleibt.
+
 **Die Phantom-Kontextgrenze.** Direkt danach meldete ein lokal
 geladenes Modell (ueber LM Studio, 125873 Token geladenes Fenster) bei
 jedem Auftrag sofort einen Fehler: *"The number of tokens to keep from

@@ -2940,7 +2940,8 @@ def plan_phase(messages, model):
         m = re.search(r"pr(?:[üu]f|uef)schritte:?\s*(.+)", plan, re.IGNORECASE | re.DOTALL)
         CHECK_PLAN = (m.group(1) if m else plan).strip()[:1500]
     try:
-        fb = input(rl_prompt(f"\n{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
+        print()
+        fb = input(rl_prompt(f"{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
                              f"n=abbrechen> {C.RESET}")).strip()
     except EOFError:
         fb = ""
@@ -4376,7 +4377,8 @@ def main():
              "/Kommandos, /help zeigt Skills.")
     while True:
         try:
-            user = input(rl_prompt(f"\n{C.GREEN}{C.BOLD}du> {C.RESET}")).strip()
+            print()
+            user = input(rl_prompt(f"{C.GREEN}{C.BOLD}du> {C.RESET}")).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -4422,8 +4424,9 @@ def main():
                     print(f"  {i:>2}) {mid}" + (f"  ({preis})" if preis else "") + marker)
                 if len(eintraege) > 60:
                     print(f"  ... ({len(eintraege)} gesamt, erste 60 gezeigt)")
+                print()
                 auswahl = input(rl_prompt(
-                    f"\n{C.GREEN}Nummer waehlen (Enter=abbrechen)> {C.RESET}")).strip()
+                    f"{C.GREEN}Nummer waehlen (Enter=abbrechen)> {C.RESET}")).strip()
                 if auswahl.isdigit() and 1 <= int(auswahl) <= min(len(eintraege), 60):
                     args.model = eintraege[int(auswahl) - 1][0]
                     info(f"Modell fuer diese Sitzung gewechselt: {args.model}")
