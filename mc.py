@@ -4467,7 +4467,7 @@ def main():
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
     cwd_warnung = _suspicious_cwd_warning()
     if cwd_warnung:
-        print(f"{C.YELLOW}{cwd_warnung}{C.RESET}")
+        print(f"{C.RED}{cwd_warnung}{C.RESET}")
 
     # Git-Sicherung: unabhaengig von --yes pruefen (frueher nur interaktiv, damit
     # war bei --yes-Laeufen JEDE Git-Absicherung aus — genau die Laeufe, die sie
