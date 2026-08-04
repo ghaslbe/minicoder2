@@ -1018,3 +1018,89 @@ def test_ledger_block():
 
 def test_trunc_marker_konstante():
     assert mc.TRUNC_MARKER.startswith("\n[mc:")
+
+
+# --------------------- /model-reset: Endpunkt-Erkennung + Reload -----------
+
+class _FakeOpener:
+    """Ordnet Anfragen anhand des URL-Suffixes einer Antwort (oder Exception)
+    zu und protokolliert (Methode, URL, JSON-Body) fuer Assertions."""
+
+    def __init__(self, routes, calls=None):
+        self.routes = routes
+        self.calls = calls if calls is not None else []
+
+    def open(self, req, timeout=5):
+        body = json.loads(req.data.decode()) if req.data else None
+        self.calls.append((req.get_method(), req.full_url, body))
+        for suffix, payload in self.routes.items():
+            if req.full_url.endswith(suffix):
+                if isinstance(payload, Exception):
+                    raise payload
+                return _FakeResp(payload)
+        raise OSError("unerwartete URL im Test: " + req.full_url)
+
+
+def test_endpoint_root():
+    assert mc._endpoint_root("http://host:1234/v1") == "http://host:1234"
+    assert mc._endpoint_root("http://host:1234/v1/") == "http://host:1234"
+    assert mc._endpoint_root("http://host:11434") == "http://host:11434"
+
+
+def test_detect_local_engine_lmstudio(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:1234/v1")
+    opener = _FakeOpener({"/api/v0/models": {"data": [{"id": "m", "state": "loaded"}]}})
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    assert mc._detect_local_engine() == "lmstudio"
+
+
+def test_detect_local_engine_ollama(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+    opener = _FakeOpener({"/api/tags": {"models": [{"name": "m"}]}})
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    assert mc._detect_local_engine() == "ollama"
+
+
+def test_detect_local_engine_unbekannt(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeOpener({}))
+    assert mc._detect_local_engine() is None
+
+
+def test_reset_model_lmstudio(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:1234/v1")
+    opener = _FakeOpener({
+        "/api/v0/models": {"data": [{"id": "altes-modell", "state": "loaded"}]},
+        "/api/v1/models/unload": {"ok": True},
+        "/api/v1/models/load": {"load_config": {"context_length": 32768}},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("neues-modell", 32768)
+    assert ok and "32768" in msg and "LM Studio" in msg
+    unload_call = next(c for c in opener.calls if c[1].endswith("unload"))
+    assert unload_call[2] == {"instance_id": "altes-modell"}
+    load_call = next(c for c in opener.calls if c[1].endswith("/api/v1/models/load"))
+    assert load_call[2] == {"model": "neues-modell", "context_length": 32768}
+
+
+def test_reset_model_ollama(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+    opener = _FakeOpener({
+        "/api/tags": {"models": [{"name": "altes-modell"}]},
+        "/api/generate": {"done": True},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("qwen", 8192)
+    assert ok and "8192" in msg and "Ollama" in msg
+    gen_calls = [c for c in opener.calls if c[1].endswith("/api/generate")]
+    assert len(gen_calls) == 2
+    assert gen_calls[0][2]["keep_alive"] == 0
+    assert gen_calls[1][2]["options"] == {"num_ctx": 8192}
+
+
+def test_reset_model_unbekannter_endpunkt(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeOpener({}))
+    ok, msg = mc.reset_model("irgendein/modell", 32768)
+    assert not ok
+    assert "nicht" in msg.lower()

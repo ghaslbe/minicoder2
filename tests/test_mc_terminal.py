@@ -93,7 +93,9 @@ def test_skills_liste_und_model(_skill_dirs):
     art, wert, _ = mt.expand_input("/model neu-modell")
     assert art == "model" and wert == "neu-modell"
     art, wert, _ = mt.expand_input("/model", model="altes-modell")
-    assert art == "print" and "altes-modell" in wert
+    assert art == "model_pick" and wert is None
+    art, wert, _ = mt.expand_input("/model-reset")
+    assert art == "model_reset" and wert is None
 
 
 # ------------------------- Settings & Profile -------------------------------

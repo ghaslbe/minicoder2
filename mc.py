@@ -213,6 +213,11 @@ _LOADED_CTX_TOKENS = {}  # model -> geladene Kontext-Tokens (0 = nicht abfragbar
 # (KV-Cache) — deshalb wird NICHT mehr vor jedem Schritt gekuerzt, sondern
 # erst, wenn die Historie die Schwelle des GELADENEN Kontextfensters reisst.
 KEEP_CONTEXT = int(_setting("MC_KEEP_CONTEXT", "keep_context", 3))  # letzte N Schritte bleiben voll
+# Kontextfenster fuer /model-reset (explizites Neuladen bei LM Studio/Ollama).
+# 0 = kein Wert wird mitgeschickt (Engine-eigener Default bleibt bestehen).
+# Hintergrund: JIT-Reload nach Entladen greift oft zu einem KLEINEN Default
+# (real beobachtet: 8192) statt der zuvor manuell gesetzten Fenstergroesse.
+CONTEXT_LENGTH = int(_setting("MC_CONTEXT_LENGTH", "context_length", 32768))
 PRUNE = True               # Kontext-Beschneidung an (--no-prune schaltet ab)
 CHARS_PER_TOKEN = 1.8      # konservative Umrechnung Zeichen/Token (Kalibrierung
                            # siehe loaded_context_chars: deutsche Prosa + Code-Mix)
@@ -723,6 +728,97 @@ def list_models():
             info = ""
         out.append((mid, info))
     return sorted(out, key=lambda x: x[0])
+
+
+def _endpoint_root(base_url=None):
+    """BASE_URL (z.B. '.../v1') auf den Endpunkt-Root gekuerzt -- LM Studios
+    und Ollamas eigene (nicht OpenAI-kompatible) Endpunkte liegen direkt am
+    Root, nicht unter /v1."""
+    b = (base_url or BASE_URL).rstrip("/")
+    if b.endswith("/v1"):
+        b = b[:-3]
+    return b.rstrip("/")
+
+
+def _local_engine_headers():
+    headers = {}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    headers.update(extra_headers())
+    return headers
+
+
+def _detect_local_engine():
+    """Erkennt am Endpunkt-Root, ob LM Studio oder Ollama dahinterstecken --
+    beide bieten eigene Lade-/Entlade-Endpunkte mit explizitem Kontextfenster,
+    die ein generischer OpenAI-Client nicht kennt. Gibt 'lmstudio', 'ollama'
+    oder None (z.B. OpenRouter/Cloud-Endpunkt) zurueck."""
+    root = _endpoint_root()
+    headers = _local_engine_headers()
+    for path, key, kind in (("/api/v0/models", "data", "lmstudio"),
+                             ("/api/tags", "models", "ollama")):
+        try:
+            req = urllib.request.Request(root + path, headers=headers, method="GET")
+            with build_opener().open(req, timeout=4) as resp:
+                obj = json.loads(resp.read().decode("utf-8", "replace"))
+            if key in obj:
+                return kind
+        except Exception:
+            continue
+    return None
+
+
+def reset_model(model, context_length=None):
+    """Laedt 'model' am lokal erkannten Endpunkt (LM Studio/Ollama) EXPLIZIT
+    neu, mit fest gesetztem Kontextfenster -- Gegenmittel zum JIT-Reload-
+    Default, der beim automatischen Neuladen greift und deutlich kleiner sein
+    kann als eine zuvor manuell in der Oberflaeche gesetzte Fenstergroesse
+    (real beobachtet: 8192 statt 125873, siehe Blog Kapitel 33).
+    Gibt (ok, meldung) zurueck."""
+    kind = _detect_local_engine()
+    if kind is None:
+        return False, ("Endpunkt nicht als LM Studio/Ollama erkannt — "
+                        "/model-reset ist nur fuer lokale Engines mit eigenem "
+                        "Lade-Endpunkt anwendbar (z.B. nicht bei OpenRouter).")
+    root = _endpoint_root()
+    headers = {"Content-Type": "application/json"}
+    headers.update(_local_engine_headers())
+
+    def _post(path, body, timeout=120):
+        req = urllib.request.Request(root + path, data=json.dumps(body).encode("utf-8"),
+                                      headers=headers, method="POST")
+        with build_opener().open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    try:
+        if kind == "lmstudio":
+            req = urllib.request.Request(root + "/api/v0/models", headers=headers, method="GET")
+            with build_opener().open(req, timeout=10) as resp:
+                obj = json.loads(resp.read().decode("utf-8", "replace"))
+            for m in obj.get("data", []):
+                if m.get("state") == "loaded":
+                    try:
+                        _post("/api/v1/models/unload", {"instance_id": m.get("id")}, timeout=30)
+                    except Exception:
+                        pass  # schon entladen oder andere Instance-ID -- load unten ersetzt ohnehin
+            body = {"model": model}
+            if context_length:
+                body["context_length"] = int(context_length)
+            antwort = _post("/api/v1/models/load", body, timeout=180)
+            geladen = (antwort.get("load_config") or {}).get("context_length", context_length or "Engine-Default")
+            return True, f"{model} neu geladen (LM Studio) — Kontextfenster: {geladen}"
+
+        # ollama
+        _post("/api/generate", {"model": model, "prompt": "", "keep_alive": 0}, timeout=30)
+        body = {"model": model, "prompt": "", "keep_alive": -1, "stream": False}
+        if context_length:
+            body["options"] = {"num_ctx": int(context_length)}
+        _post("/api/generate", body, timeout=180)
+        return True, f"{model} neu geladen (Ollama) — Kontextfenster: {context_length or 'Engine-Default'}"
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code} beim Neuladen: {e.read().decode('utf-8', 'replace')[:300]}"
+    except NET_ERRORS as e:
+        return False, net_error(getattr(e, "reason", e))
 
 
 def debug_net():
@@ -3937,7 +4033,8 @@ def _current_settings(model):
     return {"model": model, "base_url": BASE_URL, "check": CHECK,
             "analyse": ANALYSE, "fence": FENCE, "verbose": VERBOSE,
             "prune": PRUNE, "max_steps": MAX_STEPS,
-            "keep_context": KEEP_CONTEXT, "yes": AUTO_YES}
+            "keep_context": KEEP_CONTEXT, "yes": AUTO_YES,
+            "context_length": CONTEXT_LENGTH}
 
 
 def _settings_report(model):
@@ -3954,7 +4051,7 @@ def _apply_setting(key, wert):
     — prompt_neu=True, wenn die System-Message neu gebaut werden muss (fence/
     check stecken im Prompt-Text). 'model' behandelt der Aufrufer selbst."""
     global BASE_URL, CHECK, ANALYSE, FENCE, VERBOSE, PRUNE
-    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES
+    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH
     key = key.strip().lower()
     if key == "base_url":
         BASE_URL = str(wert).rstrip("/")
@@ -3986,6 +4083,13 @@ def _apply_setting(key, wert):
         else:
             KEEP_CONTEXT = v
         return True, f"{key} = {v}", False
+    if key == "context_length":
+        try:
+            v = max(0, int(str(wert).strip()))
+        except ValueError:
+            return False, f"FEHLER: '{wert}' ist keine Zahl.", False
+        CONTEXT_LENGTH = v
+        return True, f"context_length = {v or '(Engine-Default)'}", False
     gueltig = ", ".join(_current_settings("").keys())
     return False, (f"FEHLER: unbekannte Einstellung '{key}'. "
                    f"Verfuegbar: {gueltig}"), False
@@ -4226,7 +4330,8 @@ def main():
             if art == "settings_show":
                 print(_settings_report(args.model))
                 return
-            if art in ("setting", "models", "profil_save", "profil_load"):
+            if art in ("setting", "models", "model_pick", "model_reset",
+                       "profil_save", "profil_load"):
                 info("Dieses Kommando gibt es im interaktiven Modus "
                      "(mc.py ohne Aufgabe starten).")
                 return
@@ -4301,6 +4406,36 @@ def main():
                         print(f"  ... ({len(eintraege)} gesamt)")
                 except (Exception, SystemExit) as e:
                     print(f"Modell-Liste nicht abrufbar: {e}")
+                continue
+            if art == "model_pick":
+                try:
+                    eintraege = list_models()
+                except (Exception, SystemExit) as e:
+                    print(f"Modell-Liste nicht abrufbar: {e}")
+                    continue
+                if not eintraege:
+                    print("Keine Modelle gefunden.")
+                    continue
+                print("Modelle am Endpoint:")
+                for i, (mid, preis) in enumerate(eintraege[:60], 1):
+                    marker = "  (aktuell)" if mid == args.model else ""
+                    print(f"  {i:>2}) {mid}" + (f"  ({preis})" if preis else "") + marker)
+                if len(eintraege) > 60:
+                    print(f"  ... ({len(eintraege)} gesamt, erste 60 gezeigt)")
+                auswahl = input(rl_prompt(
+                    f"\n{C.GREEN}Nummer waehlen (Enter=abbrechen)> {C.RESET}")).strip()
+                if auswahl.isdigit() and 1 <= int(auswahl) <= min(len(eintraege), 60):
+                    args.model = eintraege[int(auswahl) - 1][0]
+                    info(f"Modell fuer diese Sitzung gewechselt: {args.model}")
+                elif auswahl:
+                    print("Ungueltige Auswahl.")
+                continue
+            if art == "model_reset":
+                ok_r, meldung_r = reset_model(args.model, CONTEXT_LENGTH or None)
+                print((f"{C.GREEN}" if ok_r else f"{C.RED}") + meldung_r + C.RESET)
+                if ok_r:
+                    _LOADED_CTX_CACHE.pop(args.model, None)
+                    _LOADED_CTX_TOKENS.pop(args.model, None)
                 continue
             if art == "settings_show":
                 print(_settings_report(args.model))

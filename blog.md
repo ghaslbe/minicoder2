@@ -3592,14 +3592,74 @@ ging: damals steckte das Modell noch im manuell geladenen Zustand mit
 125873 Token im Speicher; nach dem naechsten Entladen griff beim
 naechsten mc-Lauf der kleine Default.
 
-Kein Code-Fix in `mc.py` diesmal — der Hebel liegt in LM Studio: das
-Default-Kontextfenster fuer dieses Modell dauerhaft hochsetzen (nicht
-nur beim manuellen Laden ueber die Oberflaeche), oder das Modell vor
-jedem mc-Lauf einmal bewusst manuell laden. Mitgenommen bleibt die
-Methode: Prompt haelften- und dann char-weise per Bisektion kuerzen,
-`curl` direkt gegen den Endpoint, `/api/v0/models` fuer den tatsaechlich
-geladenen Zustand pruefen — damit laesst sich "liegt es am Modell, am
-Server oder an uns" in Minuten klaeren statt zu raten.
+Kein Code-Fix in `mc.py` an dieser Stelle — vermutet wird ein zu klein
+geladenes Kontextfenster nach automatischem Neuladen. Mitgenommen
+bleibt in jedem Fall die Methode: Prompt haelften- und dann char-weise
+per Bisektion kuerzen, `curl` direkt gegen den Endpoint, `/api/v0/models`
+fuer den tatsaechlich geladenen Zustand pruefen — damit laesst sich
+"liegt es am Modell, am Server oder an uns" in Minuten klaeren statt zu
+raten. Ob die Theorie stimmt, klaert der naechste Kapitel-Selbsttest —
+Spoiler: nur zur Haelfte.
+
+## 34. `/model` und `/model-reset` — und der Selbsttest, der die eigene These widerlegt
+
+Aus der Vermutung von Kapitel 33 (JIT-Reload zieht einen kleineren
+Default-Kontext als der manuell gesetzte) folgte ein naheliegender
+Bau-Auftrag: ein Kommando, das ein Modell am lokalen Endpunkt explizit
+mit einem gewuenschten Kontextfenster neu laedt, statt sich auf den
+Default zu verlassen.
+
+**Was gebaut wurde**, alles deterministischer Python-Code in
+`mc_terminal.py`/`mc.py`, bewusst NICHT als Skill (ein Skill verlaesst
+sich darauf, dass das Modell selbst korrekte curl-Aufrufe mit
+Endpunkt-Erkennung formuliert — gerade wenn das lokale Modell wegen
+eines Kontextproblems schon schwaechelt, ist das die unzuverlässigere
+Variante):
+- **`/model`** ohne Argument zeigt jetzt eine nummerierte Auswahlliste
+  aller Modelle am Endpunkt (funktioniert bei jedem OpenAI-kompatiblen
+  Endpunkt, auch OpenRouter) statt nur den aktuellen Namen zu drucken.
+  `/model <id>` wechselt weiterhin direkt.
+- **`/model-reset`** erkennt per Sonde (`GET /api/v0/models` vs.
+  `GET /api/tags`), ob LM Studio oder Ollama dahintersteckt, und laedt
+  das aktuelle Modell explizit neu — bei LM Studio ueber die native
+  `POST /api/v1/models/load`-Route mit `context_length`, bei Ollama per
+  `num_ctx` im `options`-Feld von `/api/generate`. Bei einem Endpunkt
+  ohne eigenen Lade-Mechanismus (OpenRouter & Co.) meldet es sauber
+  "hier nicht anwendbar" statt etwas Falsches zu versuchen.
+- Neue Einstellung `context_length` (Default 32768, `/settings
+  context_length <n>` aenderbar), damit der Wert nicht hart codiert ist.
+
+7 neue Tests (Endpunkt-Root-Kuerzung, Erkennung beider Engines, beide
+Reset-Pfade, unbekannter Endpunkt), 140/140 gruen.
+
+**Der Selbsttest.** Live gegen den Werkstatt-Server: `/model-reset`
+funktioniert exakt wie gebaut — `/api/v0/models` bestaetigt danach
+`loaded_context_length: 32768` fuer `gemma-4-26b-a4b-it@mxfp4`, vorher
+8192. Der Prompt, der in Kapitel 33 bei ~4350 Token kippte, erneut
+geschickt: **derselbe Fehler, an derselben Stelle.** Zur Kontrolle die
+Bisektion mit dem neuen Kontextfenster wiederholt — identisches
+Ergebnis, Token fuer Token: bei 4309 okay, ab 4310 immer der Fehler.
+Exakt dieselbe Schwelle wie mit 8192 Token Fenster.
+
+Das widerlegt die These aus Kapitel 33 vollstaendig: Waere ein zu
+kleiner JIT-Default die Ursache gewesen, haette ein vierfach
+groesseres Fenster (32768 statt 8192) die Schwelle deutlich verschieben
+muessen. Sie blieb exakt gleich. Die tatsaechliche Ursache ist also
+NICHT die Fenstergroesse, sondern ein fixer, offenbar modellspezifischer
+Bug in LM Studios Engine fuer genau diese MoE-Quantisierung
+(`...-a4b-it@mxfp4`) — unabhaengig davon, wieviel Kontext geladen ist.
+Zum Vergleich verarbeitet `gemma-4-12b` denselben Prompt plus fast 6000
+Token Puffer weiterhin klaglos.
+
+Bleibt: `/model-reset` ist als generisches Werkzeug weiterhin korrekt
+und nuetzlich (fuer Modelle, bei denen tatsaechlich die Fenstergroesse
+das Problem ist, tut es exakt das Richtige — nachgewiesen per
+`/api/v0/models`). Fuer DIESEN spezifischen Fehler bei DIESEM Modell ist
+es aber kein Fix, sondern hoechstens ein Diagnose-Werkzeug, das die
+falsche Theorie in Minuten widerlegt hat, statt sie ungeprueft im Blog
+stehen zu lassen. Die eigentliche Ursache bleibt offen — vermutlich nur
+mit einem LM-Studio-Update oder einer anderen Quantisierung dieses
+Modells loesbar, nicht mit mc.py.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 

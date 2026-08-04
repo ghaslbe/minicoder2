@@ -45,8 +45,10 @@ SKILL_EXTS = (".md", ".txt")
 BUILTINS = {
     "/help": "Diese Uebersicht",
     "/skills": "Verfuegbare Skills auflisten",
-    "/model": "Aktuelles Modell anzeigen bzw. wechseln: /model <id>",
+    "/model": "Modell wechseln: /model <id> direkt, /model ohne Argument = Auswahlliste",
     "/models": "Modelle des Endpoints auflisten (mit Preisen, falls gemeldet)",
+    "/model-reset": "Modell am lokalen Endpunkt (LM Studio/Ollama) explizit neu laden "
+                    "-- fest gesetztes Kontextfenster statt JIT-Reload-Default",
     "/settings": "Einstellungen anzeigen bzw. aendern: /settings <name> <wert>",
     "/profil": "Einstellungs-Profile: /profil speichern|laden <name>, /profil liste",
 }
@@ -161,10 +163,11 @@ def expand_input(user, model=""):
     if cmd == "/model":
         if rest:
             return "model", rest, {}
-        return "print", (f"Aktuelles Modell: {model}\n"
-                         f"Wechseln: /model <id> — Liste: /models"), {}
+        return "model_pick", None, {}
     if cmd == "/models":
         return "models", None, {}
+    if cmd == "/model-reset":
+        return "model_reset", None, {}
     if cmd == "/settings":
         if not rest:
             return "settings_show", None, {}
