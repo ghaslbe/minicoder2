@@ -1050,6 +1050,20 @@ def test_ledger_block():
     assert mc._ledger_block() == ""
 
 
+def test_send_size_info(monkeypatch):
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    messages = [{"role": "system", "content": "x" * 1800},
+                {"role": "user", "content": "y" * 200}]
+    info = mc._send_size_info(messages, "m")
+    assert "2000 Zeichen" in info
+    assert "1111 Token" in info  # 2000 / 1.8 abgerundet
+    assert "bekanntes Fenster" not in info
+
+    mc._LOADED_CTX_TOKENS["m"] = 10326
+    info2 = mc._send_size_info(messages, "m")
+    assert "bekanntes Fenster: 10326 Token" in info2
+
+
 def test_trunc_marker_konstante():
     assert mc.TRUNC_MARKER.startswith("\n[mc:")
 

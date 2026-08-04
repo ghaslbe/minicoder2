@@ -3604,6 +3604,21 @@ def git_commit_run(summary):
         print(f"{C.DIM}Kein Git-Commit (evtl. keine Aenderungen): {out.strip()[:100]}{C.RESET}")
 
 
+def _send_size_info(messages, model):
+    """Kurzer Zeichen-/Token-Hinweis fuer Diagnosemeldungen -- 'wieviel haben
+    wir eigentlich hingeschickt', damit sich 'vermutlich Kontextfenster
+    ueberschritten' direkt nachpruefen laesst statt geraten werden zu
+    muessen. Kein Netzwerk-Aufruf (nur der bereits bekannte Cache-Wert),
+    damit die Diagnose selbst keine zusaetzliche Verzoegerung verursacht."""
+    chars = sum(len(m.get("content", "") or "") for m in messages)
+    token_schaetzung = int(chars / CHARS_PER_TOKEN)
+    info_txt = f"gesendet: ~{chars} Zeichen (~{token_schaetzung} Token geschaetzt)"
+    bekannt = _LOADED_CTX_TOKENS.get(model)
+    if bekannt:
+        info_txt += f", bekanntes Fenster: {bekannt} Token"
+    return info_txt
+
+
 def _ledger_block():
     """Datei-Kontobuch fuer die Zeit NACH einer Kontext-Kuerzung: welche
     Dateien dieser Lauf gelesen bzw. geschrieben hat. Die Kuerzung entfernt
@@ -3740,12 +3755,14 @@ def run_task(messages, model):
             if ctx_overflows > 2:
                 print(f"{C.RED}Abbruch: {ctx_overflows}x Kontext-Ueberlauf trotz "
                       f"harter Kuerzung — Modell mit groesserem Fenster laden "
-                      f"oder --keep-context senken.{C.RESET}")
+                      f"oder --keep-context senken. "
+                      f"({_send_size_info(messages, model)}){C.RESET}")
                 if messages and messages[-1]["role"] == "user":
                     messages.pop()
                 return None
             print(f"{C.YELLOW}⚠ Kontext-Ueberlauf vom Endpoint gemeldet — "
-                  f"beschneide aeltere Schritte hart und versuche es erneut …{C.RESET}")
+                  f"beschneide aeltere Schritte hart und versuche es erneut … "
+                  f"({_send_size_info(messages, model)}){C.RESET}")
             prune_messages(messages, keep=1)
             continue
 
@@ -3763,17 +3780,19 @@ def run_task(messages, model):
             reasoniert = LAST_REASONING_CHARS > 0
             empty_replies += 1
             if empty_replies > 2:
+                groesse = _send_size_info(messages, model)
                 if reasoniert:
                     print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
                           f"das Modell hat das Antwort-Token-Budget offenbar "
                           f"jedesmal beim Nachdenken (reasoning) aufgebraucht, "
                           f"bevor sichtbarer Text entstand. Kein Kontext-Problem: "
-                          f"/settings think false schaltet das Nachdenken ab.{C.RESET}")
+                          f"/settings think false schaltet das Nachdenken ab. "
+                          f"({groesse}){C.RESET}")
                 else:
                     print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
                           f"das geladene Kontextfenster des Modells reicht fuer diese "
                           f"Historie nicht. Modell mit groesserem Kontext laden oder "
-                          f"--keep-context verkleinern.{C.RESET}")
+                          f"--keep-context verkleinern. ({groesse}){C.RESET}")
                 # Die letzte (unbeantwortete) user-Nachricht NICHT im Verlauf
                 # haengen lassen -- sonst sieht ein spaeterer Zug (auch nach
                 # /mode chat!) noch die alten Hinweise dieser gescheiterten
@@ -3789,7 +3808,8 @@ def run_task(messages, model):
             else:
                 print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
                       f"geladenen Modells ueberschritten) — beschneide aeltere "
-                      f"Schritte hart und versuche es erneut …{C.RESET}")
+                      f"Schritte hart und versuche es erneut … "
+                      f"({_send_size_info(messages, model)}){C.RESET}")
                 prune_messages(messages, keep=1)
                 if messages and messages[-1]["role"] == "user":
                     messages[-1]["content"] += _ledger_block()
