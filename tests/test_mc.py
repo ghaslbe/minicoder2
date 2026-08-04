@@ -6,6 +6,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import sys
 
 import pytest
@@ -431,6 +432,58 @@ def test_jsx_warnungen_als_nicht_blockierender_hinweis(tmp_path):
     assert status == "ok" and "setSortOrder" in msg
     out = mc.validate_written(["App.jsx"])
     assert "nicht blockierend" in out and "setSortOrder" in out
+
+
+# ---------------------- HTML: eingebettetes <script>-JS --------------------
+
+def test_extract_inline_scripts_ignoriert_src_und_importmap():
+    html = '''<script src="app.js"></script>
+    <script type="importmap">{"imports":{}}</script>
+    <script type="module">const x = 1;</script>'''
+    out = mc._extract_inline_scripts(html)
+    assert out == ["const x = 1;"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Shell-Skript-Fake")
+def test_html_validierung_nutzt_esbuild_wenn_vorhanden(tmp_path):
+    _fake_checker(str(tmp_path), 1, "error: Unexpected token")
+    with open("spiel.html", "w") as f:
+        f.write('<script type="module">kaputt(</script>')
+    status, msg = mc.validate_path("spiel.html")
+    assert status == "bad" and "Unexpected token" in msg
+
+
+def test_html_ohne_script_wird_uebersprungen(tmp_path):
+    with open("seite.html", "w") as f:
+        f.write("<html><body>Text</body></html>")
+    assert mc.validate_path("seite.html")[0] == "skip"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node nicht installiert")
+def test_html_validierung_node_fallback_erkennt_syntaxfehler(tmp_path):
+    # Kein node_modules/esbuild vorhanden -- genau der reale Fall (einzelne
+    # index.html mit CDN-Three.js, kein npm-Projekt). node --check als
+    # Fallback muss den echten Bug fangen: fehlendes Argument.
+    with open("spiel.html", "w") as f:
+        f.write('''<script type="module">
+import * as THREE from 'three';
+const g = new THREE.BoxGeometry(50, , 50);
+</script>''')
+    status, msg = mc.validate_path("spiel.html")
+    assert status == "bad"
+    assert "SyntaxError" in msg
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node nicht installiert")
+def test_html_validierung_node_fallback_erkennt_gueltiges_esm(tmp_path):
+    # .mjs-Endung fuer node ist entscheidend: als .js wuerde node auf
+    # CommonJS zurueckfallen und faelschlich bei 'import' meckern.
+    with open("spiel.html", "w") as f:
+        f.write('''<script type="module">
+import * as THREE from 'three';
+const g = new THREE.BoxGeometry(50, 1, 50);
+</script>''')
+    assert mc.validate_path("spiel.html")[0] == "ok"
 
 
 def test_resolve_project_file_suffix():
@@ -1222,6 +1275,61 @@ def test_detect_local_engine_vmlx_vor_ollama_erkannt(monkeypatch):
     })
     monkeypatch.setattr(mc, "build_opener", lambda: opener)
     assert mc._detect_local_engine() == "vmlx"
+
+
+def test_detect_local_engine_omlx(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    opener = _FakeOpener({
+        "/v1/models": {"data": [{"id": "m", "owned_by": "omlx"}]},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    assert mc._detect_local_engine() == "omlx"
+
+
+def test_loaded_ctx_omlx_fallback(monkeypatch):
+    # Weder LM Studio (/api/v0/models) noch vMLX (/v1/models/{m}/
+    # capabilities) vorhanden -- Fallback auf oMLX' /v1/models/status (mit
+    # Bearer-Auth) -> max_context_window ist das tatsaechlich nutzbare
+    # Fenster.
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    monkeypatch.setattr(mc, "API_KEY", "1234")
+
+    def _fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/v1/models/status"):
+            assert req.headers.get("Authorization") == "Bearer 1234"
+            return _FakeResp({"models": [{"id": "m", "max_context_window": 262144}]})
+        raise OSError("nicht gefunden: " + req.full_url)
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._loaded_ctx_tokens("m") == 262144
+    assert mc._LOADED_CTX_TOKENS["m"] == 262144
+
+
+def test_reset_model_omlx_uebernimmt_geladenen_wert(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    opener = _FakeOpener({
+        "/v1/models": {"data": [{"id": "m", "owned_by": "omlx"}]},
+        "/v1/models/m/unload": {"status": "ok"},
+        "/v1/models/m/load": {"status": "ok"},
+        "/v1/models/status": {"models": [{"id": "m", "max_context_window": 262144}]},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("m", 262144)
+    assert ok and "262144" in msg and "oMLX" in msg and "Admin" not in msg
+
+
+def test_reset_model_omlx_meldet_fehlende_admin_rechte_bei_abweichung(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    opener = _FakeOpener({
+        "/v1/models": {"data": [{"id": "m", "owned_by": "omlx"}]},
+        "/v1/models/m/unload": {"status": "ok"},
+        "/v1/models/m/load": {"status": "ok"},
+        "/v1/models/status": {"models": [{"id": "m", "max_context_window": 262144}]},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("m", 16384)
+    assert ok and "262144" in msg and "16384" in msg and "Admin" in msg
 
 
 def test_loaded_ctx_vmlx_fallback(monkeypatch):

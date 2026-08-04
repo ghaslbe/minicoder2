@@ -4115,6 +4115,68 @@ eine speicherguenstigere Quantisierung laden. Kein Code-Fix diesmal — nur
 eine Vermutung durch eine Messung ersetzt, bevor sie sich falsch
 festgesetzt haette.
 
+## 44. Falscher Flag-Name, ein drittes Tool, und zwei echte Nachbesserungen
+
+Der Versuch, vMLX mit `--max-prompt-tokens` neu zu starten, deckte gleich
+mehrere Schichten auf. Erstens: der Flag existiert gar nicht — ein
+Fehler, den ich selbst gemacht hatte (aus dem Wortlaut einer
+Fehlermeldung abgeleitet statt aus der echten Doku). Das offizielle
+Repo (github.com/jjang-ai/vmlx) nennt den echten Namen: `--max-model-len`
+(dieselbe Konvention wie vLLM). Zweitens: selbst mit korrektem Flag
+haette `open -a vMLX.app --args ...` nichts bewirkt — laut
+Architektur-Diagramm im Repo spawnt die Electron-Desktop-App den
+eigentlichen Server-Prozess ueber einen eigenen Session-Manager, der
+macOS-Start-Argumente gar nicht durchreicht. Zwei Lektionen fuer den
+Preis eines fehlgeschlagenen Neustarts: Doku statt Fehlermeldungs-
+Wortlaut als Quelle nehmen, und bei Electron-Wrapper-Apps nicht von
+`open --args` ausgehen.
+
+Dann der Szenenwechsel: Auf demselben Mac mini lief plötzlich **oMLX**
+statt vMLX — ein drittes, eigenstaendiges Tool, API-Key-geschuetzt.
+Direkt am API erkundet statt geraten: `/v1/models/status` zeigt pro
+geladenem Modell `max_context_window` UND `max_tokens` (Ausgabebudget)
+— bei diesem Modell **262.144 bzw. 32.768**, beides drastisch groesser
+als vMLX' ~10.326 bzw. ~1.838-2.147. Der Drei.js-Jump'n'Run-Stresstest
+aus Kapitel 42 lief bei oMLX in **einem einzigen Aufruf, 38 Sekunden,
+keine Fortsetzung noetig** — kein Fence-Nahtstellen-Risiko, weil das
+grosszuegige Budget gar nicht erst zum Abschneiden zwingt.
+
+Beim Durchsehen des generierten Codes aber ein echter Modell-Fehler:
+`new THREE.BoxGeometry(50, , 50)` — ein fehlendes Argument, ein
+handfester JavaScript-`SyntaxError`, der das ganze `<script
+type="module">` beim Parsen zum Absturz gebracht haette. mc.py validiert
+bisher nur `py/json/yaml/php` (plus JSX/TSX in npm-Projekten) — HTML-
+Dateien mit eingebettetem `<script>` liefen nie durch eine Pruefung.
+
+Drei Nachbesserungen aus diesem einen Werkstatt-Ausflug:
+
+1. **HTML-Validierung**: `_extract_inline_scripts()` zieht `<script>`-
+   Bloecke ohne `src` und ohne JSON-artigen `type` (importmap etc.) aus
+   HTML-Text; `_check_js_syntax()` prueft sie zuerst projektlokal per
+   esbuild/oxlint (wie JSX/TSX), sonst per system-weitem `node --check`
+   als Fallback — funktioniert AUCH ohne npm-Projekt/node_modules, genau
+   der Fall bei einer einzelnen `index.html` mit CDN-Importen. Wichtiges
+   Detail: die temporaere Pruef-Datei bekommt die Endung `.mjs`, sonst
+   faellt `node` auf CommonJS zurueck und meldet bei jedem `import`-
+   Statement einen falschen Fehler.
+2. **oMLX-Unterstuetzung**: `_detect_local_engine()` erkennt jetzt vier
+   Sorten (`lmstudio`, `ollama`, `vmlx`, `omlx`) ueber `owned_by` in
+   `/v1/models`. `_loaded_ctx_tokens()` fragt bei oMLX zusaetzlich
+   `/v1/models/status` ab (mit Bearer-Auth, anders als LM Studio/vMLX).
+   `/model-reset` nutzt oMLX' ECHTEN Lade-/Entlade-Endpunkt (anders als
+   vMLX), kann das Kontextfenster selbst aber ebenfalls nicht setzen —
+   das sitzt hinter einer separaten Admin-Anmeldung im Dashboard, die
+   mc.py nicht hat. Auch hier: ehrlich melden statt vortaeuschen.
+3. Der Flag-Name-Fehler selbst wurde in den fruehren Blog-Eintraegen
+   NICHT nachtraeglich korrigiert (Kapitel 42/43 nennen noch
+   `--max-prompt-tokens`) — bewusst so belassen, weil der Fehler und
+   seine Aufklaerung selbst Teil der chronologischen Geschichte sind.
+
+9 neue Tests (HTML-Extraktion, esbuild-Pfad, node-Fallback fuer Fehler
+UND gueltiges ESM, kein-Script-Fall, oMLX-Erkennung, Kontextfenster-
+Fallback, beide Reset-Faelle), 175/175 gruen, alles live gegen den
+echten Server verifiziert.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

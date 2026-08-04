@@ -693,19 +693,21 @@ du …?"-Vorschläge.
   zeigt eine nummerierte Auswahlliste; `/models` listet alle Modelle
   des Endpoints (mit Preisen, falls er sie meldet).
 - `/model-reset` erkennt den lokalen Engine-Typ (LM Studio über
-  `/api/v0/models`, Ollama über `/api/tags`, vMLX über `owned_by:
-  "vmlx-engine"` in `/v1/models`) und lädt das aktuelle Modell explizit
-  mit dem eingestellten `context_length` neu — Gegenmittel zum
-  JIT-Reload-Default, der beim automatischen Neuladen greifen kann und
-  kleiner sein kann als eine zuvor manuell gesetzte Fenstergröße (oder,
-  wie sich gezeigt hat, auch einfach eine harte Modell-/Hardware-Grenze
-  aufdecken kann — siehe blog.md Kapitel 33/34). Bei vMLX ist das
-  Kontextfenster nur per Server-Start-Flag (`--max-prompt-tokens`)
-  änderbar — dort meldet `/model-reset` das ehrlich samt aktuellem Wert,
-  statt ein Neuladen vorzutäuschen. Bei Cloud-Endpunkten (OpenRouter etc.)
-  meldet es sauber „nicht anwendbar". Das tatsächlich nutzbare
-  Kontextfenster (nicht das theoretische Maximum) fließt bei LM Studio
-  UND vMLX automatisch in die Kontext-Kürzung ein (`_loaded_ctx_tokens`).
+  `/api/v0/models`, Ollama über `/api/tags`, vMLX/oMLX über `owned_by`
+  in `/v1/models`) und lädt das aktuelle Modell explizit mit dem
+  eingestellten `context_length` neu — Gegenmittel zum JIT-Reload-Default,
+  der beim automatischen Neuladen greifen kann und kleiner sein kann als
+  eine zuvor manuell gesetzte Fenstergröße (oder, wie sich gezeigt hat,
+  auch einfach eine harte Modell-/Hardware-Grenze aufdecken kann — siehe
+  blog.md Kapitel 33/34). Bei vMLX ist das Kontextfenster nur per
+  Server-Start-Flag (`--max-model-len`) änderbar, bei oMLX nur über eine
+  separate Admin-Anmeldung im Dashboard (nicht denselben API-Key wie
+  `/v1/*`) — in beiden Fällen meldet `/model-reset` das ehrlich samt
+  aktuellem Wert, statt ein Neuladen vorzutäuschen. Bei Cloud-Endpunkten
+  (OpenRouter etc.) meldet es sauber „nicht anwendbar". Das tatsächlich
+  nutzbare Kontextfenster (nicht das theoretische Maximum) fließt bei
+  LM Studio, vMLX UND oMLX automatisch in die Kontext-Kürzung ein
+  (`_loaded_ctx_tokens`).
 - `/mode dev|chat` schaltet zwischen dem vollen Werkzeug-/Aktions-Prompt
   (`dev`, Standard) und reiner Unterhaltung ohne Dev-Prompt (`chat`) um —
   sinnvoll für Smalltalk/Rückfragen, die keine Aktionen brauchen. `/mode`
@@ -1112,9 +1114,14 @@ manuellen `git init` vorher.
 
 - **Bestätigung** vor jedem Schreibvorgang und jedem Shell-Kommando
   (außer mit `--yes`).
-- **Validierung** geschriebener Dateien (py/json/yaml/php) + automatische
+- **Validierung** geschriebener Dateien (py/json/yaml/php, JSX/TSX per
+  esbuild/oxlint aus `node_modules/.bin` falls vorhanden) + automatische
   **Git-Absicherung** (Auto-Init, Auto-Commit bei sauberem `finish`,
-  Rollback-Angebot sonst — siehe oben).
+  Rollback-Angebot sonst — siehe oben). HTML-Dateien: eingebettetes
+  `<script>`-JS (ohne `src`, ohne `importmap`/JSON-Typ) wird ebenfalls auf
+  Syntaxfehler geprüft — projektlokal per esbuild/oxlint, sonst per
+  system-weitem `node --check` als Fallback (funktioniert auch ohne
+  npm-Projekt, z.B. bei einer einzelnen `index.html` mit CDN-Importen).
 - **Overwrite-Gate**: das Überschreiben einer existierenden, im Lauf nie
   gelesenen Datei wird abgelehnt (erst lesen, dann `edit_file` — bewusster
   Neuschrieb nur per `"overwrite":true`).

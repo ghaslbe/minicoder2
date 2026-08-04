@@ -41,6 +41,7 @@ import tempfile
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -836,13 +837,17 @@ def _local_engine_headers():
 
 
 def _detect_local_engine():
-    """Erkennt am Endpunkt-Root, ob LM Studio, Ollama oder vMLX dahinterstecken
-    -- alle drei bieten eigene Lade-/Entlade- bzw. Kapazitaets-Endpunkte, die
-    ein generischer OpenAI-Client nicht kennt. Gibt 'lmstudio', 'ollama',
-    'vmlx' oder None (z.B. OpenRouter/Cloud-Endpunkt) zurueck.
-    vMLX zuerst pruefen: es bildet u.a. AUCH /api/tags nach (Ollama-
+    """Erkennt am Endpunkt-Root, ob LM Studio, Ollama, vMLX oder oMLX
+    dahinterstecken -- alle bieten eigene Lade-/Entlade- bzw. Kapazitaets-
+    Endpunkte, die ein generischer OpenAI-Client nicht kennt. Gibt
+    'lmstudio', 'ollama', 'vmlx', 'omlx' oder None (z.B. OpenRouter/Cloud-
+    Endpunkt) zurueck.
+    vMLX/oMLX zuerst pruefen: vMLX bildet u.a. AUCH /api/tags nach (Ollama-
     Kompatibilitaet) und wuerde sonst faelschlich als 'ollama' erkannt --
-    'owned_by': 'vmlx-engine' in /v1/models ist das eindeutige Merkmal."""
+    'owned_by' in /v1/models ('vmlx-engine' bzw. 'omlx') ist das eindeutige
+    Merkmal. oMLX verlangt dafuer einen gueltigen API-Key (sonst 401) --
+    ohne API_KEY wird es hier schlicht nicht erkannt, faellt also auf
+    None/Cloud-Behandlung zurueck (sicherer Default)."""
     root = _endpoint_root()
     headers = _local_engine_headers()
 
@@ -853,8 +858,11 @@ def _detect_local_engine():
 
     try:
         obj = _get("/v1/models")
-        if any(m.get("owned_by") == "vmlx-engine" for m in obj.get("data", [])):
+        eigner = {m.get("owned_by") for m in obj.get("data", [])}
+        if "vmlx-engine" in eigner:
             return "vmlx"
+        if "omlx" in eigner:
+            return "omlx"
     except Exception:
         pass
     for path, key, kind in (("/api/v0/models", "data", "lmstudio"),
@@ -902,19 +910,22 @@ def _payload_messages(messages):
 
 
 def reset_model(model, context_length=None):
-    """Laedt 'model' am lokal erkannten Endpunkt (LM Studio/Ollama) EXPLIZIT
-    neu, mit fest gesetztem Kontextfenster -- Gegenmittel zum JIT-Reload-
-    Default, der beim automatischen Neuladen greift und deutlich kleiner sein
-    kann als eine zuvor manuell in der Oberflaeche gesetzte Fenstergroesse
-    (real beobachtet: 8192 statt 125873, siehe Blog Kapitel 33). Bei vMLX
-    gibt es keinen Lade-Endpunkt (Kontextfenster nur per Server-Start-Flag
-    aenderbar) -- dort meldet die Funktion das ehrlich statt es vorzutaeuschen.
-    Gibt (ok, meldung) zurueck."""
+    """Laedt 'model' am lokal erkannten Endpunkt (LM Studio/Ollama/vMLX/oMLX)
+    EXPLIZIT neu, mit fest gesetztem Kontextfenster wo moeglich -- Gegenmittel
+    zum JIT-Reload-Default, der beim automatischen Neuladen greift und
+    deutlich kleiner sein kann als eine zuvor manuell in der Oberflaeche
+    gesetzte Fenstergroesse (real beobachtet: 8192 statt 125873, siehe Blog
+    Kapitel 33). Bei vMLX gibt es keinen Lade-Endpunkt (Kontextfenster nur
+    per Server-Start-Flag aenderbar), bei oMLX gibt es einen Lade-Endpunkt,
+    aber das Setzen des Kontextfensters braucht eine separate Admin-
+    Anmeldung, die mc.py nicht hat -- in beiden Faellen meldet die Funktion
+    das ehrlich statt es vorzutaeuschen. Gibt (ok, meldung) zurueck."""
     kind = _detect_local_engine()
     if kind is None:
-        return False, ("Endpunkt nicht als LM Studio/Ollama/vMLX erkannt — "
-                        "/model-reset ist nur fuer lokale Engines mit eigenem "
-                        "Lade-Endpunkt anwendbar (z.B. nicht bei OpenRouter).")
+        return False, ("Endpunkt nicht als LM Studio/Ollama/vMLX/oMLX "
+                        "erkannt — /model-reset ist nur fuer lokale Engines "
+                        "mit eigenem Lade-Endpunkt anwendbar (z.B. nicht bei "
+                        "OpenRouter).")
     root = _endpoint_root()
     headers = {"Content-Type": "application/json"}
     headers.update(_local_engine_headers())
@@ -926,6 +937,37 @@ def reset_model(model, context_length=None):
             return json.loads(resp.read().decode("utf-8", "replace"))
 
     try:
+        if kind == "omlx":
+            # oMLX hat (anders als vMLX) einen echten Lade-/Entlade-Endpunkt,
+            # aber das Kontextfenster (max_context_window) wird nur ueber
+            # eine SEPARATE Admin-Anmeldung gesetzt (PUT /admin/api/models/
+            # .../settings, eigener Login -- nicht derselbe API-Key wie
+            # /v1/*). mc.py kennt kein Admin-Login, kann also nicht SETZEN --
+            # aber entladen/neu laden (uebernimmt z.B. eine im Dashboard
+            # bereits gesetzte Aenderung) und den Stand ehrlich melden.
+            enc = urllib.parse.quote(model, safe="")
+            try:
+                _post(f"/v1/models/{enc}/unload", {}, timeout=30)
+            except Exception:
+                pass  # evtl. schon entladen -- load unten laedt/ersetzt ohnehin
+            _post(f"/v1/models/{enc}/load", {}, timeout=180)
+            req = urllib.request.Request(root + "/v1/models/status",
+                                          headers=headers, method="GET")
+            with build_opener().open(req, timeout=10) as resp:
+                status_obj = json.loads(resp.read().decode("utf-8", "replace"))
+            geladen = None
+            for m in status_obj.get("models", []):
+                if m.get("id") == model:
+                    geladen = m.get("max_context_window")
+                    break
+            if geladen is None:
+                return True, f"{model} neu geladen (oMLX) — Kontextfenster nicht abfragbar."
+            if context_length and geladen != int(context_length):
+                return True, (f"{model} neu geladen (oMLX) — Kontextfenster: "
+                              f"{geladen} (angefordertes {context_length} kann "
+                              f"mc.py nicht setzen: dafuer ist eine separate "
+                              f"Admin-Anmeldung im oMLX-Dashboard noetig).")
+            return True, f"{model} neu geladen (oMLX) — Kontextfenster: {geladen}"
         if kind == "vmlx":
             # vMLX setzt das Kontextfenster (max_prompt_tokens) beim
             # Server-START fest (--max-prompt-tokens) -- anders als LM Studio
@@ -1482,12 +1524,30 @@ def _loaded_ctx_tokens(model):
             ctx = int(cap.get("max_prompt_tokens") or 0)
         except Exception:
             pass
+    if not ctx:
+        # oMLX: /v1/models/status meldet max_context_window je geladenem
+        # Modell -- braucht (anders als LM Studio/vMLX) einen API-Key.
+        try:
+            oheaders = {}
+            if API_KEY:
+                oheaders["Authorization"] = f"Bearer {API_KEY}"
+            req = urllib.request.Request(base + "/v1/models/status", headers=oheaders)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data3 = json.loads(resp.read().decode("utf-8", errors="replace"))
+            reached = True
+            for m in data3.get("models", []):
+                if m.get("id") == model:
+                    ctx = int(m.get("max_context_window") or 0)
+                    break
+        except Exception:
+            pass
     if ctx:
         _LOADED_CTX_TOKENS[model] = ctx
     elif not reached:
-        # kein Endpunkt erreichbar (weder LM Studio noch vMLX) -> definitiv
-        # cachen. War ein Endpunkt erreichbar, aber (noch) kein Wert (Modell
-        # laedt JIT), bleibt es TRANSIENT ungecacht -- siehe Docstring oben.
+        # kein Endpunkt erreichbar (weder LM Studio noch vMLX/oMLX) ->
+        # definitiv cachen. War ein Endpunkt erreichbar, aber (noch) kein
+        # Wert (Modell laedt JIT), bleibt es TRANSIENT ungecacht -- siehe
+        # Docstring oben.
         _LOADED_CTX_TOKENS[model] = 0
     return ctx
 
@@ -3493,6 +3553,69 @@ def _find_js_checker(path):
     return ""
 
 
+SCRIPT_TAG_RE = re.compile(
+    r"<script\b(?![^>]*\bsrc\s*=)([^>]*)>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_TYPE_SKIP = {"importmap", "application/json", "application/ld+json",
+                     "speculationrules"}
+
+
+def _extract_inline_scripts(html):
+    """Extrahiert eingebettete <script>-Bloecke OHNE src-Attribut (die mit
+    src verweisen auf externe Dateien, kein Inline-Code zu pruefen) und ohne
+    JSON-artige type-Attribute (importmap/application-json/...) -- nur
+    echte JS/Modul-Bloecke."""
+    out = []
+    for m in SCRIPT_TAG_RE.finditer(html):
+        typ_m = re.search(r'type\s*=\s*["\']([^"\']+)["\']', m.group(1), re.IGNORECASE)
+        typ = (typ_m.group(1).lower() if typ_m else "")
+        if typ in _SCRIPT_TYPE_SKIP:
+            continue
+        out.append(m.group(2))
+    return out
+
+
+def _check_js_syntax(js_text, near_path):
+    """Prueft JS-Syntax: zuerst projektlokaler esbuild/oxlint (wie bei JSX/
+    TSX), sonst system-weites 'node --check' als Fallback -- oft vorhanden
+    AUCH OHNE npm-Projekt/node_modules, genau der Fall bei einer einzelnen
+    HTML-Datei mit CDN-Importen (real beobachtet: ein fehlendes Argument in
+    'new THREE.BoxGeometry(50, , 50)' blieb sonst unentdeckt, weil .html nie
+    geprueft wurde). .mjs-Endung fuer node, damit import/export (ESM)
+    korrekt geparst wird -- als .js faellt node sonst auf CommonJS zurueck
+    und meldet bei jedem import-Statement einen falschen Fehler."""
+    checker = _find_js_checker(near_path)
+    if checker:
+        suffix, cmd = ".js", '"{checker}" "{temp}"'
+    else:
+        node = shutil.which("node")
+        if not node:
+            return "skip", ""
+        checker, suffix, cmd = node, ".mjs", '"{checker}" --check "{temp}"'
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            suffix=suffix, dir=os.path.dirname(os.path.abspath(near_path)) or ".")
+        with os.fdopen(fd, "w", encoding="utf-8") as tf:
+            tf.write(js_text)
+        p = subprocess.run(cmd.format(checker=checker, temp=temp_path),
+                           shell=True, capture_output=True, text=True, timeout=30)
+    except Exception:
+        return "skip", ""
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+    out = ((p.stdout or "") + (p.stderr or "")).strip()
+    if p.returncode == 0:
+        warns = [l for l in out.splitlines() if "warning" in l.lower()]
+        return "ok", " | ".join(warns[:3])[:300]
+    lines = [l for l in out.splitlines()
+            if "error" in l.lower() or "syntaxerror" in l.lower()]
+    return "bad", " | ".join((lines or out.splitlines())[:3])[:300]
+
+
 def validate_path(path):
     """Validiert eine Datei nach Typ. Gibt (status, meldung) zurueck, wobei status
     'ok' | 'bad' | 'skip' ist. Unbekannte/nachsichtige Typen -> 'skip'."""
@@ -3553,6 +3676,18 @@ def validate_path(path):
         lines = [l for l in out.splitlines() if "error" in l.lower()]
         return "bad", ("JSX/TSX-Fehler: "
                        + " | ".join((lines or out.splitlines())[:3])[:300])
+    if ext in (".html", ".htm"):
+        # Real beobachtet: eine einzelne index.html mit CDN-Three.js hatte
+        # einen echten JS-SyntaxError im eingebetteten <script type="module">
+        # ('new THREE.BoxGeometry(50, , 50)') -- unentdeckt, weil .html bisher
+        # nie geprueft wurde (nur py/json/yaml/php/jsx/tsx).
+        scripts = _extract_inline_scripts(text)
+        if not scripts:
+            return "skip", ""
+        status, meldung = _check_js_syntax("\n;\n".join(scripts), path)
+        if status == "bad":
+            return "bad", f"Eingebettetes <script>-JS fehlerhaft: {meldung}"
+        return status, meldung
     return "skip", ""
 
 
