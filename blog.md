@@ -4215,6 +4215,26 @@ Dateien geschrieben, keine einzige Kontext-Ueberlauf-Meldung mehr. 1
 Test angepasst (das alte, jetzt bewusst falsche Verhalten durch das neue
 ersetzt), 178/178 gruen.
 
+## 46. oMLX cached automatisch — kein Marker noetig, kein Code-Fix noetig
+
+Kurze Nachfrage: cached oMLX den Prompt wie OpenRouter/Anthropic (Kapitel
+36)? Direkt gemessen statt vermutet: derselbe grosse System-Prompt zweimal
+hintereinander geschickt, PLAIN als String-Content (kein Array, kein
+`cache_control`-Marker) — erster Call `cached_tokens: 0`, `total_time:
+10.0s`; zweiter Call mit identischem Praefix `cached_tokens: 4096`,
+`total_time: 1.64s`. Automatisch, ohne jede Sonderbehandlung im Request.
+
+Kein Code-Fix noetig, im Gegenteil: Die `cache_control`-Umformung aus
+Kapitel 36 ist fuer Anthropic-artige Cloud-APIs gedacht, die es explizit
+verlangen — bei oMLX waere sie ueberfluessig und (da `_is_local_engine()`
+oMLX korrekt erkennt) wird sie ohnehin schon uebersprungen. Der eigentliche
+Grund, warum das automatisch funktioniert, ist derselbe, der die ganze
+Lazy-Pruning-Arbeit von Anfang an begruendet hat: mc.py haelt den
+System-Prompt in einer Sitzung stabil und veraendert den Praefix nie
+unnoetig — das kommt jedem lokalen Server mit Prefix-Cache zugute, ganz
+gleich ob LM Studio, vMLX oder oMLX, ohne dass mc.py wissen muss, WELCHER
+davon es gerade ist.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
