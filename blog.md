@@ -3703,6 +3703,35 @@ nur, es fuer Aufgaben mit groesserem Kontext zu meiden — `gemma-4-12b`
 auf demselben Server verarbeitet den identischen Prompt weiterhin ohne
 Probleme.
 
+## 35. `/mode dev|chat` — nicht jedes „hallo" braucht den vollen Werkzeugkasten
+
+Aus der 4352-Token-Geschichte blieb eine berechtigte Nebenfrage: Selbst
+wenn das Kontextfenster gross genug waere — wieso schickt mc.py bei
+einem blossen „hallo" ueberhaupt einen ~4000 Token grossen System-Prompt
+mit Werkzeugbeschreibung, Projekt-Steckbrief und Code-Outline? Naheliegende
+Idee: erst das Modell fragen, ob die Eingabe ueberhaupt eine
+Programmieraufgabe ist. Dagegen sprechen zwei Dinge, die im Projekt schon
+gelernt wurden: ein zusaetzlicher Roundtrip kostet Zeit/Tokens und ist bei
+genau den schwachen/lokalen Modellen unzuverlaessig, die am ehesten
+Kontextprobleme haben — und er wuerde den Cache-Praefix zwischen Anfragen
+veraendern, also genau das Muster zerstoeren, das die fruehe Lazy-Pruning-
+Arbeit bewusst vermeidet.
+
+Stattdessen die einfachere, deterministische Loesung: ein expliziter
+Modus-Schalter. `/mode dev` (Standard, unveraendertes Verhalten) haengt
+weiterhin den vollen Werkzeug-/Aktions-Prompt an; `/mode chat` schaltet
+auf einen kurzen, werkzeugfreien System-Prompt um — keine Aktionen, kein
+JSON-Protokoll, nur Unterhaltung. Bittet man das Modell im Chat-Modus um
+eine Programmieraufgabe, weist der Prompt selbst darauf hin, `/mode dev`
+zu aktivieren. Der Eingabe-Prompt zeigt den aktiven Modus direkt an
+(`du [dev]>` / `du [chat]>`), Chat-Antworten laufen direkt durch
+`chat_stream()` ohne Aktions-Parsing, Finish-Check oder Git-Logik — das
+volle Agenten-Protokoll bleibt exklusiv `dev` vorbehalten. Die
+Entscheidung, WANN welcher Modus sinnvoll ist, bleibt bewusst beim
+Menschen statt bei einer weiteren Modell-Anfrage.
+
+4 neue Tests, 143/143 gruen, live gegen den Werkstatt-Server verifiziert.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
