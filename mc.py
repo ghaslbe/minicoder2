@@ -672,6 +672,31 @@ def _chat_once_retry(messages, model, attempts=3):
             time.sleep(wait)
 
 
+def _fix_fence_seams(text):
+    """Repariert Zeilenumbruch-Nahtstellen zwischen automatischen Fortsetzungen
+    (chat_stream haengt Fortsetzungen per simplem text += more an, OHNE auf
+    einen Zeilenumbruch an der Naht zu achten). CONTENT_FENCE_RE verlangt
+    aber zwingend einen Zeilenumbruch VOR einer schliessenden ``` -Fence
+    (CommonMark-Regel) -- landet die Naht so, dass die schliessende Fence
+    direkt an vorherigen Text anschliesst, wird der Block sonst gar nicht
+    mehr erkannt (real beobachtet: 'write_file ohne Inhalt' nach mehreren
+    Fortsetzungen, obwohl der Inhalt vollstaendig da war). Fuegt fehlende
+    Zeilenumbrueche VOR jeder ``` -Sequenz ein, die nicht schon am
+    Zeilenanfang steht -- macht nur die Fence-Marker zeilenrein, aendert den
+    eigentlichen Dateiinhalt nicht."""
+    out, last = [], 0
+    for m in re.finditer(r"`{3,}", text):
+        start = m.start()
+        if start > 0 and text[start - 1] != "\n":
+            out.append(text[last:start])
+            out.append("\n")
+        else:
+            out.append(text[last:start])
+        last = start
+    out.append(text[last:])
+    return "".join(out)
+
+
 def _looks_truncated(text, finish_reason):
     """Heuristik: wurde die Antwort abgeschnitten? Zwei unabhaengige Signale —
     das offizielle finish_reason und ein Strukturcheck auf einen nicht
@@ -732,7 +757,11 @@ def chat_stream(messages, model):
                 "zu erneut zu schreiben."}]
         more, fr = _chat_once_retry(cont_msgs, model)
         reasoning_total += LAST_REASONING_CHARS
-        text += more
+        # Nahtstelle reparieren, BEVOR die naechste _looks_truncated()-Pruefung
+        # (Schleifenbedingung oben) oder der Rueckgabewert sie sieht -- der
+        # Konversationsverlauf (cont_msgs, bereits gesendet) bleibt UNVERAENDERT,
+        # das Modell sieht also nach wie vor exakt seine eigene rohe Ausgabe.
+        text = _fix_fence_seams(text + more)
     LAST_REASONING_CHARS = reasoning_total
     print()
     if _looks_truncated(text, fr):

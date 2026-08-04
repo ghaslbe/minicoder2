@@ -1405,3 +1405,43 @@ def test_suspicious_cwd_warning_home(tmp_path, monkeypatch):
                         lambda p: str(tmp_path) if p == "~" else p)
     w = mc._suspicious_cwd_warning()
     assert w is not None and "Home" in w
+
+
+# ------------- Fence-Nahtstellen nach Fortsetzungen reparieren -------------
+
+def test_fix_fence_seams_fuegt_fehlenden_zeilenumbruch_ein():
+    # Genau der real beobachtete Fall: eine Fortsetzung klebt direkt (ohne
+    # \n) an den vorherigen Text -- die schliessende Fence wurde dadurch
+    # nicht mehr erkannt ("write_file ohne Inhalt" trotz vollstaendigem
+    # Inhalt).
+    kaputt = '```action\n{"a":1}\n```\n\n```content\nzeile1\ncanJump = false;```\n'
+    repariert = mc._fix_fence_seams(kaputt)
+    assert "false;\n```" in repariert
+    assert "false;```" not in repariert
+
+
+def test_fix_fence_seams_laesst_saubere_fences_unveraendert():
+    sauber = '```action\n{"a":1}\n```\n\n```content\nzeile1\nzeile2\n```\n'
+    assert mc._fix_fence_seams(sauber) == sauber
+
+
+def test_chat_stream_repariert_naht_nach_fortsetzung(monkeypatch):
+    # End-to-End: erster Aufruf bricht MITTEN im content-Block ab (finish_
+    # reason=length), die Fortsetzung klebt ohne Zeilenumbruch an -- die
+    # schliessende Fence darf trotzdem gefunden werden.
+    calls = [
+        ('```action\n{"action":"write_file","path":"a.txt"}\n```\n\n'
+         '```content\nzeile1\ncanJump = false;', "length"),
+        ("}\n```\n", "stop"),
+    ]
+
+    def fake_retry(messages, model):
+        return calls.pop(0)
+
+    monkeypatch.setattr(mc, "_chat_once_retry", fake_retry)
+    monkeypatch.setattr(mc, "LAST_REASONING_CHARS", 0)
+    text = mc.chat_stream([{"role": "user", "content": "mach was"}], "m")
+    action, tail = mc.extract_action(text)
+    fehler = mc._attach_fence_contents(action, tail)
+    assert fehler == ""
+    assert action["content"].strip().endswith("false;}")

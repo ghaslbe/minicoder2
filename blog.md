@@ -4041,6 +4041,53 @@ Zwei Nachbesserungen fuer den dritten Fund:
 Regressionstest, `_is_venv_dir`, Venv-Ausschluss im Outline, vier Faelle
 der Start-Warnung), 162/162 gruen.
 
+## 42. "Kannst du mal das lokale Modell aergern?" — ein Drei.js-Jump'n'Run als Stresstest
+
+Direkter Auftrag diesmal: das lokale Setup bewusst reizen, weil es
+"nicht mehr so klappt wie es mal geklappt hat". Reizvoll dafuer: eine
+komplette `index.html` mit Three.js (CDN), Spieler, Kamera, Steuerung,
+Physik und Animation-Loop — deutlich groesser als ein einzelner
+Antwort-Zyklus liefern kann.
+
+**Erster Fund unterwegs**: vMLX hat einen echten Hardware-Sicherheitsdeckel
+fuer die Ausgabelaenge. Ein Request mit `max_tokens: 8000` wurde nicht
+etwa gekappt, sondern klar ABGELEHNT: *"Requested max output tokens
+exceed projected safe Metal headroom: requested=8000, safe_cap=1838...
+disabling it accepts Metal OOM / kernel-panic risk."* — vMLX schuetzt die
+Apple-GPU aktiv vor einem Speicher-Overflow, der Kernel-Panics ausloesen
+koennte. `safe_cap` schwankt mit dem freien Speicher (vorhin 2147, jetzt
+1838) und liegt damit bei GROESSEREN Dateien praktisch immer unter dem,
+was in EINEM Zug fertig wird — die automatische Fortsetzungs-Logik ist
+hier also keine Kuer, sondern die einzige Moeglichkeit, ueberhaupt grosse
+Dateien zu schreiben.
+
+**Zweiter, eigentlicher Fund**: Ein realer Nachbau des Drei.js-Spiels
+brauchte tatsaechlich mehrere Fortsetzungsrunden — und `chat_stream()`
+klebt Fortsetzungen bislang per simplem `text += more` zusammen, OHNE auf
+einen Zeilenumbruch an der Naht zu achten. Das waere harmlos, wenn nicht
+ausgerechnet die Fence-Erkennung eine CommonMark-Regel durchsetzt: eine
+schliessende ``` -Fence MUSS am Anfang einer Zeile stehen. Landet die
+Fortsetzung so, dass die schliessende Fence direkt (ohne \n) an
+vorherigen Code anschliesst (z.B. `canJump = false;```"`), erkennt der
+Parser den kompletten Content-Block nicht mehr — trotz vollstaendigem,
+korrektem Inhalt. Exakt der beobachtete Fehler: "write_file ohne Inhalt"
+nach vier Fortsetzungsrunden, obwohl die Datei laengst fertig war.
+
+Fix: `_fix_fence_seams()` normalisiert den zusammengefuegten Text nach
+jeder Fortsetzung — fuegt fehlende Zeilenumbrueche VOR jede
+` ``` `-Sequenz ein, die nicht schon am Zeilenanfang steht. Wichtig dabei:
+Der bereits an das Modell gesendete Konversationsverlauf bleibt
+UNVERAENDERT (das Modell sieht weiterhin exakt seine eigene rohe
+Ausgabe) — repariert wird nur die LOKALE Kopie, die mc.py selbst zur
+Fence-Erkennung verwendet. Ein Seiteneffekt beim Nachbau, den ich
+mitgenommen aber nicht "repariert" habe: das Modell schrieb einmal
+`<script typeer="importmap">` statt `type="importmap"` — ein echter
+Modell-Tippfehler, kein mc.py-Thema, aber ein guter Reminder, dass nicht
+jeder Fehler an der Werkzeug-Seite liegt.
+
+4 neue Tests (Naht-Reparatur isoliert, unveraenderter Fall, End-to-End
+durch `chat_stream()` mit simulierter Fortsetzung), 166/166 gruen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
