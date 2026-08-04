@@ -3690,6 +3690,8 @@ def run_task(messages, model):
                 print(f"{C.RED}Abbruch: {ctx_overflows}x Kontext-Ueberlauf trotz "
                       f"harter Kuerzung — Modell mit groesserem Fenster laden "
                       f"oder --keep-context senken.{C.RESET}")
+                if messages and messages[-1]["role"] == "user":
+                    messages.pop()
                 return None
             print(f"{C.YELLOW}⚠ Kontext-Ueberlauf vom Endpoint gemeldet — "
                   f"beschneide aeltere Schritte hart und versuche es erneut …{C.RESET}")
@@ -3721,6 +3723,12 @@ def run_task(messages, model):
                           f"das geladene Kontextfenster des Modells reicht fuer diese "
                           f"Historie nicht. Modell mit groesserem Kontext laden oder "
                           f"--keep-context verkleinern.{C.RESET}")
+                # Die letzte (unbeantwortete) user-Nachricht NICHT im Verlauf
+                # haengen lassen -- sonst sieht ein spaeterer Zug (auch nach
+                # /mode chat!) noch die alten Hinweise dieser gescheiterten
+                # Aufgabe und bezieht sich verwirrend darauf.
+                if messages and messages[-1]["role"] == "user":
+                    messages.pop()
                 return None
             if reasoniert:
                 print(f"{C.YELLOW}⚠ Leere Antwort, aber {LAST_REASONING_CHARS} "

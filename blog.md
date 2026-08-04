@@ -3901,6 +3901,37 @@ Zwei Ergaenzungen:
 Payload-Varianten, die neue Einstellung selbst), 155/155 gruen, live
 gegen den echten vMLX-Server verifiziert — mit UND ohne Reasoning.
 
+## 39. Zwei Nachtraege: `/tmp` ist kein Projektverzeichnis, und der haengende Verlauf
+
+Direkt danach ein Praxistest, der zwei getrennte Probleme gleichzeitig
+zeigte. Erstens meldete `mc.py` bei "hallo" wieder dreimal leere Antwort
+— aber diesmal MIT der neuen, korrekten Diagnose (kein Reasoning gezaehlt,
+also keine Fehlmeldung mehr). Der Grund war simpel und selbstverschuldet:
+mc.py lief in `/private/tmp`, dem System-weiten Temp-Verzeichnis des Mac
+— voller fremder, teils riesiger Dateien (einige über 100MB, manche root
+gehoerend) und Resten eines alten "fe-test"-Projekts. Der automatische
+Projekt-Steckbrief/Code-Outline versuchte, daraus einen Kontext zu bauen,
+und sprengte damit tatsaechlich das Kontextfenster — diesmal kein Bug,
+sondern schlicht der falsche Ort fuer einen autonomen Coding-Agenten.
+
+Zweitens, und das war der eigentliche Fund: Nach dem Abbruch (3x leere
+Antwort) blieb die unbeantwortete Aufgaben-Nachricht (samt den
+automatisch angehaengten "Ist-Zustand erkannt"-Hinweisen, die "fe-test/"
+erwaehnten) im Gespraechsverlauf haengen. Ein Wechsel zu `/mode chat`
+danach aendert zwar den System-Prompt, aber NICHT den Rest des Verlaufs
+— das Modell sah die alte, nie beantwortete Nachricht weiterhin und
+antwortete prompt mit Bezug auf "fe-test/", was komplett verwirrend war,
+weil der Chat-Modus ja explizit KEINE Projektinfos haben sollte.
+
+Fix: An beiden Abbruch-Stellen in `run_task()` (Kontext-Ueberlauf-Serie
+UND Leere-Antwort-Serie) wird die letzte, unbeantwortete user-Nachricht
+jetzt vor der Rueckkehr aus dem Verlauf entfernt — der Zustand nach einem
+gescheiterten Lauf ist damit wieder sauber: System-Prompt plus alle
+tatsaechlich abgeschlossenen Zuege, nichts Halbes haengt mehr herum, auch
+nicht ueber einen Modus-Wechsel hinweg. 1 neuer Test (Abbruch entfernt die
+unbeantwortete Nachricht, Rest des Verlaufs bleibt unberuehrt), 156/156
+gruen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

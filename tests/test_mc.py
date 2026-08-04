@@ -1313,3 +1313,19 @@ def test_payload_messages_ohne_system_prompt_unveraendert(monkeypatch):
     monkeypatch.setattr(mc, "_is_local_engine", lambda: False)
     msgs = [{"role": "user", "content": "hallo"}]
     assert mc._payload_messages(msgs) is msgs
+
+
+# ------------ Abbruch bei leerer Antwort raeumt den Verlauf auf -------------
+
+def test_run_task_entfernt_unbeantwortete_nachricht_nach_abbruch(monkeypatch):
+    # Regression: nach 3x leerer Antwort blieb die unbeantwortete
+    # user-Nachricht (mit Hinweisen der gescheiterten Aufgabe) im Verlauf
+    # haengen -- ein spaeterer Zug (z.B. nach /mode chat) bezog sich dann
+    # verwirrend noch darauf.
+    monkeypatch.setattr(mc, "chat_stream", lambda messages, model: "")
+    monkeypatch.setattr(mc, "LAST_REASONING_CHARS", 0)
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "hallo + Hinweise"}]
+    ergebnis = mc.run_task(messages, "m")
+    assert ergebnis is None
+    assert messages == [{"role": "system", "content": "sys"}]  # Rest sauber
