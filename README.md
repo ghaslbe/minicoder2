@@ -675,9 +675,12 @@ du …?"-Vorschläge.
 
 - `/settings` zeigt alle Laufzeit-Einstellungen (model, base_url, check,
   analyse, fence, verbose, prune, max_steps, keep_context, yes,
-  context_length, think); `/settings check true` ändert eine davon sofort
-  — ändert sich etwas, das im System-Prompt steckt (fence/check), wird er
-  neu aufgebaut.
+  context_length, think, api_key); `/settings check true` ändert eine
+  davon sofort — ändert sich etwas, das im System-Prompt steckt
+  (fence/check), wird er neu aufgebaut. `api_key` wird in der `/settings`-
+  Anzeige nie im Klartext gezeigt (nur „gesetzt (verborgen)“/„nicht
+  gesetzt“) — für `/profil speichern` wird trotzdem der echte Wert
+  gesichert, sonst ließe sich das Profil nicht sinnvoll wiederherstellen.
 - `/settings think false` (oder `--no-think`) schaltet Reasoning/Thinking
   ab (`reasoning_effort=none` + `enable_thinking=false` im Request) —
   gegen "Thinking"-Modelle, die ihr Antwort-Token-Budget beim Nachdenken

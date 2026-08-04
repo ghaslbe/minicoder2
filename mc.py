@@ -4455,12 +4455,19 @@ def _current_settings(model):
             "analyse": ANALYSE, "fence": FENCE, "verbose": VERBOSE,
             "prune": PRUNE, "max_steps": MAX_STEPS,
             "keep_context": KEEP_CONTEXT, "yes": AUTO_YES,
-            "context_length": CONTEXT_LENGTH, "think": THINK}
+            "context_length": CONTEXT_LENGTH, "think": THINK,
+            "api_key": API_KEY}
 
 
 def _settings_report(model):
+    """Textbericht fuer /settings ohne Argument. api_key wird NIE im
+    Klartext gezeigt (Terminal-Scrollback/Logs) -- _current_settings()
+    selbst liefert den echten Wert weiterhin unveraendert, das brauchen
+    /profil speichern|laden, um den Key tatsaechlich wiederherzustellen."""
     zeilen = ["Aktuelle Einstellungen (/settings <name> <wert> zum Aendern):"]
     for k, v in _current_settings(model).items():
+        if k == "api_key":
+            v = "gesetzt (verborgen)" if v else "(nicht gesetzt)"
         zeilen.append(f"  {k:14s} {v}")
     zeilen.append("Profile: /profil speichern <name> · /profil laden <name> "
                   "· /profil liste")
@@ -4472,7 +4479,7 @@ def _apply_setting(key, wert):
     — prompt_neu=True, wenn die System-Message neu gebaut werden muss (fence/
     check stecken im Prompt-Text). 'model' behandelt der Aufrufer selbst."""
     global BASE_URL, CHECK, ANALYSE, FENCE, VERBOSE, PRUNE
-    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH, THINK
+    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH, THINK, API_KEY
     key = key.strip().lower()
     if key == "base_url":
         BASE_URL = str(wert).rstrip("/")
@@ -4480,6 +4487,10 @@ def _apply_setting(key, wert):
         _LOADED_CTX_TOKENS.clear()
         _LOCAL_ENGINE_CACHE.clear()
         return True, f"base_url = {BASE_URL}", False
+    if key == "api_key":
+        API_KEY = str(wert).strip()
+        return True, ("api_key = " + ("gesetzt (verborgen)" if API_KEY
+                                      else "geleert")), False
     if key in ("check", "analyse", "fence", "verbose", "prune", "yes", "think"):
         v = _truthy(wert)
         if key == "check":

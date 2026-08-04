@@ -895,6 +895,31 @@ def test_apply_setting_think(monkeypatch):
     assert mc.THINK is True
 
 
+def test_apply_setting_api_key_wird_nie_im_klartext_gemeldet(monkeypatch):
+    ok, msg, neu = mc._apply_setting("api_key", "geheim-123")
+    assert ok and mc.API_KEY == "geheim-123" and neu is False
+    assert "geheim-123" not in msg
+    assert "verborgen" in msg
+    ok2, msg2, _ = mc._apply_setting("api_key", "")
+    assert ok2 and mc.API_KEY == "" and "geleert" in msg2
+    mc.API_KEY = ""
+
+
+def test_settings_report_zeigt_api_key_nie_im_klartext(monkeypatch):
+    monkeypatch.setattr(mc, "API_KEY", "geheim-123")
+    bericht = mc._settings_report("m")
+    assert "geheim-123" not in bericht
+    assert "gesetzt (verborgen)" in bericht
+
+
+def test_current_settings_liefert_echten_api_key_fuer_profile(monkeypatch):
+    # _current_settings() (anders als _settings_report()) muss den ECHTEN
+    # Wert liefern -- /profil speichern|laden braucht ihn, um den Key
+    # tatsaechlich wiederherstellen zu koennen.
+    monkeypatch.setattr(mc, "API_KEY", "geheim-123")
+    assert mc._current_settings("m")["api_key"] == "geheim-123"
+
+
 def test_apply_setting_base_url_leert_caches(monkeypatch):
     mc._LOADED_CTX_TOKENS["x"] = 123
     ok, msg, _ = mc._apply_setting("base_url", "http://neu:1234/v1/")
