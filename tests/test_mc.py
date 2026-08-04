@@ -808,6 +808,13 @@ def test_apply_setting_bool_int_und_unbekannt(monkeypatch):
     mc._apply_setting("max_steps", "40")
 
 
+def test_apply_setting_think(monkeypatch):
+    ok, msg, neu = mc._apply_setting("think", "false")
+    assert ok and mc.THINK is False and "think = False" in msg and neu is False
+    mc._apply_setting("think", "true")
+    assert mc.THINK is True
+
+
 def test_apply_setting_base_url_leert_caches(monkeypatch):
     mc._LOADED_CTX_TOKENS["x"] = 123
     ok, msg, _ = mc._apply_setting("base_url", "http://neu:1234/v1/")
@@ -1032,6 +1039,88 @@ def test_system_message_fuer_modus(monkeypatch):
     assert chat_content == mc.CHAT_SYSTEM_PROMPT
     assert "STECKBRIEF-MARKER" not in chat_content
     assert "mode dev" in chat_content  # Hinweis, wie man zurueckschaltet
+
+
+# --------------------- Reasoning-Erkennung (_chat_once) ---------------------
+
+class _FakeStreamResp:
+    def __init__(self, lines, status=200):
+        self._lines = lines
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+class _FakeStreamOpener:
+    """Reicht vorgefertigte SSE-Zeilen durch build_opener().open(...) und
+    protokolliert die gesendeten Request-Bodies (fuer Payload-Assertions)."""
+
+    def __init__(self, lines, capture=None):
+        self.lines = lines
+        self.capture = capture if capture is not None else []
+
+    def open(self, req, timeout=300):
+        self.capture.append(json.loads(req.data.decode()))
+        return _FakeStreamResp(self.lines)
+
+
+_SSE_NUR_CONTENT = [
+    b'data: {"choices":[{"delta":{"content":"OK"}}]}',
+    b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    b"data: [DONE]",
+]
+
+
+def test_chat_once_erkennt_reasoning_content(monkeypatch):
+    lines = [
+        b'data: {"choices":[{"delta":{"reasoning_content":"Denk"}}]}',
+        b'data: {"choices":[{"delta":{"reasoning_content":"en..."}}]}',
+        b'data: {"choices":[{"delta":{"content":"Hallo"}}]}',
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        b"data: [DONE]",
+    ]
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(lines))
+    monkeypatch.setattr(mc, "THINK", True)
+    text, fr = mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert text == "Hallo"
+    assert fr == "stop"
+    assert mc.LAST_REASONING_CHARS == len("Denk") + len("en...")
+
+
+def test_chat_once_ohne_reasoning_zaehlt_null(monkeypatch):
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(_SSE_NUR_CONTENT))
+    monkeypatch.setattr(mc, "THINK", True)
+    mc.LAST_REASONING_CHARS = 999
+    text, _ = mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert text == "OK"
+    assert mc.LAST_REASONING_CHARS == 0  # bei JEDEM Aufruf zurueckgesetzt
+
+
+def test_chat_once_think_false_setzt_abschalt_felder(monkeypatch):
+    capture = []
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(_SSE_NUR_CONTENT, capture))
+    monkeypatch.setattr(mc, "THINK", False)
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert capture[0]["reasoning_effort"] == "none"
+    assert capture[0]["enable_thinking"] is False
+    assert capture[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_chat_once_think_true_ohne_abschalt_felder(monkeypatch):
+    capture = []
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(_SSE_NUR_CONTENT, capture))
+    monkeypatch.setattr(mc, "THINK", True)
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert "reasoning_effort" not in capture[0]
+    assert "enable_thinking" not in capture[0]
+    assert "chat_template_kwargs" not in capture[0]
 
 
 # --------------------- /model-reset: Endpunkt-Erkennung + Reload -----------

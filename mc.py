@@ -232,6 +232,18 @@ PRUNE_CTX_FRACTION = 0.7   # Kuerzung erst, wenn die Historie diesen Anteil des
 # Modell beibringt — der Parser versteht IMMER beide Formate.
 FENCE = _truthy(_setting("MC_FENCE", "fence", True))
 
+# Manche Modelle (z.B. "Thinking"-Varianten wie gemma4 ueber vMLX) senden vor
+# der eigentlichen Antwort einen oft langen reasoning_content-Trace. mc.py
+# nutzt/zeigt den nicht, und ein knapp bemessenes Antwort-Token-Budget kann
+# dabei komplett beim Nachdenken aufgebraucht werden, BEVOR ueberhaupt
+# sichtbarer content entsteht (real beobachtet: 700 Reasoning-Chunks, 0
+# Content-Chunks). THINK=False haengt dem Request zusaetzliche, breit
+# vertraegliche Hinweise an, das Nachdenken abzuschalten (enable_thinking,
+# chat_template_kwargs.enable_thinking, reasoning_effort=none) -- Endpunkte,
+# die keinen dieser Namen kennen, ignorieren sie folgenlos (getestet u.a.
+# gegen ein Nicht-Reasoning-Modell via OpenRouter: keine Fehler).
+THINK = _truthy(_setting("MC_THINK", "think", True))
+
 # Modus im interaktiven Terminal: 'dev' (Standard) haengt den vollen
 # Werkzeug-/Aktions-Prompt samt Projekt-Steckbrief an, 'chat' schaltet auf
 # reine Unterhaltung OHNE Dev-Prompt um (/mode dev|chat, ohne Argument zeigt
@@ -248,6 +260,13 @@ CHAT_SYSTEM_PROMPT = (
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
 USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
+
+# Zeichenlaenge des reasoning_content-Traces der LETZTEN Antwort (0, wenn
+# keiner kam oder das Modell kein Reasoning sendet). Dient der Diagnose bei
+# leerer Antwort: reines Kontext-Problem vs. Budget beim Nachdenken
+# aufgebraucht, BEVOR content entstand -- zwei verschiedene Ursachen mit
+# unterschiedlichem Gegenmittel.
+LAST_REASONING_CHARS = 0
 
 
 # ----------------------------- Farben / UI ---------------------------------
@@ -523,12 +542,18 @@ def _chat_once(messages, model):
                # ist Standard-OpenAI-Feld, wird von inkompatiblen Endpoints
                # (z.B. reines Ollama) einfach ignoriert.
                "frequency_penalty": 0.3}
+    if not THINK:
+        payload["reasoning_effort"] = "none"
+        payload["enable_thinking"] = False
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
     headers.update(extra_headers())
 
+    global LAST_REASONING_CHARS
+    LAST_REASONING_CHARS = 0
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
     first = True
@@ -556,7 +581,17 @@ def _chat_once(messages, model):
                 if choices:
                     if choices[0].get("finish_reason"):
                         finish_reason = choices[0]["finish_reason"]
-                    token = choices[0].get("delta", {}).get("content")
+                    delta = choices[0].get("delta", {})
+                    reasoning_token = delta.get("reasoning_content")
+                    if reasoning_token and first:
+                        # Noch kein sichtbarer content -- Modell "denkt" (z.B.
+                        # gemma4 ueber vMLX). Nicht Teil der Antwort, aber als
+                        # Fortschritt anzeigen und fuer die Leere-Antwort-
+                        # Diagnose zaehlen (siehe LAST_REASONING_CHARS oben).
+                        LAST_REASONING_CHARS += len(reasoning_token)
+                        if spin.active:
+                            spin.label = f"Modell denkt (Reasoning: {LAST_REASONING_CHARS} Zeichen)"
+                    token = delta.get("content")
                     if token:
                         if first:
                             spin.__exit__()  # Spinner weg, sobald die Antwort beginnt
@@ -3662,25 +3697,43 @@ def run_task(messages, model):
             continue
 
         if not reply.strip():
-            # LEERE Antwort heisst bei lokalen Servern fast immer: das GELADENE
-            # Kontextfenster ist ueberschritten (kein Fehler, einfach nichts) —
-            # real beobachtet, nachdem dieselbe Datei mehrfach gelesen wurde.
-            # Bisher galt das als "Textantwort = fertig" und der Lauf endete
-            # stillschweigend mitten in der Aufgabe. Stattdessen: Kontext hart
-            # beschneiden und (begrenzt) erneut anfragen.
+            # LEERE Antwort hat ZWEI moegliche Ursachen, die sich nicht
+            # verwechseln lassen sollten: (a) das GELADENE Kontextfenster ist
+            # ueberschritten (klassischer Fall, Beschneiden hilft) -- oder
+            # (b) ein "Thinking"-Modell hat das Antwort-Token-Budget komplett
+            # beim Nachdenken (reasoning_content) aufgebraucht, BEVOR
+            # sichtbarer Text entstand (real beobachtet: 700 Reasoning-Chunks,
+            # 0 Content-Chunks, bei einem Prompt weit unter dem Kontext-Limit).
+            # LAST_REASONING_CHARS (von _chat_once gesetzt) unterscheidet
+            # beides -- Beschneiden wuerde bei (b) nichts bringen, das
+            # Output-Budget ist ein getrennter Topf vom Prompt.
+            reasoniert = LAST_REASONING_CHARS > 0
             empty_replies += 1
             if empty_replies > 2:
-                print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
-                      f"das geladene Kontextfenster des Modells reicht fuer diese "
-                      f"Historie nicht. Modell mit groesserem Kontext laden oder "
-                      f"--keep-context verkleinern.{C.RESET}")
+                if reasoniert:
+                    print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
+                          f"das Modell hat das Antwort-Token-Budget offenbar "
+                          f"jedesmal beim Nachdenken (reasoning) aufgebraucht, "
+                          f"bevor sichtbarer Text entstand. Kein Kontext-Problem: "
+                          f"/settings think false schaltet das Nachdenken ab.{C.RESET}")
+                else:
+                    print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
+                          f"das geladene Kontextfenster des Modells reicht fuer diese "
+                          f"Historie nicht. Modell mit groesserem Kontext laden oder "
+                          f"--keep-context verkleinern.{C.RESET}")
                 return None
-            print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
-                  f"geladenen Modells ueberschritten) — beschneide aeltere "
-                  f"Schritte hart und versuche es erneut …{C.RESET}")
-            prune_messages(messages, keep=1)
-            if messages and messages[-1]["role"] == "user":
-                messages[-1]["content"] += _ledger_block()
+            if reasoniert:
+                print(f"{C.YELLOW}⚠ Leere Antwort, aber {LAST_REASONING_CHARS} "
+                      f"Zeichen Reasoning gesehen — Budget wurde offenbar beim "
+                      f"Nachdenken aufgebraucht (kein Kontext-Problem). Versuche "
+                      f"es erneut …{C.RESET}")
+            else:
+                print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
+                      f"geladenen Modells ueberschritten) — beschneide aeltere "
+                      f"Schritte hart und versuche es erneut …{C.RESET}")
+                prune_messages(messages, keep=1)
+                if messages and messages[-1]["role"] == "user":
+                    messages[-1]["content"] += _ledger_block()
             continue
         empty_replies = 0
         war_unvollstaendig = reply.endswith(TRUNC_MARKER)
@@ -4159,7 +4212,7 @@ def _current_settings(model):
             "analyse": ANALYSE, "fence": FENCE, "verbose": VERBOSE,
             "prune": PRUNE, "max_steps": MAX_STEPS,
             "keep_context": KEEP_CONTEXT, "yes": AUTO_YES,
-            "context_length": CONTEXT_LENGTH}
+            "context_length": CONTEXT_LENGTH, "think": THINK}
 
 
 def _settings_report(model):
@@ -4176,7 +4229,7 @@ def _apply_setting(key, wert):
     — prompt_neu=True, wenn die System-Message neu gebaut werden muss (fence/
     check stecken im Prompt-Text). 'model' behandelt der Aufrufer selbst."""
     global BASE_URL, CHECK, ANALYSE, FENCE, VERBOSE, PRUNE
-    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH
+    global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH, THINK
     key = key.strip().lower()
     if key == "base_url":
         BASE_URL = str(wert).rstrip("/")
@@ -4184,7 +4237,7 @@ def _apply_setting(key, wert):
         _LOADED_CTX_TOKENS.clear()
         _LOCAL_ENGINE_CACHE.clear()
         return True, f"base_url = {BASE_URL}", False
-    if key in ("check", "analyse", "fence", "verbose", "prune", "yes"):
+    if key in ("check", "analyse", "fence", "verbose", "prune", "yes", "think"):
         v = _truthy(wert)
         if key == "check":
             CHECK = v
@@ -4196,6 +4249,8 @@ def _apply_setting(key, wert):
             VERBOSE = v
         elif key == "prune":
             PRUNE = v
+        elif key == "think":
+            THINK = v
         else:
             AUTO_YES = v
         return True, f"{key} = {v}", key in ("check", "fence")
@@ -4222,7 +4277,7 @@ def _apply_setting(key, wert):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE, THINK
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -4264,6 +4319,12 @@ def main():
     ap.add_argument("--no-fence", action="store_true",
                     help="Fence-Modus abschalten (Dateiinhalte als JSON-Strings); "
                          "der Parser versteht unabhaengig davon immer beide Formate")
+    ap.add_argument("--no-think", action="store_true",
+                    help="Reasoning/Thinking abschalten (reasoning_effort=none + "
+                         "enable_thinking=false im Request) -- gegen Modelle, die "
+                         "das Antwort-Token-Budget beim Nachdenken aufbrauchen, "
+                         "bevor sichtbarer Text entsteht (z.B. gemma4 ueber vMLX); "
+                         "von Endpoints ohne Reasoning folgenlos ignoriert")
     ap.add_argument("--resume", action="store_true",
                     help=f"Verlauf nach jedem Schritt in {MC_VERLAUF} sichern "
                          f"und einen dort gesicherten Verlauf beim Start "
@@ -4293,6 +4354,8 @@ def main():
         FENCE = False
     elif args.fence:
         FENCE = True
+    if args.no_think:
+        THINK = False
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
     # --plan funktioniert jetzt auch zusammen mit --yes: plan_phase() nutzt
     # input() direkt (nicht confirm()) und behandelt EOF bereits als "Plan

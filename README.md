@@ -674,9 +674,21 @@ du …?"-Vorschläge.
 **Einstellungen & Profile in der Sitzung:**
 
 - `/settings` zeigt alle Laufzeit-Einstellungen (model, base_url, check,
-  analyse, fence, verbose, prune, max_steps, keep_context, yes);
-  `/settings check true` ändert eine davon sofort — ändert sich etwas,
-  das im System-Prompt steckt (fence/check), wird er neu aufgebaut.
+  analyse, fence, verbose, prune, max_steps, keep_context, yes,
+  context_length, think); `/settings check true` ändert eine davon sofort
+  — ändert sich etwas, das im System-Prompt steckt (fence/check), wird er
+  neu aufgebaut.
+- `/settings think false` (oder `--no-think`) schaltet Reasoning/Thinking
+  ab (`reasoning_effort=none` + `enable_thinking=false` im Request) —
+  gegen "Thinking"-Modelle, die ihr Antwort-Token-Budget beim Nachdenken
+  (`reasoning_content`) aufbrauchen können, BEVOR sichtbarer Text
+  entsteht (real beobachtet bei gemma4 über vMLX: 700 Reasoning-Chunks,
+  0 Content-Chunks). mc.py erkennt `reasoning_content` jetzt im Streaming
+  getrennt von `content` und unterscheidet bei einer leeren Antwort zwei
+  Ursachen: echtes Kontext-Überlauf (wie bisher) vs. Budget beim
+  Nachdenken aufgebraucht (kein Kontext-Problem — Kürzen hilft hier
+  nichts, `/settings think false` schon). Von Endpoints ohne Reasoning
+  werden die Zusatzfelder folgenlos ignoriert.
 - `/model <id>` wechselt das Modell direkt, `/model` ohne Argument
   zeigt eine nummerierte Auswahlliste; `/models` listet alle Modelle
   des Endpoints (mit Preisen, falls er sie meldet).

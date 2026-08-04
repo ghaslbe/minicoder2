@@ -3850,6 +3850,57 @@ Drei Ergaenzungen dank der neuen Erkennung:
 Fallback, ehrliche Reset-Meldung), 150/150 gruen, alles live gegen den
 echten vMLX-Server verifiziert.
 
+## 38. Reasoning erkennen: die leere Antwort war gar kein Kontext-Problem
+
+Kaum auf vMLX umgestellt, meldete `mc.py` bei einem simplen "hallo"
+sofort dreimal in Folge "Leere Antwort (vermutlich Kontextfenster
+ueberschritten)" und brach ab — obwohl der Prompt mit 6.126 von 10.326
+Token reichlich Luft hatte. Die 4352er-Ermittlung von Kapitel 33/34/36/37
+hatte also NICHT das letzte Wort.
+
+Der eigentliche Grund, per direktem `curl` gegen den Streaming-Endpoint
+nachgestellt: Dieses Gemma-Modell ist eine "Thinking"-Variante und
+sendet seine Ausgabe zunaechst als `reasoning_content` (Denk-Trace),
+ERST danach als normales `content`. `mc.py` liest beim Streamen aber
+ausschliesslich `delta.content` aus. Bei einem Testlauf produzierte das
+Modell **700 Reasoning-Chunks und 0 Content-Chunks** — das (recht knapp
+bemessene) Antwort-Token-Budget von vMLX (`max_output_tokens: 2147`)
+war komplett beim Nachdenken aufgebraucht, bevor je ein sichtbares
+Zeichen entstand. mc.py sah nichts, folgerte "leere Antwort" und
+diagnostizierte reflexhaft auf das bekannte Kontext-Muster — diesmal
+falsch. Nicht reproduzierbar bei jedem Versuch, weil die Reasoning-Laenge
+pro Anfrage schwankt (Sampling): mal reicht das Budget, mal nicht.
+
+Zufallsfund nebenbei: Bei den fruehen LM-Studio-Tests hatte dieselbe
+Antwortstruktur bereits ein `reasoning_content`-Feld im Schema — es war
+dort aber immer leer. Gleiche Modellgewichte vermutlich, nur zeigt vMLX
+das Nachdenken aktiv (`"supports_thinking": true` in `/v1/capabilities`),
+wodurch uns die ganze Kategorie bisher nie aufgefallen war.
+
+Zwei Ergaenzungen:
+1. **Erkennung**: `_chat_once()` liest jetzt auch `delta.reasoning_content`
+   im Streaming aus, zaehlt die Zeichen (`LAST_REASONING_CHARS`, live im
+   Warte-Spinner angezeigt: "Modell denkt (Reasoning: N Zeichen)") und
+   setzt sie bei jedem Aufruf zurueck. Die "Leere Antwort"-Diagnose in
+   `run_task()` unterscheidet jetzt zwei Ursachen mit unterschiedlichem
+   Gegenmittel: Kontext-Ueberlauf (wie bisher, Kuerzen hilft) vs.
+   Reasoning-Budget aufgebraucht (Kuerzen hilft NICHTS — Prompt- und
+   Ausgabe-Budget sind getrennte Toepfe — sondern nur weniger/kein
+   Nachdenken).
+2. **Abschaltbar per `/settings think false`** (oder `--no-think`): haengt
+   dem Request `reasoning_effort: "none"`, `enable_thinking: false` und
+   `chat_template_kwargs: {"enable_thinking": false}` an — drei
+   unterschiedliche Namenskonventionen verschiedener Backends fuer
+   dieselbe Absicht, in der Erwartung, dass ein Endpunkt, der keinen davon
+   kennt, sie einfach ignoriert (getestet: ein Nicht-Reasoning-Modell via
+   OpenRouter nahm alle drei Felder klaglos entgegen). Mit `think=false`
+   lief derselbe "hallo"-Auftrag sofort und ohne einen einzigen
+   Reasoning-Chunk durch.
+
+7 neue Tests (Reasoning-Zaehlung, Rueckstellung pro Aufruf, beide
+Payload-Varianten, die neue Einstellung selbst), 155/155 gruen, live
+gegen den echten vMLX-Server verifiziert — mit UND ohne Reasoning.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
