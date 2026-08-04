@@ -1139,3 +1139,45 @@ def test_reset_model_unbekannter_endpunkt(monkeypatch):
     ok, msg = mc.reset_model("irgendein/modell", 32768)
     assert not ok
     assert "nicht" in msg.lower()
+
+
+# ------------------- cache_control fuer Cloud-Endpunkte ---------------------
+
+def test_is_local_engine_gecacht(monkeypatch):
+    monkeypatch.setattr(mc, "_LOCAL_ENGINE_CACHE", {})
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:1234/v1")
+    calls = {"n": 0}
+
+    def _fake_detect():
+        calls["n"] += 1
+        return "lmstudio"
+
+    monkeypatch.setattr(mc, "_detect_local_engine", _fake_detect)
+    assert mc._is_local_engine() is True
+    assert mc._is_local_engine() is True
+    assert calls["n"] == 1  # zweiter Aufruf kommt aus dem Cache, keine neue Sonde
+
+
+def test_payload_messages_lokal_unveraendert(monkeypatch):
+    monkeypatch.setattr(mc, "_is_local_engine", lambda: True)
+    msgs = [{"role": "system", "content": "Systemtext"},
+            {"role": "user", "content": "hallo"}]
+    assert mc._payload_messages(msgs) is msgs
+
+
+def test_payload_messages_cloud_bekommt_cache_control(monkeypatch):
+    monkeypatch.setattr(mc, "_is_local_engine", lambda: False)
+    msgs = [{"role": "system", "content": "Systemtext"},
+            {"role": "user", "content": "hallo"}]
+    out = mc._payload_messages(msgs)
+    assert out is not msgs                       # Original bleibt unberuehrt
+    assert msgs[0]["content"] == "Systemtext"     # ... auch inhaltlich
+    assert out[0]["content"] == [
+        {"type": "text", "text": "Systemtext", "cache_control": {"type": "ephemeral"}}]
+    assert out[1] is msgs[1]                      # restliche Nachrichten unveraendert
+
+
+def test_payload_messages_ohne_system_prompt_unveraendert(monkeypatch):
+    monkeypatch.setattr(mc, "_is_local_engine", lambda: False)
+    msgs = [{"role": "user", "content": "hallo"}]
+    assert mc._payload_messages(msgs) is msgs

@@ -509,7 +509,7 @@ def _chat_once(messages, model):
     """Ein einzelner /chat/completions-Streaming-Aufruf. Gibt (text, finish_reason)
     zurueck und streamt live mit."""
     url = f"{BASE_URL}/chat/completions"
-    payload = {"model": model, "messages": messages, "stream": True,
+    payload = {"model": model, "messages": _payload_messages(messages), "stream": True,
                # Token-/Kostenabrechnung anfordern (OpenAI-Standard + OpenRouter).
                # Endpoints, die das nicht kennen (z.B. Ollama), ignorieren es.
                "stream_options": {"include_usage": True},
@@ -779,6 +779,39 @@ def _detect_local_engine():
         except Exception:
             continue
     return None
+
+
+_LOCAL_ENGINE_CACHE = {}
+
+
+def _is_local_engine():
+    """Wie _detect_local_engine(), aber je BASE_URL gecacht -- sonst wuerde
+    JEDER Chat-Request eine zusaetzliche Sonden-Anfrage ausloesen."""
+    if BASE_URL not in _LOCAL_ENGINE_CACHE:
+        _LOCAL_ENGINE_CACHE[BASE_URL] = _detect_local_engine() is not None
+    return _LOCAL_ENGINE_CACHE[BASE_URL]
+
+
+def _payload_messages(messages):
+    """Nachrichtenliste fuer den Request-Body. Bei Cloud-Endpunkten (nicht
+    LM Studio/Ollama) wird der stabile System-Prompt als Anthropic-
+    kompatibler cache_control-Breakpoint markiert -- getestet via OpenRouter:
+    ~90% Kostenersparnis auf Wiederholungen bei Claude, von anderen
+    Anbietern (OpenAI, Gemini, DeepSeek, Kimi) folgenlos ignoriert oder
+    sogar selbst honoriert. Lokale Engines haben ihren eigenen
+    Prompt-/KV-Cache und werden bewusst NICHT angefasst (ungetestet, ob sie
+    das Array-Format vertragen, und unnoetig). Gibt bei lokalen Endpunkten
+    ODER fehlendem System-Prompt die Liste UNVERAENDERT zurueck -- der
+    interne String-Zustand von messages[0] (Pruning, Kontobuch, --resume)
+    bleibt ueberall sonst im Code unberuehrt, die Umformung passiert nur
+    hier am Request-Rand."""
+    if not messages or messages[0].get("role") != "system" or _is_local_engine():
+        return messages
+    kopie = list(messages)
+    kopie[0] = {"role": "system", "content": [
+        {"type": "text", "text": messages[0]["content"],
+         "cache_control": {"type": "ephemeral"}}]}
+    return kopie
 
 
 def reset_model(model, context_length=None):
@@ -4098,6 +4131,7 @@ def _apply_setting(key, wert):
         BASE_URL = str(wert).rstrip("/")
         _LOADED_CTX_CACHE.clear()
         _LOADED_CTX_TOKENS.clear()
+        _LOCAL_ENGINE_CACHE.clear()
         return True, f"base_url = {BASE_URL}", False
     if key in ("check", "analyse", "fence", "verbose", "prune", "yes"):
         v = _truthy(wert)

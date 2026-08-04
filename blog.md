@@ -3732,6 +3732,46 @@ Menschen statt bei einer weiteren Modell-Anfrage.
 
 4 neue Tests, 143/143 gruen, live gegen den Werkstatt-Server verifiziert.
 
+## 36. Prompt-Caching fuer Cloud-Endpunkte: 90% Rabatt auf den stabilen System-Prompt
+
+Die 35er-Frage hatte einen zweiten Teil: Selbst in `dev` bleibt der
+System-Prompt (Werkzeugbeschreibung + Steckbrief + Outline) eine ganze
+Sitzung lang stabil — bei lokalen Servern (LM Studio/Ollama) ist das
+dank server-eigenem Prompt-Cache nach dem ersten Request praktisch
+kostenlos. Bei Cloud-Endpunkten (OpenRouter) gibt es diesen Vorteil
+nicht automatisch: jede Chat-Completions-Anfrage ist zustandslos, die
+komplette Historie inkl. System-Prompt wird bei JEDEM Schritt neu
+abgerechnet.
+
+Nachgemessen mit `curl` direkt gegen OpenRouter, zwei identische
+Anfragen an Claude hintereinander: mit reinem String-`content` beide
+Male voller Preis, `cached_tokens: 0`. Mit dem Inhalt als Anthropic-
+kompatibles Content-Array plus `cache_control: {"type": "ephemeral"}`
+markiert: erster Call `$0.0261` (Cache-Write, leichter Aufschlag),
+zweiter Call (identischer Praefix) nur `$0.0022` — rund 90% guenstiger.
+Vertraeglichkeit bei anderen Anbietern gegengeprueft (Kimi/Moonshot,
+GPT-5.6-luna, Gemini-3-flash, DeepSeek): keine Fehler nirgends, manche
+honorieren es sogar automatisch mit.
+
+Umgesetzt als schlanker Eingriff GENAU an der Netzwerk-Grenze, nicht im
+restlichen Code: `_payload_messages()` baut kurz vor dem Request eine
+KOPIE der Nachrichtenliste, in der `messages[0]` (falls System-Rolle)
+ins Array-Format mit Cache-Breakpoint gewandelt wird — der interne
+String-Zustand von `messages[0]` bleibt fuer Kuerzung, Kontobuch und
+`--resume` ueberall sonst unveraendert, nur der tatsaechlich gesendete
+Request-Body unterscheidet sich. Lokale Engines werden dabei bewusst
+ausgenommen — erkannt ueber dieselbe Sonde wie `/model-reset`
+(`/api/v0/models` / `/api/tags`), diesmal aber gecacht je `BASE_URL`,
+damit nicht jeder Chat-Schritt eine zusaetzliche Netzwerk-Anfrage kostet.
+
+5 neue Tests (Cache der Erkennung, Unveraendert-Fall lokal, Umformung
+bei Cloud, Sonderfall ohne System-Prompt), 147/147 gruen, end-to-end
+gegen den echten `_chat_once()`-Pfad bei OpenRouter verifiziert (nicht
+nur isoliert an der Hilfsfunktion). Live-Gegenprobe an einem lokalen
+LM-Studio-Server blieb offen — der Werkstatt-Server haengte just in dem
+Moment an `/v1/chat/completions` fest (vermutlich Nachwirkung der vielen
+Kontext-Reload-Tests aus Kapitel 34), unabhaengig von dieser Aenderung.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
