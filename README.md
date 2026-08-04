@@ -677,8 +677,21 @@ du …?"-Vorschläge.
   analyse, fence, verbose, prune, max_steps, keep_context, yes);
   `/settings check true` ändert eine davon sofort — ändert sich etwas,
   das im System-Prompt steckt (fence/check), wird er neu aufgebaut.
-- `/model <id>` wechselt das Modell, `/models` listet die Modelle des
-  Endpoints (mit Preisen, falls er sie meldet).
+- `/model <id>` wechselt das Modell direkt, `/model` ohne Argument
+  zeigt eine nummerierte Auswahlliste; `/models` listet alle Modelle
+  des Endpoints (mit Preisen, falls er sie meldet).
+- `/model-reset` erkennt den lokalen Engine-Typ (LM Studio über
+  `/api/v0/models`, Ollama über `/api/tags`) und lädt das aktuelle
+  Modell explizit mit dem eingestellten `context_length` neu — Gegenmittel
+  zum JIT-Reload-Default, der beim automatischen Neuladen greifen kann und
+  kleiner sein kann als eine zuvor manuell gesetzte Fenstergröße (oder,
+  wie sich gezeigt hat, auch einfach eine harte Modell-/Hardware-Grenze
+  aufdecken kann — siehe blog.md Kapitel 33/34). Bei Cloud-Endpunkten
+  (OpenRouter etc.) meldet es sauber „nicht anwendbar".
+- `/mode dev|chat` schaltet zwischen dem vollen Werkzeug-/Aktions-Prompt
+  (`dev`, Standard) und reiner Unterhaltung ohne Dev-Prompt (`chat`) um —
+  sinnvoll für Smalltalk/Rückfragen, die keine Aktionen brauchen. `/mode`
+  ohne Argument zeigt den aktuellen Modus.
 - `/profil speichern <name>` sichert den kompletten Einstellungs-Satz
   unter `~/.mc/profile/<name>.json`, `/profil laden <name>` stellt ihn
   wieder her (auch in späteren Sitzungen), `/profil liste` zeigt alle —

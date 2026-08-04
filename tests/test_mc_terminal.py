@@ -98,6 +98,19 @@ def test_skills_liste_und_model(_skill_dirs):
     assert art == "model_reset" and wert is None
 
 
+def test_mode_kommando():
+    art, wert, _ = mt.expand_input("/mode")
+    assert art == "mode_show" and wert is None
+    art, wert, _ = mt.expand_input("/mode dev")
+    assert art == "mode" and wert == "dev"
+    art, wert, _ = mt.expand_input("/mode chat")
+    assert art == "mode" and wert == "chat"
+    art, wert, _ = mt.expand_input("/mode CHAT")
+    assert art == "mode" and wert == "chat"
+    art, wert, _ = mt.expand_input("/mode unsinn")
+    assert art == "print" and "dev|chat" in wert
+
+
 # ------------------------- Settings & Profile -------------------------------
 
 def test_settings_parsing():

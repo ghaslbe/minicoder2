@@ -49,6 +49,8 @@ BUILTINS = {
     "/models": "Modelle des Endpoints auflisten (mit Preisen, falls gemeldet)",
     "/model-reset": "Modell am lokalen Endpunkt (LM Studio/Ollama) explizit neu laden "
                     "-- fest gesetztes Kontextfenster statt JIT-Reload-Default",
+    "/mode": "Modus wechseln: /mode dev (Werkzeuge/Aktionen, Standard) oder "
+             "/mode chat (nur Unterhaltung, kein Dev-Prompt); ohne Argument = Anzeige",
     "/settings": "Einstellungen anzeigen bzw. aendern: /settings <name> <wert>",
     "/profil": "Einstellungs-Profile: /profil speichern|laden <name>, /profil liste",
 }
@@ -168,6 +170,13 @@ def expand_input(user, model=""):
         return "models", None, {}
     if cmd == "/model-reset":
         return "model_reset", None, {}
+    if cmd == "/mode":
+        r = rest.strip().lower()
+        if not r:
+            return "mode_show", None, {}
+        if r not in ("dev", "chat"):
+            return "print", "Nutzung: /mode dev|chat", {}
+        return "mode", r, {}
     if cmd == "/settings":
         if not rest:
             return "settings_show", None, {}

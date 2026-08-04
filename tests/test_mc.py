@@ -1020,6 +1020,20 @@ def test_trunc_marker_konstante():
     assert mc.TRUNC_MARKER.startswith("\n[mc:")
 
 
+def test_system_message_fuer_modus(monkeypatch):
+    monkeypatch.setattr(mc, "MODE", "dev")
+    monkeypatch.setattr(mc, "SYSTEM_CONTEXT", "STECKBRIEF-MARKER")
+    dev_content = mc._system_message_for_mode()
+    assert "STECKBRIEF-MARKER" in dev_content
+    assert dev_content != mc.CHAT_SYSTEM_PROMPT
+
+    monkeypatch.setattr(mc, "MODE", "chat")
+    chat_content = mc._system_message_for_mode()
+    assert chat_content == mc.CHAT_SYSTEM_PROMPT
+    assert "STECKBRIEF-MARKER" not in chat_content
+    assert "mode dev" in chat_content  # Hinweis, wie man zurueckschaltet
+
+
 # --------------------- /model-reset: Endpunkt-Erkennung + Reload -----------
 
 class _FakeOpener:

@@ -232,6 +232,19 @@ PRUNE_CTX_FRACTION = 0.7   # Kuerzung erst, wenn die Historie diesen Anteil des
 # Modell beibringt — der Parser versteht IMMER beide Formate.
 FENCE = _truthy(_setting("MC_FENCE", "fence", True))
 
+# Modus im interaktiven Terminal: 'dev' (Standard) haengt den vollen
+# Werkzeug-/Aktions-Prompt samt Projekt-Steckbrief an, 'chat' schaltet auf
+# reine Unterhaltung OHNE Dev-Prompt um (/mode dev|chat, ohne Argument zeigt
+# den aktuellen Modus). Sinnvoll fuer Smalltalk/Rueckfragen, die keine
+# Aktionen brauchen -- kein Grund, dafuer immer den vollen ~4000-Token-
+# System-Prompt mitzuschicken.
+MODE = "dev"
+CHAT_SYSTEM_PROMPT = (
+    "Du bist ein hilfreicher Gespraechspartner. Antworte direkt in normaler "
+    "Sprache -- kein JSON, keine Aktionen, keine Werkzeuge. Falls eine "
+    "Programmier-/Bearbeitungsaufgabe gewuenscht wird, weise darauf hin, "
+    "dass dafuer im Terminal '/mode dev' aktiviert werden sollte.")
+
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
 USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
@@ -2928,6 +2941,15 @@ def system_prompt(fence, analyse=False):
     return sp
 
 
+def _system_message_for_mode():
+    """Der Inhalt fuer messages[0] je nach /mode: 'chat' nutzt einen kurzen,
+    werkzeugfreien Prompt (kein Dev-/Aktions-Kontext), 'dev' den vollen
+    System-Prompt samt Projekt-Steckbrief/Code-Outline (SYSTEM_CONTEXT)."""
+    if MODE == "chat":
+        return CHAT_SYSTEM_PROMPT
+    return system_prompt(FENCE) + "\n\n" + SYSTEM_CONTEXT
+
+
 # ------------------------------ Agenten-Loop -------------------------------
 
 def plan_phase(messages, model):
@@ -4115,7 +4137,7 @@ def _apply_setting(key, wert):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -4350,7 +4372,7 @@ def main():
                 print(_settings_report(args.model))
                 return
             if art in ("setting", "models", "model_pick", "model_reset",
-                       "profil_save", "profil_load"):
+                       "mode_show", "mode", "profil_save", "profil_load"):
                 info("Dieses Kommando gibt es im interaktiven Modus "
                      "(mc.py ohne Aufgabe starten).")
                 return
@@ -4396,7 +4418,7 @@ def main():
     while True:
         try:
             print()
-            user = input(rl_prompt(f"{C.GREEN}{C.BOLD}du> {C.RESET}")).strip()
+            user = input(rl_prompt(f"{C.GREEN}{C.BOLD}du [{MODE}]> {C.RESET}")).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -4470,8 +4492,7 @@ def main():
                 ok_s, meldung, prompt_neu = _apply_setting(key, val)
                 print(meldung)
                 if ok_s and prompt_neu:
-                    messages[0]["content"] = (system_prompt(FENCE)
-                                              + "\n\n" + SYSTEM_CONTEXT)
+                    messages[0]["content"] = _system_message_for_mode()
                     info("System-Prompt neu aufgebaut (fence/check geaendert).")
                 continue
             if art == "profil_save":
@@ -4493,14 +4514,42 @@ def main():
                     ok_s, _m, pn = _apply_setting(k, v)
                     prompt_neu = prompt_neu or (ok_s and pn)
                 if prompt_neu:
-                    messages[0]["content"] = (system_prompt(FENCE)
-                                              + "\n\n" + SYSTEM_CONTEXT)
+                    messages[0]["content"] = _system_message_for_mode()
                 print(f"Profil '{wert}' geladen.")
                 print(_settings_report(args.model))
+                continue
+            if art == "mode_show":
+                print(f"Aktueller Modus: {MODE} — /mode dev|chat zum Wechseln.")
+                continue
+            if art == "mode":
+                MODE = wert
+                messages[0]["content"] = _system_message_for_mode()
+                info(f"Modus gewechselt: {MODE}" + (
+                    " (nur Unterhaltung, kein Dev-Prompt)" if MODE == "chat"
+                    else " (Werkzeuge/Aktionen aktiv)"))
                 continue
             if art == "task":
                 user = wert
                 info(f"Skill expandiert ({len(user)} Zeichen Aufgabe).")
+        if MODE == "chat":
+            messages.append({"role": "user", "content": user})
+            try:
+                reply = chat_stream(messages, args.model)
+            except CtxOverflowError:
+                print(f"{C.RED}Kontext-Ueberlauf gemeldet — /mode dev oder "
+                      f"Verlauf kuerzen.{C.RESET}")
+                messages.pop()
+            except (NetRetryError, SystemExit) as e:
+                print(f"{C.RED}{e}{C.RESET}")
+                messages.pop()
+            else:
+                if reply.strip():
+                    messages.append({"role": "assistant", "content": reply})
+                else:
+                    print(f"{C.YELLOW}(keine Antwort — evtl. Kontextfenster "
+                          f"ueberschritten){C.RESET}")
+                    messages.pop()
+            continue
         globals()["CURRENT_TASK"] = user
         EXPECTED_FILES[:] = expected_files_from_task(user)
         hints = task_hints(user)
@@ -4521,13 +4570,13 @@ def main():
         if sflags.get("check") or sflags.get("analyse"):
             CHECK = CHECK or sflags.get("check", False)
             ANALYSE = ANALYSE or sflags.get("analyse", False)
-            messages[0]["content"] = system_prompt(FENCE) + "\n\n" + SYSTEM_CONTEXT
+            messages[0]["content"] = _system_message_for_mode()
             info("Skill-Flags aktiv fuer diese Aufgabe: " + ", ".join(
                 k for k in ("check", "analyse") if sflags.get(k)))
         result = run_task(messages, args.model)
         if (CHECK, ANALYSE) != (prev_check, prev_analyse):
             CHECK, ANALYSE = prev_check, prev_analyse
-            messages[0]["content"] = system_prompt(FENCE) + "\n\n" + SYSTEM_CONTEXT
+            messages[0]["content"] = _system_message_for_mode()
         after_run(result if isinstance(result, str) else "")
     if mc_terminal:
         mc_terminal.save_history()
