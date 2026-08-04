@@ -4177,6 +4177,44 @@ UND gueltiges ESM, kein-Script-Fall, oMLX-Erkennung, Kontextfenster-
 Fallback, beide Reset-Faelle), 175/175 gruen, alles live gegen den
 echten Server verifiziert.
 
+## 45. oMLX' max_context_window luegt nicht, aber es taeuscht
+
+Direkt beim ersten echten End-to-End-Test mit oMLX (derselbe Drei.js-
+Jump'n'Run-Auftrag wie in Kapitel 42, diesmal ueber `/settings api_key`)
+kippte der Lauf nach dem dritten Schritt in genau das Muster, das schon
+LM Studio (Kapitel 33/34) gezeigt hatte: Ein echter Kontext-Ueberlauf vom
+Endpoint, `"Endpoint meldet Kontextfenster: 13081 Token"` — obwohl
+`/v1/models/status` fuer dasselbe Modell **262.144** als
+`max_context_window` gemeldet hatte, dieselbe Zahl, die Kapitel 44 gerade
+erst als vertrauenswuerdig eingebaut hatte.
+
+Direkter Vergleich der beiden Zahlen zeigt das Problem: `max_context_window`
+ist das THEORETISCHE Konfigurationsmaximum des Modells, nicht das
+tatsaechlich allozierte Fenster — exakt dieselbe Verwechslung wie
+LM Studios `max_context_length` vs. `loaded_context_length`. Der
+Unterschied: LM Studio liefert BEIDE Werte getrennt, oMLX' `/v1/models/
+status` nur den theoretischen. Mit dieser (falschen) 262.144 als
+Kuerzungs-Schwelle liess `maybe_prune()` die Historie frei wachsen — bis
+zum echten Ueberlauf bei ~22.000 Token, viel zu spaet.
+
+Fix: `_loaded_ctx_tokens()` gibt fuer oMLX jetzt bewusst 0 zurueck (die
+262.144 werden schlicht ignoriert) — `maybe_prune()` faellt damit auf sein
+BEREITS VORHANDENES sicheres Verhalten fuer 'Fenster unbekannt' zurueck:
+vor JEDEM Schritt kuerzen statt zu warten, bis es reisst. Kostet etwas
+Prompt-Cache-Vorteil (der eigentliche Sinn der lazy Kuerzung), gewinnt
+aber Zuverlaessigkeit — und die reaktive Selbstkalibrierung ueber
+`CtxOverflowError` bleibt unveraendert als zweites Sicherheitsnetz
+bestehen, falls doch mal etwas durchrutscht.
+
+End-to-End nachgemessen, derselbe Spiel-Auftrag zweimal im direkten
+Vergleich: VOR dem Fix wuchs die gesendete Historie ungebremst auf
+~40.000 Zeichen, drei leere Antworten in Folge, Abbruch. NACH dem Fix:
+eine einzelne voruebergehende leere Antwort bei ~17.200 Zeichen, ein
+Wiederholungsversuch, dann sauberer Abschluss mit `finish` — alle drei
+Dateien geschrieben, keine einzige Kontext-Ueberlauf-Meldung mehr. 1
+Test angepasst (das alte, jetzt bewusst falsche Verhalten durch das neue
+ersetzt), 178/178 gruen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

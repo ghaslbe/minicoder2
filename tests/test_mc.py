@@ -1311,24 +1311,26 @@ def test_detect_local_engine_omlx(monkeypatch):
     assert mc._detect_local_engine() == "omlx"
 
 
-def test_loaded_ctx_omlx_fallback(monkeypatch):
-    # Weder LM Studio (/api/v0/models) noch vMLX (/v1/models/{m}/
-    # capabilities) vorhanden -- Fallback auf oMLX' /v1/models/status (mit
-    # Bearer-Auth) -> max_context_window ist das tatsaechlich nutzbare
-    # Fenster.
+def test_loaded_ctx_omlx_max_context_window_bewusst_ignoriert(monkeypatch):
+    # Real erprobt: oMLX' max_context_window (/v1/models/status) ist das
+    # THEORETISCHE Konfigurationsmaximum, nicht das tatsaechlich nutzbare
+    # Fenster -- gemeldet 262144, ein echter Kontext-Ueberlauf traf aber
+    # schon bei ~22000 gesendeten Token ein (siehe Blog Kapitel 45). Wuerde
+    # _loaded_ctx_tokens() das blind uebernehmen, bliebe das Lazy-Pruning
+    # die ganze Zeit inaktiv. Deshalb bewusst: ctx bleibt 0 (Fenster
+    # 'unbekannt'), maybe_prune() kuerzt dann sicherheitshalber jeden
+    # Schritt -- die reaktive Selbstkalibrierung ueber CtxOverflowError
+    # bleibt der einzige Weg, das reale Fenster zu erfahren.
     monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
     monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
     monkeypatch.setattr(mc, "API_KEY", "1234")
 
     def _fake_urlopen(req, timeout=5):
-        if req.full_url.endswith("/v1/models/status"):
-            assert req.headers.get("Authorization") == "Bearer 1234"
-            return _FakeResp({"models": [{"id": "m", "max_context_window": 262144}]})
         raise OSError("nicht gefunden: " + req.full_url)
 
     monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
-    assert mc._loaded_ctx_tokens("m") == 262144
-    assert mc._LOADED_CTX_TOKENS["m"] == 262144
+    assert mc._loaded_ctx_tokens("m") == 0
+    assert mc._LOADED_CTX_TOKENS["m"] == 0
 
 
 def test_reset_model_omlx_uebernimmt_geladenen_wert(monkeypatch):

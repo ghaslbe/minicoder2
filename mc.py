@@ -1524,23 +1524,19 @@ def _loaded_ctx_tokens(model):
             ctx = int(cap.get("max_prompt_tokens") or 0)
         except Exception:
             pass
-    if not ctx:
-        # oMLX: /v1/models/status meldet max_context_window je geladenem
-        # Modell -- braucht (anders als LM Studio/vMLX) einen API-Key.
-        try:
-            oheaders = {}
-            if API_KEY:
-                oheaders["Authorization"] = f"Bearer {API_KEY}"
-            req = urllib.request.Request(base + "/v1/models/status", headers=oheaders)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data3 = json.loads(resp.read().decode("utf-8", errors="replace"))
-            reached = True
-            for m in data3.get("models", []):
-                if m.get("id") == model:
-                    ctx = int(m.get("max_context_window") or 0)
-                    break
-        except Exception:
-            pass
+    # oMLX bietet zwar /v1/models/status mit max_context_window an, aber das
+    # ist -- real erprobt -- das THEORETISCHE Konfigurationsmaximum, nicht
+    # das tatsaechlich nutzbare Fenster: gemeldet 262144, ein echter
+    # Kontext-Ueberlauf traf aber schon bei ca. 22000 gesendeten Token ein
+    # (Endpoint kalibrierte danach auf 13081 Token, siehe Blog Kapitel 45).
+    # Wuerde man 262144 hier zurueckgeben, bliebe das Lazy-Pruning (unten in
+    # maybe_prune) die GANZE Zeit inaktiv, bis der Lauf real ueberlief --
+    # zu spaet. Deshalb bewusst KEIN oMLX-Sonderfall hier: ctx bleibt 0,
+    # maybe_prune() faellt dann auf sein bereits sicheres Verhalten fuer
+    # 'Fenster unbekannt' zurueck (jeden Schritt kuerzen) -- weniger
+    # Cache-Vorteil, aber kein falsches Vertrauen in eine irrefuehrende Zahl.
+    # Die reaktive Selbstkalibrierung ueber CtxOverflowError bleibt davon
+    # unberuehrt und greift weiterhin, sobald der Endpoint wirklich ueberlaeuft.
     if ctx:
         _LOADED_CTX_TOKENS[model] = ctx
     elif not reached:
