@@ -673,6 +673,33 @@ def test_code_outline_python_mit_routen():
     assert "class Dienst" in out and "start" in out
 
 
+def test_code_outline_ignoriert_venv_unabhaengig_vom_namen():
+    # Regression: eine Virtualenv mit untypischem Namen (z.B. 'whisper-env'
+    # statt 'venv'/'.venv') wurde bisher wie ein normaler Projektordner
+    # durchsucht -- Hunderte fremder site-packages-Funktionen landeten im
+    # Code-Outline und blaehten den System-Prompt sinnlos auf.
+    with open("app.py", "w") as f:
+        f.write("def echt_projekt():\n    pass\n")
+    os.makedirs("whisper-env/lib/site-packages", exist_ok=True)
+    with open("whisper-env/pyvenv.cfg", "w") as f:
+        f.write("home = /usr/bin\n")
+    with open("whisper-env/lib/site-packages/fremd.py", "w") as f:
+        f.write("def fremde_funktion():\n    pass\n")
+    out = "\n".join(mc.code_outline())
+    assert "echt_projekt" in out
+    assert "fremde_funktion" not in out and "whisper-env" not in out
+
+
+def test_is_venv_dir():
+    os.makedirs("normaler_ordner", exist_ok=True)
+    os.makedirs("irgendeine-env", exist_ok=True)
+    with open("irgendeine-env/pyvenv.cfg", "w") as f:
+        f.write("x\n")
+    assert mc._is_venv_dir("irgendeine-env") is True
+    assert mc._is_venv_dir("normaler_ordner") is False
+    assert mc._is_venv_dir("nicht-vorhanden-xyz") is False
+
+
 def test_terse_hint_nur_bei_kurzem_auftrag_mit_bestand():
     with open("app.py", "w") as f:
         f.write("x = 1\n")
@@ -1329,3 +1356,38 @@ def test_run_task_entfernt_unbeantwortete_nachricht_nach_abbruch(monkeypatch):
     ergebnis = mc.run_task(messages, "m")
     assert ergebnis is None
     assert messages == [{"role": "system", "content": "sys"}]  # Rest sauber
+
+
+# ------------------- Warnung bei System-/Temp-Arbeitsverzeichnis -----------
+
+def test_suspicious_cwd_warning_tempdir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mc.tempfile, "gettempdir", lambda: str(tmp_path))
+    w = mc._suspicious_cwd_warning()
+    assert w is not None and "Temp-Verzeichnis" in w
+
+
+def test_suspicious_cwd_warning_unterordner_von_tempdir(tmp_path, monkeypatch):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    monkeypatch.setattr(mc.tempfile, "gettempdir", lambda: str(tmp_path))
+    w = mc._suspicious_cwd_warning()
+    assert w is not None
+
+
+def test_suspicious_cwd_warning_normales_projekt(tmp_path, monkeypatch):
+    projekt = tmp_path / "mein-projekt"
+    projekt.mkdir()
+    monkeypatch.chdir(projekt)
+    monkeypatch.setattr(mc.tempfile, "gettempdir", lambda: "/nonexistent-tempdir-xyz")
+    assert mc._suspicious_cwd_warning() is None
+
+
+def test_suspicious_cwd_warning_home(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mc.tempfile, "gettempdir", lambda: "/nonexistent-tempdir-xyz")
+    monkeypatch.setattr(mc.os.path, "expanduser",
+                        lambda p: str(tmp_path) if p == "~" else p)
+    w = mc._suspicious_cwd_warning()
+    assert w is not None and "Home" in w

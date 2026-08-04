@@ -692,13 +692,21 @@ def chat_stream(messages, model):
     """Wie _chat_once, aber faengt abgeschnittene Antworten ab: bei Truncation
     wird das Modell automatisch um Fortsetzung gebeten und der Text zusammengefuegt
     — modell- und groessenunabhaengig, ohne kaputtes JSON zu flicken."""
+    global LAST_REASONING_CHARS
     text, fr = _chat_once_retry(messages, model)
+    # _chat_once() setzt LAST_REASONING_CHARS bei JEDEM Aufruf zurueck --
+    # bei Fortsetzungen (unten) also ueber alle internen Aufrufe AUFSUMMIEREN,
+    # sonst geht das Reasoning frueherer Versuche in der Diagnose verloren
+    # (genau der Fall, der eine Reasoning-Truncation erst ausloest: Budget
+    # beim Nachdenken aufgebraucht -> finish_reason=length -> Fortsetzung).
+    reasoning_total = LAST_REASONING_CHARS
     cont = 0
     while _looks_truncated(text, fr) and cont < MAX_CONTINUATIONS:
         if len(text) > MAX_REPLY_CHARS or _looks_runaway(text):
             print(f"\n{C.RED}⚠ Antwort ausser Kontrolle (Endlos-Ausgabe oder "
                   f"> {MAX_REPLY_CHARS} Zeichen) — abgebrochen statt "
                   f"fortgesetzt.{C.RESET}")
+            LAST_REASONING_CHARS = reasoning_total
             return text[:MAX_REPLY_CHARS] + DEGEN_MARKER
         cont += 1
         print()
@@ -723,7 +731,9 @@ def chat_stream(messages, model):
                 "Wiederholung, ohne Einleitung, ohne den bereits gesendeten Teil "
                 "zu erneut zu schreiben."}]
         more, fr = _chat_once_retry(cont_msgs, model)
+        reasoning_total += LAST_REASONING_CHARS
         text += more
+    LAST_REASONING_CHARS = reasoning_total
     print()
     if _looks_truncated(text, fr):
         # Fortsetzungen ausgeschoepft, Antwort weiterhin unvollstaendig:
@@ -950,6 +960,33 @@ def reset_model(model, context_length=None):
         return False, f"HTTP {e.code} beim Neuladen: {e.read().decode('utf-8', 'replace')[:300]}"
     except NET_ERRORS as e:
         return False, net_error(getattr(e, "reason", e))
+
+
+def _suspicious_cwd_warning():
+    """Erkennt, ob das Arbeitsverzeichnis ein System-/Temp- oder Home-
+    Verzeichnis ist statt ein eigenes Projektverzeichnis. Real beobachtet:
+    mc.py in /private/tmp gestartet -- der automatische Projekt-Steckbrief/
+    Code-Outline versuchte, daraus einen Kontext zu bauen, und las fremde,
+    teils riesige Dateien anderer Prozesse/Nutzer ein (siehe Blog Kapitel
+    39/41). Gibt eine Warnmeldung zurueck oder None, wenn unauffaellig."""
+    cwd = os.path.realpath(os.getcwd())
+    tempdirs = {os.path.realpath(tempfile.gettempdir()),
+                "/tmp", "/private/tmp", "/var/tmp"}
+    for t in tempdirs:
+        if t and (cwd == t or cwd.startswith(t.rstrip("/") + "/")):
+            return (f"Achtung: Arbeitsverzeichnis '{cwd}' sieht nach einem "
+                    f"System-/Temp-Verzeichnis aus, nicht nach einem eigenen "
+                    f"Projekt -- dort liegen oft fremde/riesige Dateien "
+                    f"anderer Prozesse, die der automatische Projekt-"
+                    f"Steckbrief faelschlich als Bestand einliest. Besser in "
+                    f"ein eigenes Projektverzeichnis wechseln (mkdir/cd) und "
+                    f"mc.py von dort starten.")
+    home = os.path.realpath(os.path.expanduser("~"))
+    if cwd == home:
+        return (f"Achtung: Arbeitsverzeichnis ist direkt dein Home-"
+                f"Verzeichnis ('{cwd}') — meintest du ein Unterverzeichnis "
+                f"davon?")
+    return None
 
 
 def debug_net():
@@ -1710,7 +1747,7 @@ def _project_has_code(root="."):
     HAS_CODE = False
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if d not in IGNORE_DIRS and not d.startswith(".")]
+                       if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
             # Eigene Zustandsdateien zaehlen nicht als Projekt-Bestand.
             if fn in (os.path.basename(MC_NOTES), MC_PLAN, MC_VERLAUF):
@@ -2064,7 +2101,7 @@ def _projekt_frontend_texte(root=".", max_dateien=200):
     jsx, css, n = [], [], 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if d not in IGNORE_DIRS and not d.startswith(".")]
+                       if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
             ext = os.path.splitext(fn)[1].lower()
             if ext not in (".jsx", ".tsx", ".html", ".css", ".js"):
@@ -2362,6 +2399,20 @@ IGNORE_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
                "build", "mc_skills"}
 
 
+def _is_venv_dir(path):
+    """Erkennt eine Python-Virtualenv UNABHAENGIG vom Namen -- ueber die von
+    'python -m venv'/virtualenv erzeugte Markerdatei pyvenv.cfg, statt sich
+    auf uebliche Namen wie 'venv'/'.venv' (siehe IGNORE_DIRS) zu verlassen.
+    Real beobachtet: eine 'whisper-env' genannte venv in einem fremden
+    Scratchpad-Unterordner wurde sonst wie ein normaler Projektordner
+    durchsucht -- Hunderte fremder site-packages-Dateien landeten im
+    Code-Outline und blaehten den System-Prompt sinnlos auf."""
+    try:
+        return os.path.isfile(os.path.join(path, "pyvenv.cfg"))
+    except OSError:
+        return False
+
+
 def _norm(s):
     """Auf Kleinbuchstaben + nur alphanumerisch reduzieren — fuer unscharfen
     Vergleich, z.B. 'hello world' == 'helloworld'."""
@@ -2380,7 +2431,7 @@ def do_find(args):
     npat = _norm(pattern)
     matches = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in sorted(filenames):
             if pattern.lower() in fn.lower() or (npat and npat in _norm(fn)):
                 matches.append(os.path.normpath(os.path.join(dirpath, fn)))
@@ -2412,7 +2463,7 @@ def do_grep(args):
         rx = None  # ungueltige Regex -> einfache Textsuche
     matches, limit = [], 50
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in sorted(filenames):
             full = os.path.join(dirpath, fn)
             if os.path.splitext(fn)[1].lower() in GREP_SKIP_EXTS:
@@ -2447,7 +2498,7 @@ def project_overview(root=".", max_entries=200):
     paths = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames
-                             if d not in IGNORE_DIRS and not d.startswith("."))
+                             if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         rel = os.path.relpath(dirpath, root)
         for fn in sorted(filenames):
             paths.append(fn if rel == "." else os.path.join(rel, fn))
@@ -2571,7 +2622,7 @@ def code_outline(root=".", max_files=30):
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames
-                             if d not in IGNORE_DIRS and not d.startswith("."))
+                             if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
             if ext not in (".py", ".js", ".jsx", ".ts", ".tsx"):
@@ -3163,7 +3214,7 @@ def _resolve_project_file(p):
     hits = []
     for dirpath, dirnames, filenames in os.walk("."):
         dirnames[:] = [d for d in dirnames
-                       if d not in IGNORE_DIRS and not d.startswith(".")]
+                       if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
             full = os.path.join(dirpath, fn).replace("\\", "/").lstrip("./")
             if full == target or full.endswith("/" + target):
@@ -3188,7 +3239,7 @@ def existing_project_dirs(max_depth=2):
     found = []
     for dirpath, dirnames, filenames in os.walk("."):
         dirnames[:] = sorted(d for d in dirnames
-                             if d not in IGNORE_DIRS and not d.startswith("."))
+                             if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         if dirpath.count(os.sep) >= max_depth:
             dirnames[:] = []
         for mk in PROJECT_MARKERS:
@@ -4414,6 +4465,9 @@ def main():
     if CHECK:
         info("Check-Modus aktiv: finish erst nach echter Ausfuehrung (run mit exit=0).")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
+    cwd_warnung = _suspicious_cwd_warning()
+    if cwd_warnung:
+        print(f"{C.YELLOW}{cwd_warnung}{C.RESET}")
 
     # Git-Sicherung: unabhaengig von --yes pruefen (frueher nur interaktiv, damit
     # war bei --yes-Laeufen JEDE Git-Absicherung aus — genau die Laeufe, die sie

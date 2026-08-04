@@ -3988,6 +3988,59 @@ haben wir also nicht nur "gib genaue Anleitungen", sondern die
 Kombination: so viel Praezision im Prompt wie moeglich, UND so viel
 Absicherung im Code wie noetig — keins von beidem ersetzt das andere.
 
+## 41. Drei Funde aus einem einzigen "warum geht 'hallo' immer noch nicht"
+
+Derselbe Praxistest wie in Kapitel 39, aber diesmal genauer seziert —
+und diesmal fast dreifach ergiebig.
+
+**Fund 1, ein echter Bug in der eigenen Reasoning-Diagnose (Kapitel 38).**
+`chat_stream()` ruft bei einer abgeschnittenen Antwort intern mehrfach
+`_chat_once()` auf (die automatische Fortsetzungs-Logik) — und JEDER
+interne Aufruf setzte `LAST_REASONING_CHARS` auf 0 zurueck. Ausgerechnet
+im Fall, den die Diagnose eigentlich erkennen sollte (Reasoning fuehrt zu
+`finish_reason=length`, was eine Fortsetzung ausloest), ueberlebte nur der
+LETZTE interne Versuch in der Zaehlung — fruehere, ggf. sehr lange
+Reasoning-Phasen gingen verloren, und die Meldung fiel faelschlich auf
+"Kontextfenster ueberschritten" zurueck. Fix: `chat_stream()` summiert die
+Reasoning-Laenge jetzt ueber ALLE internen Versuche auf, bevor es
+zurueckkehrt.
+
+**Fund 2, isolierter Vergleichstest 3-von-3 erfolgreich, echte Sitzung
+weiterhin 3-von-3 leer.** Trotz identischem Prompt, gleichem Modell,
+gleichem Endpunkt lief der eigene Nachbau anstandslos durch (Reasoning
+jeweils 500-1700 Zeichen, weit unterm Budget) — ein Hinweis auf reine
+Sampling-Varianz (Temperatur 1.0) als Erklaerung fuer einzelne
+Fehlschlaege, aber kein vollstaendiger Beweis. Bleibt vorerst offen.
+
+**Fund 3, der eigentliche Wiederholungstaeter: `/private/tmp` als
+Arbeitsverzeichnis** (siehe schon Kapitel 39 — es wurde einfach nochmal
+dort gestartet). Diesmal genau vermessen: 7.236 Token Prompt, klar unter
+dem 10.326er-Limit von vMLX — also diesmal wirklich KEIN Kontext-Problem,
+sondern (vermutlich) wieder Zufall beim Reasoning. Aber die Vermessung
+brachte einen ganz eigenen Fund zutage: `code_outline()` hatte eine
+Python-Virtualenv namens `whisper-env` (aus einem voelligen fremden
+Scratchpad-Unterordner, Rest einer anderen Sitzung) durchsucht und
+Hunderte Funktionen aus deren `site-packages` (u.a. `typing_extensions`,
+`anyio`) ins Code-Outline aufgenommen — die `IGNORE_DIRS`-Liste kennt nur
+uebliche Namen wie `venv`/`.venv`, nicht jeden beliebig benannten
+virtuellen-Environment-Ordner.
+
+Zwei Nachbesserungen fuer den dritten Fund:
+1. **`_is_venv_dir()`**: erkennt eine Virtualenv jetzt NAMENSUNABHAENGIG
+   ueber die Markerdatei `pyvenv.cfg`, die `python -m venv` in jeder
+   Virtualenv anlegt — an allen 8 Stellen im Code, die Verzeichnisse
+   durchsuchen, per Ein-Zeilen-Ergaenzung nachgezogen.
+2. **Eine neue Start-Warnung** (`_suspicious_cwd_warning()`): mc.py
+   erkennt jetzt, wenn das Arbeitsverzeichnis ein System-/Temp-Verzeichnis
+   (`/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, auch Unterordner davon)
+   oder direkt das Home-Verzeichnis ist, und warnt VOR dem ersten
+   Dateizugriff statt stillschweigend fremden Kram einzulesen — die
+   direkte Antwort auf "dann sollte man das aber irgendwie merken".
+
+7 neue Tests (Reasoning-Summierung indirekt ueber den bestehenden
+Regressionstest, `_is_venv_dir`, Venv-Ausschluss im Outline, vier Faelle
+der Start-Warnung), 162/162 gruen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
