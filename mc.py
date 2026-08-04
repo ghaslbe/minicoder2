@@ -762,18 +762,31 @@ def _local_engine_headers():
 
 
 def _detect_local_engine():
-    """Erkennt am Endpunkt-Root, ob LM Studio oder Ollama dahinterstecken --
-    beide bieten eigene Lade-/Entlade-Endpunkte mit explizitem Kontextfenster,
-    die ein generischer OpenAI-Client nicht kennt. Gibt 'lmstudio', 'ollama'
-    oder None (z.B. OpenRouter/Cloud-Endpunkt) zurueck."""
+    """Erkennt am Endpunkt-Root, ob LM Studio, Ollama oder vMLX dahinterstecken
+    -- alle drei bieten eigene Lade-/Entlade- bzw. Kapazitaets-Endpunkte, die
+    ein generischer OpenAI-Client nicht kennt. Gibt 'lmstudio', 'ollama',
+    'vmlx' oder None (z.B. OpenRouter/Cloud-Endpunkt) zurueck.
+    vMLX zuerst pruefen: es bildet u.a. AUCH /api/tags nach (Ollama-
+    Kompatibilitaet) und wuerde sonst faelschlich als 'ollama' erkannt --
+    'owned_by': 'vmlx-engine' in /v1/models ist das eindeutige Merkmal."""
     root = _endpoint_root()
     headers = _local_engine_headers()
+
+    def _get(path):
+        req = urllib.request.Request(root + path, headers=headers, method="GET")
+        with build_opener().open(req, timeout=4) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    try:
+        obj = _get("/v1/models")
+        if any(m.get("owned_by") == "vmlx-engine" for m in obj.get("data", [])):
+            return "vmlx"
+    except Exception:
+        pass
     for path, key, kind in (("/api/v0/models", "data", "lmstudio"),
-                             ("/api/tags", "models", "ollama")):
+                            ("/api/tags", "models", "ollama")):
         try:
-            req = urllib.request.Request(root + path, headers=headers, method="GET")
-            with build_opener().open(req, timeout=4) as resp:
-                obj = json.loads(resp.read().decode("utf-8", "replace"))
+            obj = _get(path)
             if key in obj:
                 return kind
         except Exception:
@@ -819,11 +832,13 @@ def reset_model(model, context_length=None):
     neu, mit fest gesetztem Kontextfenster -- Gegenmittel zum JIT-Reload-
     Default, der beim automatischen Neuladen greift und deutlich kleiner sein
     kann als eine zuvor manuell in der Oberflaeche gesetzte Fenstergroesse
-    (real beobachtet: 8192 statt 125873, siehe Blog Kapitel 33).
+    (real beobachtet: 8192 statt 125873, siehe Blog Kapitel 33). Bei vMLX
+    gibt es keinen Lade-Endpunkt (Kontextfenster nur per Server-Start-Flag
+    aenderbar) -- dort meldet die Funktion das ehrlich statt es vorzutaeuschen.
     Gibt (ok, meldung) zurueck."""
     kind = _detect_local_engine()
     if kind is None:
-        return False, ("Endpunkt nicht als LM Studio/Ollama erkannt — "
+        return False, ("Endpunkt nicht als LM Studio/Ollama/vMLX erkannt — "
                         "/model-reset ist nur fuer lokale Engines mit eigenem "
                         "Lade-Endpunkt anwendbar (z.B. nicht bei OpenRouter).")
     root = _endpoint_root()
@@ -837,6 +852,23 @@ def reset_model(model, context_length=None):
             return json.loads(resp.read().decode("utf-8", "replace"))
 
     try:
+        if kind == "vmlx":
+            # vMLX setzt das Kontextfenster (max_prompt_tokens) beim
+            # Server-START fest (--max-prompt-tokens) -- anders als LM Studio
+            # gibt es KEINEN Lade-Endpunkt, um es zur Laufzeit zu aendern.
+            # Ehrlich melden statt so zu tun, als waere neu geladen worden.
+            enc = urllib.parse.quote(model, safe="")
+            req = urllib.request.Request(root + f"/v1/models/{enc}/capabilities",
+                                          headers=headers, method="GET")
+            with build_opener().open(req, timeout=10) as resp:
+                cap = json.loads(resp.read().decode("utf-8", "replace"))
+            aktuell = cap.get("max_prompt_tokens")
+            hinweis = f" (aktuell: {aktuell} Token)" if aktuell else ""
+            return False, ("vMLX setzt das Kontextfenster (max_prompt_tokens) "
+                           "beim Server-Start fest — kein Neuladen mit anderem "
+                           f"Wert zur Laufzeit moeglich{hinweis}. Server mit "
+                           "--max-prompt-tokens <n> neu starten, um es zu "
+                           "aendern.")
         if kind == "lmstudio":
             req = urllib.request.Request(root + "/api/v0/models", headers=headers, method="GET")
             with build_opener().open(req, timeout=10) as resp:
@@ -1322,21 +1354,40 @@ def _loaded_ctx_tokens(model):
     den ganzen Lauf deaktiviert; so zieht der Wert ab Schritt 2 nach."""
     if model in _LOADED_CTX_TOKENS:
         return _LOADED_CTX_TOKENS[model]
+    base = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+    ctx = 0
+    reached = False  # mind. ein Endpunkt hat geantwortet (auch ohne brauchbaren Wert)
     try:
-        base = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
         req = urllib.request.Request(base + "/api/v0/models")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        reached = True
+        for m in data.get("data", []):
+            if m.get("id") == model:
+                ctx = int(m.get("loaded_context_length") or 0)
+                break
     except Exception:
-        _LOADED_CTX_TOKENS[model] = 0  # kein LM Studio / nicht erreichbar
-        return 0
-    ctx = 0
-    for m in data.get("data", []):
-        if m.get("id") == model:
-            ctx = int(m.get("loaded_context_length") or 0)
-            break
+        pass
+    if not ctx:
+        # vMLX: kein loaded_context_length wie LM Studio, aber /v1/capabilities
+        # meldet max_prompt_tokens -- das (nicht das theoretische Maximum) ist
+        # das tatsaechlich nutzbare Fenster (siehe Blog: 10326 statt 262144).
+        try:
+            enc = urllib.parse.quote(model, safe="")
+            req = urllib.request.Request(base + f"/v1/models/{enc}/capabilities")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                cap = json.loads(resp.read().decode("utf-8", errors="replace"))
+            reached = True
+            ctx = int(cap.get("max_prompt_tokens") or 0)
+        except Exception:
+            pass
     if ctx:
         _LOADED_CTX_TOKENS[model] = ctx
+    elif not reached:
+        # kein Endpunkt erreichbar (weder LM Studio noch vMLX) -> definitiv
+        # cachen. War ein Endpunkt erreichbar, aber (noch) kein Wert (Modell
+        # laedt JIT), bleibt es TRANSIENT ungecacht -- siehe Docstring oben.
+        _LOADED_CTX_TOKENS[model] = 0
     return ctx
 
 

@@ -1081,6 +1081,49 @@ def test_detect_local_engine_unbekannt(monkeypatch):
     assert mc._detect_local_engine() is None
 
 
+def test_detect_local_engine_vmlx_vor_ollama_erkannt(monkeypatch):
+    # vMLX bildet AUCH /api/tags nach (Ollama-Kompatibilitaet) -- die
+    # 'owned_by': 'vmlx-engine'-Erkennung ueber /v1/models MUSS zuerst
+    # greifen, sonst wuerde es faelschlich als 'ollama' erkannt.
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    opener = _FakeOpener({
+        "/v1/models": {"data": [{"id": "m", "owned_by": "vmlx-engine"}]},
+        "/api/tags": {"models": [{"name": "m"}]},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    assert mc._detect_local_engine() == "vmlx"
+
+
+def test_loaded_ctx_vmlx_fallback(monkeypatch):
+    # LM Studios /api/v0/models fehlt (vMLX bildet das nicht nach) -- Fallback
+    # auf vMLX' eigenen /v1/models/{model}/capabilities -> max_prompt_tokens
+    # (das TATSAECHLICH nutzbare Fenster, nicht das theoretische Maximum).
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+
+    def _fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/api/v0/models"):
+            raise OSError("kein LM Studio")
+        assert "capabilities" in req.full_url
+        return _FakeResp({"max_prompt_tokens": 10326})
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._loaded_ctx_tokens("m") == 10326
+    assert mc._LOADED_CTX_TOKENS["m"] == 10326
+
+
+def test_reset_model_vmlx_meldet_ehrlich_keine_laufzeit_aenderung(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+    opener = _FakeOpener({
+        "/v1/models": {"data": [{"id": "m", "owned_by": "vmlx-engine"}]},
+        "/v1/models/m/capabilities": {"max_prompt_tokens": 10326},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("m", 32768)
+    assert not ok
+    assert "10326" in msg and "--max-prompt-tokens" in msg
+
+
 def test_reset_model_lmstudio(monkeypatch):
     # load_config.context_length in der Load-Antwort ist nur ein Echo der
     # Anfrage -- reset_model() muss NACH dem Laden per /api/v0/models

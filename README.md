@@ -681,13 +681,19 @@ du …?"-Vorschläge.
   zeigt eine nummerierte Auswahlliste; `/models` listet alle Modelle
   des Endpoints (mit Preisen, falls er sie meldet).
 - `/model-reset` erkennt den lokalen Engine-Typ (LM Studio über
-  `/api/v0/models`, Ollama über `/api/tags`) und lädt das aktuelle
-  Modell explizit mit dem eingestellten `context_length` neu — Gegenmittel
-  zum JIT-Reload-Default, der beim automatischen Neuladen greifen kann und
+  `/api/v0/models`, Ollama über `/api/tags`, vMLX über `owned_by:
+  "vmlx-engine"` in `/v1/models`) und lädt das aktuelle Modell explizit
+  mit dem eingestellten `context_length` neu — Gegenmittel zum
+  JIT-Reload-Default, der beim automatischen Neuladen greifen kann und
   kleiner sein kann als eine zuvor manuell gesetzte Fenstergröße (oder,
   wie sich gezeigt hat, auch einfach eine harte Modell-/Hardware-Grenze
-  aufdecken kann — siehe blog.md Kapitel 33/34). Bei Cloud-Endpunkten
-  (OpenRouter etc.) meldet es sauber „nicht anwendbar".
+  aufdecken kann — siehe blog.md Kapitel 33/34). Bei vMLX ist das
+  Kontextfenster nur per Server-Start-Flag (`--max-prompt-tokens`)
+  änderbar — dort meldet `/model-reset` das ehrlich samt aktuellem Wert,
+  statt ein Neuladen vorzutäuschen. Bei Cloud-Endpunkten (OpenRouter etc.)
+  meldet es sauber „nicht anwendbar". Das tatsächlich nutzbare
+  Kontextfenster (nicht das theoretische Maximum) fließt bei LM Studio
+  UND vMLX automatisch in die Kontext-Kürzung ein (`_loaded_ctx_tokens`).
 - `/mode dev|chat` schaltet zwischen dem vollen Werkzeug-/Aktions-Prompt
   (`dev`, Standard) und reiner Unterhaltung ohne Dev-Prompt (`chat`) um —
   sinnvoll für Smalltalk/Rückfragen, die keine Aktionen brauchen. `/mode`

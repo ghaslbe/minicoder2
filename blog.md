@@ -3803,6 +3803,53 @@ ausserhalb von mc.py: mehr freier Speicher auf der Maschine, eine
 speicherguenstigere Quantisierung dieses Modells, oder ein Modell mit
 kleinerem `baseline`-Fussabdruck wie `gemma-4-12b`.
 
+## 37. vMLX auf demselben Mac mini: mehr als doppelt so viel Kontext, und mc.py lernt es kennen
+
+Der Werkstatt-Mac-mini bekam einen dritten Mitspieler: **vMLX**, ein
+weiterer lokaler Server (Port 8000, `owned_by: "vmlx-engine"` als
+eindeutiges Erkennungsmerkmal in `/v1/models`), der Apples MLX-Framework
+nutzt statt der bisherigen llama.cpp/GGUF-Quantisierungen. Direkter
+Vergleich, GLEICHE Hardware, GLEICHES Modell (`gemma-4-26b-a4b-it-mxfp4`):
+Wo LM Studio bei 4.352 Token hart kappte (Kapitel 33/34/36), meldet vMLX
+ein konfiguriertes Limit von **10.326 Token** — mehr als doppelt so viel
+—, und unser realer mc.py-System-Prompt (5.851 Token) lief anstandslos in
+~19 Sekunden durch. Bonus: Bei Ueberschreitung liefert vMLX eine
+Fehlermeldung, die sofort sagt, WAS los ist (`"This would need ~18.8GB
+of KV cache memory, exceeding the configured prompt/context limit of
+~10,326 tokens"`) und sogar den Fix nennt (`--max-prompt-tokens`) — der
+komplette Gegenentwurf zu LM Studios kryptischer "n_keep"-Meldung, die
+diese ganze Ermittlungsreihe erst ausgeloest hatte.
+
+vMLX bildet als Bonus GLEICH ZWEI APIs nach: die Ollama-API (`/api/tags`,
+`/api/generate`, `/api/ps` ...) UND die OpenAI-kompatible (`/v1/chat/
+completions`, `/v1/models` ...) — inklusive eigener Erweiterungen wie
+`/v1/cache/*` und sogar `/v1/messages` (Anthropics Format). Das hatte
+eine direkte Konsequenz fuer mc.py: Die bestehende Endpunkt-Erkennung
+(`_detect_local_engine()`, gebaut fuer `/model-reset` und das
+Prompt-Caching) haette vMLX ueber dessen nachgebildetes `/api/tags`
+faelschlich als "ollama" erkannt. Fix: die spezifischere
+`owned_by: "vmlx-engine"`-Pruefung ueber `/v1/models` laeuft jetzt ZUERST,
+bevor der generische Ollama-Check greift.
+
+Drei Ergaenzungen dank der neuen Erkennung:
+1. **`_detect_local_engine()`** kennt jetzt drei Sorten: `lmstudio`,
+   `ollama`, `vmlx` (bzw. `None` fuer Cloud-Endpunkte).
+2. **`_loaded_ctx_tokens()`** (die bestehende Grundlage der Kontext-
+   bewussten Kuerzung) fragt bei vMLX zusaetzlich `/v1/models/{model}/
+   capabilities` ab und nutzt `max_prompt_tokens` — also automatisch das
+   TATSAECHLICH nutzbare Fenster (10.326), nicht das theoretische Maximum
+   (262.144). Kein neuer Mechanismus noetig: das bestehende Lazy-Pruning
+   greift jetzt einfach auch bei vMLX korrekt.
+3. **`/model-reset`** meldet bei vMLX ehrlich, dass es dort (anders als
+   bei LM Studio) keinen Lade-Endpunkt gibt — das Kontextfenster sitzt
+   fest im Server-Start-Flag `--max-prompt-tokens` und laesst sich zur
+   Laufzeit nicht aendern. Statt ein Neuladen vorzutaeuschen, zeigt die
+   Meldung den aktuellen Wert und den Flag zum Aendern.
+
+6 neue Tests (Erkennungs-Prioritaet vMLX vor Ollama, Kontextfenster-
+Fallback, ehrliche Reset-Meldung), 150/150 gruen, alles live gegen den
+echten vMLX-Server verifiziert.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
