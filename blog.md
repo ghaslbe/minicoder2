@@ -3932,6 +3932,62 @@ nicht ueber einen Modus-Wechsel hinweg. 1 neuer Test (Abbruch entfernt die
 unbeantwortete Nachricht, Rest des Verlaufs bleibt unberuehrt), 156/156
 gruen.
 
+## 40. Warum der System-Prompt so gross geworden ist — und was das ueber kleine Modelle sagt
+
+Eine Nebenfrage aus der Werkstatt, ausgeloest vom Blick auf einen
+kompletten, real gesendeten Prompt: Der System-Anteil (Werkzeugbeschreibung
++ Projekt-Steckbrief + Code-Outline) ist inzwischen um ein Vielfaches
+groesser als jede einzelne Aufgabe — selbst ein bewusst knapper Zwei-Zeiler
+wie "fuege ein /profil-loeschen-Kommando hinzu" bekommt ~16.800 Zeichen
+System-Kontext dazu. Die Frage dahinter: Arbeitet ein LLM tatsaechlich
+besser, wenn man ihm ALLE Leitplanken explizit vorgibt, statt auf sein
+eigenes Urteilsvermoegen zu vertrauen?
+
+Kurze Antwort: ja, aber mit einem wichtigen Zusatz. Die lange Antwort
+steht in der eigenen Projekt-Geschichte:
+
+- Der **Fence-Modus** wurde Standard, NACHDEM Messungen zeigten, dass die
+  JSON-Fehlerrate bei Datei-Inhalten auf 0 fiel, sobald das Format nicht
+  mehr "escape das sauber selbst" verlangte, sondern explizit rohe
+  ```-Bloecke vorschrieb. Nicht weniger Anleitung war die Loesung, sondern
+  praeziser vorgegebene Struktur.
+- Der **json-Fence-Parser-Bug** (Kapitel um den Analyse-Modus) entstand,
+  weil `ANALYSE_PROMPT` das Format zwar beschrieb, aber nie ein konkretes
+  Beispiel zeigte — "die Formatbeschreibung ist die Spezifikation" reichte
+  nicht, "das BEISPIEL ist die Spezifikation" schon. Ein Modell, das ein
+  Beispiel sieht, kopiert die Form zuverlaessiger als eines, das sie aus
+  Prosa ableiten muss.
+- Die **Argument-Koerzierung und Form-Reparatur** (Toleranz-Paket) wurden
+  noetig, WEIL selbst detaillierte Formatvorgaben nicht immer exakt
+  befolgt werden — kleine Modelle "verstehen" die Regel oft, wenden sie
+  aber inkonsequent an.
+- Der **komplette Waechter-Familie** (Verlust-, Duplikat-, Referenz-,
+  Prosa-Waechter) ist die direkte Konsequenz einer noch schaerferen
+  Erkenntnis: Selbst ein Prompt, der explizit "loesche nichts ohne Grund"
+  sagt, reicht nicht — Menschen tippen faul, Modelle generalisieren
+  seine Anweisungen unzuverlaessig weiter, und ein gelegentlicher
+  Fehlgriff bleibt trotz bester Anleitung moeglich.
+
+Das Muster durchzieht praktisch die ganze Projekt-Historie: **explizite,
+vollstaendige Anleitung schlaegt vage Prinzipien** — ein kleines Modell,
+dem man genau sagt, WELCHE Aktionen es gibt, WIE ihr Format aussieht und
+WELCHES Beispiel als Vorlage dient, arbeitet spuerbar zuverlaessiger als
+eines, dem man nur die Absicht beschreibt und den Rest ueberlaesst. Das
+ist der Grund, warum der System-Prompt so gewachsen ist, und bewusst so
+bleibt, statt ihn aus Kostengruenden zu kuerzen (siehe auch Kapitel 35/36:
+lieber `/mode chat` fuer Aufgaben OHNE Werkzeugbedarf einfuehren, als am
+Dev-Prompt selbst zu sparen).
+
+Der wichtige Zusatz, der diese Lektion von einem simplen "mehr Prompt
+ist besser" unterscheidet: **Anleitung allein hat eine Decke.** Selbst
+die praeziseste Formatbeschreibung verhindert nicht jeden Fehlgriff — die
+Waechter-Familie existiert genau deshalb als zweite, unabhaengige Schicht
+UNTER dem Prompt: deterministischer Code, der nicht hofft, dass die
+Anleitung befolgt wird, sondern das Ergebnis nachtraeglich prueft. Gelernt
+haben wir also nicht nur "gib genaue Anleitungen", sondern die
+Kombination: so viel Praezision im Prompt wie moeglich, UND so viel
+Absicherung im Code wie noetig — keins von beidem ersetzt das andere.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
