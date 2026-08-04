@@ -3530,7 +3530,7 @@ Suite: 133/133. Der dritte Werkstatt-Besuch bestätigt das Muster der
 ersten beiden: Gelernt wird an den Rändern — der Kern der Leitplanken-
 Philosophie musste noch nirgends nachgebessert werden.
 
-## 33. Zwei Bugs von aussen: der ruckelnde Cursor und die Phantom-Kontextgrenze
+## 33. Zwei Bugs von aussen: der ruckelnde Cursor und der vergessene Kontext
 
 Zwei Fehler diesmal, die nicht in `mc.py`s Logik selbst lagen — einer
 im Terminal, einer beim lokalen Server.
@@ -3569,24 +3569,37 @@ einzeln getestet — Werkzeugbeschreibung (~2100 Token) laeuft, Steckbrief
 Schwelle knapp ueber 4300 Token, kippt es. Per Bisektion (Prompt in
 Char-Schritten kuerzen, an jeder Stufe neu anfragen) auf ein enges
 Fenster eingegrenzt: bei 4348 Token noch okay, ab rund 4350 Token
-immer der Fehler — voellig unabhaengig vom eingestellten
-Kontextfenster von 125873 Token. Kein `n_keep`-Feld existiert im
-OpenAI-kompatiblen Request, den `mc.py` schickt (`model`, `messages`,
-`stream`, `stream_options`, `usage`, `frequency_penalty` — das ist
-alles); die Fehlerursache sitzt komplett server-/engine-seitig, mutmasslich
-ein Bug in LM Studios MLX-Backend fuer dieses Modell, der ab einer
-Prompt-Laenge nahe 4096 Token faelschlich "Kontext ueberschritten" meldet.
-Warum es "frueher" ging: vermutlich ein LM-Studio- oder Engine-Update
-in der Zwischenzeit, das diese Schwelle neu eingefuehrt hat — nicht
-etwas, das an `mc.py`s Anfragen aenderte.
+immer der Fehler. Kein `n_keep`-Feld existiert im OpenAI-kompatiblen
+Request, den `mc.py` schickt (`model`, `messages`, `stream`,
+`stream_options`, `usage`, `frequency_penalty` — das ist alles); an der
+eigenen Anfrage gibt es also nichts zu reparieren.
 
-Kein Code-Fix in `mc.py` diesmal (es gibt am eigenen Request nichts zu
-reparieren), sondern zwei Optionen fuer die Werkstatt-Seite: LM Studio
-aktualisieren oder auf eine andere Engine/Quantisierung fuer dasselbe
-Modell wechseln — plus die Erkenntnis, dass die eigene Bisektions-
-Methode (Prompt haelften- und dann Char-weise kuerzen, `curl` direkt
-gegen den Endpoint) ein scharfes Werkzeug ist, um "liegt es am Modell,
-am Server oder an uns" in Minuten statt Rateraten zu beantworten.
+Die Aufloesung kam erst beim Quervergleich mit anderen Modellen auf
+demselben Server: `gemma-4-12b` verarbeitet denselben Prompt plus fast
+6000 Token Puffer klaglos, `qwen3.6-27b` kippt mit identischer
+Fehlermeldung. Der Live-Check via `/api/v0/models` direkt nach einem
+frischen Request verriet den eigentlichen Grund: Ein Modell, das
+zwischenzeitlich entladen wurde (Leerlauf, Modellwechsel, Neustart der
+Werkstatt-Maschine) und dann automatisch per Request neu geladen wird
+(JIT), bekommt dabei NICHT das zuvor manuell in der Oberflaeche gesetzte
+Kontextfenster (125873 Token) — sondern einen viel kleineren
+Default (hier: 8192 Token). Bei 8192 Token geladenem Fenster und einem
+Prompt von ~4350 Token reicht die interne Keep-/Fortsetzungs-Reserve
+der Engine (grob die Haelfte des Fensters plus Chat-Template-Overhead)
+nicht mehr — kein Phantom-Bug, sondern ein echtes, nur unerwartet
+kleines Kontextfenster. Und damit ist auch geklaert, warum es "frueher"
+ging: damals steckte das Modell noch im manuell geladenen Zustand mit
+125873 Token im Speicher; nach dem naechsten Entladen griff beim
+naechsten mc-Lauf der kleine Default.
+
+Kein Code-Fix in `mc.py` diesmal — der Hebel liegt in LM Studio: das
+Default-Kontextfenster fuer dieses Modell dauerhaft hochsetzen (nicht
+nur beim manuellen Laden ueber die Oberflaeche), oder das Modell vor
+jedem mc-Lauf einmal bewusst manuell laden. Mitgenommen bleibt die
+Methode: Prompt haelften- und dann char-weise per Bisektion kuerzen,
+`curl` direkt gegen den Endpoint, `/api/v0/models` fuer den tatsaechlich
+geladenen Zustand pruefen — damit laesst sich "liegt es am Modell, am
+Server oder an uns" in Minuten klaeren statt zu raten.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
