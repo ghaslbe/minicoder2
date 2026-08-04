@@ -3669,9 +3669,39 @@ das Problem ist, tut es exakt das Richtige — nachgewiesen per
 `/api/v0/models`). Fuer DIESEN spezifischen Fehler bei DIESEM Modell ist
 es aber kein Fix, sondern hoechstens ein Diagnose-Werkzeug, das die
 falsche Theorie in Minuten widerlegt hat, statt sie ungeprueft im Blog
-stehen zu lassen. Die eigentliche Ursache bleibt offen — vermutlich nur
-mit einem LM-Studio-Update oder einer anderen Quantisierung dieses
-Modells loesbar, nicht mit mc.py.
+stehen zu lassen.
+
+**Nachtrag, noch am selben Tag: die Ursache doch gefunden.** Drei
+verschiedene `context_length`-Werte angefordert (8192, 16384, 65536) und
+jedesmal per `/api/v0/models` nachgeschaut, was WIRKLICH ankommt:
+egal was angefordert wird, geladen wird immer exakt **4352** Token —
+Token fuer Token identisch mit der per Bisektion gefundenen
+Fehlerschwelle aus Kapitel 33. Kein Zufall mehr, sondern der Beweis:
+Dieses Modell (diese MoE/MXFP4-Kombination, auf dieser Hardware) laesst
+sich schlicht nicht groesser als 4352 Token laden — eine harte
+Kapazitaetsgrenze, vermutlich Speicher-/Allokationslimit dieser
+Quantisierung, die LM Studio beim Laden still herunterkappt, OHNE das
+zu melden. Die `load_config.context_length` in der Load-Antwort ist nur
+ein Echo der Anfrage, keine Bestaetigung — genau das hatte die eigene
+Erfolgsmeldung von `/model-reset` vorhin in die Irre gefuehrt (`32768`
+angezeigt, obwohl real 4352 geladen war).
+
+Konsequenz: `reset_model()` verlaesst sich jetzt nicht mehr auf die
+Load-Antwort, sondern fragt danach per `/api/v0/models` explizit nach,
+was tatsaechlich geladen wurde, und meldet eine ACHTUNG-Warnung, wenn
+das deutlich unter dem Angeforderten liegt:
+
+```
+gemma-4-26b-a4b-it@mxfp4 neu geladen (LM Studio) — ACHTUNG:
+32768 angefordert, aber nur 4352 tatsaechlich geladen
+(Modell-/Hardware-Grenze).
+```
+
+Zwei neue Tests fuer genau diesen Fall (Bestaetigung ohne Abweichung,
+Warnung bei Abweichung), 141/141 gruen. Fuer dieses eine Modell bleibt
+nur, es fuer Aufgaben mit groesserem Kontext zu meiden — `gemma-4-12b`
+auf demselben Server verarbeitet den identischen Prompt weiterhin ohne
+Probleme.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 

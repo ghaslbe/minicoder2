@@ -804,8 +804,26 @@ def reset_model(model, context_length=None):
             body = {"model": model}
             if context_length:
                 body["context_length"] = int(context_length)
-            antwort = _post("/api/v1/models/load", body, timeout=180)
-            geladen = (antwort.get("load_config") or {}).get("context_length", context_length or "Engine-Default")
+            _post("/api/v1/models/load", body, timeout=180)
+            # WICHTIG: load_config.context_length in der Load-Antwort ist nur
+            # ein Echo der ANFRAGE, keine Bestaetigung -- real beobachtet:
+            # angefordert 8192/16384/65536, tatsaechlich geladen jedesmal
+            # 4352 (Modell-/Hardware-Grenze). Also nach dem Laden per
+            # /api/v0/models nachfragen, was WIRKLICH geladen wurde.
+            req2 = urllib.request.Request(root + "/api/v0/models", headers=headers, method="GET")
+            with build_opener().open(req2, timeout=10) as resp:
+                obj2 = json.loads(resp.read().decode("utf-8", "replace"))
+            geladen = None
+            for m in obj2.get("data", []):
+                if m.get("id") == model and m.get("state") == "loaded":
+                    geladen = m.get("loaded_context_length")
+                    break
+            if geladen is None:
+                return True, f"{model} neu geladen (LM Studio) — Kontextfenster nicht abfragbar."
+            if context_length and geladen < int(context_length):
+                return True, (f"{model} neu geladen (LM Studio) — ACHTUNG: "
+                              f"{context_length} angefordert, aber nur {geladen} "
+                              f"tatsaechlich geladen (Modell-/Hardware-Grenze).")
             return True, f"{model} neu geladen (LM Studio) — Kontextfenster: {geladen}"
 
         # ollama

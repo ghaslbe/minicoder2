@@ -1068,19 +1068,40 @@ def test_detect_local_engine_unbekannt(monkeypatch):
 
 
 def test_reset_model_lmstudio(monkeypatch):
+    # load_config.context_length in der Load-Antwort ist nur ein Echo der
+    # Anfrage -- reset_model() muss NACH dem Laden per /api/v0/models
+    # nachfragen, was tatsaechlich geladen wurde (real beobachtet:
+    # angefordert 8192/16384/65536, geladen jedesmal nur 4352).
     monkeypatch.setattr(mc, "BASE_URL", "http://host:1234/v1")
     opener = _FakeOpener({
-        "/api/v0/models": {"data": [{"id": "altes-modell", "state": "loaded"}]},
+        "/api/v0/models": {"data": [{"id": "modell-x", "state": "loaded",
+                                     "loaded_context_length": 32768}]},
         "/api/v1/models/unload": {"ok": True},
         "/api/v1/models/load": {"load_config": {"context_length": 32768}},
     })
     monkeypatch.setattr(mc, "build_opener", lambda: opener)
-    ok, msg = mc.reset_model("neues-modell", 32768)
-    assert ok and "32768" in msg and "LM Studio" in msg
+    ok, msg = mc.reset_model("modell-x", 32768)
+    assert ok and "32768" in msg and "LM Studio" in msg and "ACHTUNG" not in msg
     unload_call = next(c for c in opener.calls if c[1].endswith("unload"))
-    assert unload_call[2] == {"instance_id": "altes-modell"}
+    assert unload_call[2] == {"instance_id": "modell-x"}
     load_call = next(c for c in opener.calls if c[1].endswith("/api/v1/models/load"))
-    assert load_call[2] == {"model": "neues-modell", "context_length": 32768}
+    assert load_call[2] == {"model": "modell-x", "context_length": 32768}
+
+
+def test_reset_model_lmstudio_kappt_kleiner_als_angefordert(monkeypatch):
+    # Genau der real beobachtete Fall: 32768 angefordert, aber die Engine
+    # kappt (Modell-/Hardware-Grenze) auf 4352 -- muss als ACHTUNG erkennbar
+    # sein statt den geforderten Wert unkritisch zurueckzumelden.
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:1234/v1")
+    opener = _FakeOpener({
+        "/api/v0/models": {"data": [{"id": "modell-x", "state": "loaded",
+                                     "loaded_context_length": 4352}]},
+        "/api/v1/models/unload": {"ok": True},
+        "/api/v1/models/load": {"load_config": {"context_length": 32768}},
+    })
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    ok, msg = mc.reset_model("modell-x", 32768)
+    assert ok and "ACHTUNG" in msg and "4352" in msg and "32768" in msg
 
 
 def test_reset_model_ollama(monkeypatch):
