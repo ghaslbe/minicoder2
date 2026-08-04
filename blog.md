@@ -4088,6 +4088,33 @@ jeder Fehler an der Werkzeug-Seite liegt.
 4 neue Tests (Naht-Reparatur isoliert, unveraenderter Fall, End-to-End
 durch `chat_stream()` mit simulierter Fortsetzung), 166/166 gruen.
 
+## 43. "Kann man vMLX nicht einfach mehr Kontext geben?" — nein, und das ist auch gut so
+
+Naheliegende Nachfrage zum `safe_cap`-Deckel aus Kapitel 42: Koennte man
+vMLX nicht per API anweisen, mehr Kontext/Ausgabebudget bereitzustellen?
+Nachgemessen statt vermutet: `num_ctx: 32768` ueber die Ollama-kompatible
+`/api/generate`-Route geschickt, direkt danach `max_prompt_tokens` erneut
+abgefragt — unveraendert bei 10.326. vMLX hat fuer ein bereits geladenes
+Modell schlicht KEINEN API-Hebel dafuer; anders als LM Studio (`/v1/models/
+load`) fehlt vMLX ein Lade-Endpunkt komplett (siehe Kapitel 37/38, wo
+`/model-reset` das schon ehrlich meldet).
+
+Der eigentlich interessante Teil war der Denkfehler in der Frage selbst:
+Mehr Kontext wuerde das Problem nicht LOESEN, sondern VERSCHAERFEN. Ein
+groesseres geladenes Kontextfenster braucht mehr KV-Cache-Speicher — und
+KV-Cache und Ausgabe-Budget (`safe_cap`) konkurrieren um denselben knappen
+Speicher-Topf (siehe die `context_fit`-Rechnung aus Kapitel 34:
+`baseline` + `full_kv` + `estimated_peak` gegen `safe_ceiling`). Mehr
+Kontext anfordern heisst weniger Spielraum fuer die Antwort, nicht mehr.
+
+Der einzige echte Hebel liegt konsequent ausserhalb von mc.py, direkt am
+Mac mini: vMLX mit groesserem `--max-prompt-tokens` neu starten (nur wenn
+genug Speicher frei ist), mehr Speicher freimachen (der `safe_cap`
+schwankte zwischen unseren eigenen Tests bereits von 2147 auf 1838), oder
+eine speicherguenstigere Quantisierung laden. Kein Code-Fix diesmal — nur
+eine Vermutung durch eine Messung ersetzt, bevor sie sich falsch
+festgesetzt haette.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
