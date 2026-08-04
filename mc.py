@@ -251,6 +251,18 @@ class C:
                 setattr(cls, k, "")
 
 
+_ANSI_RE = re.compile(r"(\033\[[0-9;]*m)")
+
+
+def rl_prompt(s):
+    """Markiert ANSI-Farbcodes in einem input()-Prompt fuer readline als
+    breitenlos (\\001..\\002) -- sonst verzaehlt sich readline bei der
+    Cursorposition (readline ist aktiv, sobald mc_terminal das Modul
+    importiert hat) und Redraws bei Zeilenumbruch, Paste oder History-
+    Navigation (Pfeil hoch/runter) zeigen Reste der vorherigen Zeile."""
+    return _ANSI_RE.sub(lambda m: "\001" + m.group(1) + "\002", s)
+
+
 if sys.platform == "win32" and sys.stdout.isatty():
     os.system("")  # aktiviert die VT-Escape-Verarbeitung in cmd.exe/PowerShell
 
@@ -1260,7 +1272,7 @@ def confirm(prompt):
         print(f"{C.DIM}(auto-yes){C.RESET}")
         return True
     try:
-        ans = input(f"{C.YELLOW}{prompt} [j/N/Text=Grund] {C.RESET}").strip()
+        ans = input(rl_prompt(f"{C.YELLOW}{prompt} [j/N/Text=Grund] {C.RESET}")).strip()
     except EOFError:
         return False
     low = ans.lower()
@@ -2339,7 +2351,7 @@ def do_ask(args):
         print(f"{C.DIM}(--yes aktiv: ohne Rueckfrage fortfahren){C.RESET}")
         return True, "Auto-Modus (--yes): triff sinnvolle Annahmen und fahre ohne Rueckfrage fort."
     try:
-        ans = input(f"{C.GREEN}{C.BOLD}deine Antwort> {C.RESET}").strip()
+        ans = input(rl_prompt(f"{C.GREEN}{C.BOLD}deine Antwort> {C.RESET}")).strip()
     except EOFError:
         return True, ("Keine Eingabe moeglich (nicht-interaktiv): triff sinnvolle "
                       "Annahmen und fahre fort.")
@@ -2832,8 +2844,8 @@ def plan_phase(messages, model):
         m = re.search(r"pr(?:[üu]f|uef)schritte:?\s*(.+)", plan, re.IGNORECASE | re.DOTALL)
         CHECK_PLAN = (m.group(1) if m else plan).strip()[:1500]
     try:
-        fb = input(f"\n{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
-                   f"n=abbrechen> {C.RESET}").strip()
+        fb = input(rl_prompt(f"\n{C.YELLOW}Plan ok? [Enter]=ja · Text=Aenderungswunsch · "
+                             f"n=abbrechen> {C.RESET}")).strip()
     except EOFError:
         fb = ""
     if fb.lower() in ("n", "nein", "no", "q", "abbrechen"):
@@ -4259,7 +4271,7 @@ def main():
              "/Kommandos, /help zeigt Skills.")
     while True:
         try:
-            user = input(f"\n{C.GREEN}{C.BOLD}du> {C.RESET}").strip()
+            user = input(rl_prompt(f"\n{C.GREEN}{C.BOLD}du> {C.RESET}")).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break

@@ -3530,6 +3530,64 @@ Suite: 133/133. Der dritte Werkstatt-Besuch bestätigt das Muster der
 ersten beiden: Gelernt wird an den Rändern — der Kern der Leitplanken-
 Philosophie musste noch nirgends nachgebessert werden.
 
+## 33. Zwei Bugs von aussen: der ruckelnde Cursor und die Phantom-Kontextgrenze
+
+Zwei Fehler diesmal, die nicht in `mc.py`s Logik selbst lagen — einer
+im Terminal, einer beim lokalen Server.
+
+**Der ruckelnde Cursor.** Nach dem Umstieg auf `mc_terminal.py` (mit
+History, Pfeil-hoch/-runter, Skill-Vervollständigung) blieben beim
+Einfuegen laengerer Eingaben und bei der History-Navigation Reste der
+vorherigen Zeile im Terminal stehen — einmal so sichtbar, dass aus
+`/settings base_url http://...` und einem nachfolgenden `hallo` im
+Terminal `/settings basehallo` wurde. Der eingegebene Wert selbst kam
+aber unversehrt bei `mc.py` an (die Task-Hinweise direkt danach liefen
+normal an) — es war reines Redraw-Chaos, kein Parsing-Fehler. Ursache:
+Sobald `mc_terminal.py` `readline` importiert, uebernimmt GNU readline
+die Zeilenbearbeitung fuer JEDEN `input()`-Aufruf im Prozess — auch
+fuer die mit Farbcodes verzierten Prompts wie `du>`. Farbcodes
+(`\033[32m` & Co.) sind aber sichtbare Escape-Bytes ohne Breite auf dem
+Schirm; readline zaehlt sie trotzdem mit, verrechnet sich bei der
+Cursorposition, und der Redraw nach Zeilenumbruch, Paste oder
+History-Wechsel geht daneben. Fix: neue Hilfsfunktion `rl_prompt()`
+klammert alle ANSI-Codes in einem Prompt mit `\001`/`\002` ein — den
+Markern, mit denen man readline explizit sagt „das hier ist unsichtbar,
+nicht mitzaehlen". Vier `input()`-Aufrufe umgestellt, 133 Tests weiter
+gruen.
+
+**Die Phantom-Kontextgrenze.** Direkt danach meldete ein lokal
+geladenes Modell (ueber LM Studio, 125873 Token geladenes Fenster) bei
+jedem Auftrag sofort einen Fehler: *"The number of tokens to keep from
+the initial prompt is greater than the context length."* Verdaechtig,
+denn dieselbe Kombination lief frueher anstandslos. Nachgebaut mit
+`curl` direkt gegen den Endpoint, unter Umgehung von `mc.py` komplett:
+Ein nacktes `hallo` ohne System-Prompt laeuft. Der volle `mc.py`-System-
+Prompt (Werkzeugbeschreibung + Projekt-Steckbrief + Code-Outline dieses
+Repos, ca. 4200 Token) allein am Stueck geschickt: Fehler. Beide Haelften
+einzeln getestet — Werkzeugbeschreibung (~2100 Token) laeuft, Steckbrief
++ Outline (~2500 Token) laeuft ebenfalls. Erst zusammen, ab einer
+Schwelle knapp ueber 4300 Token, kippt es. Per Bisektion (Prompt in
+Char-Schritten kuerzen, an jeder Stufe neu anfragen) auf ein enges
+Fenster eingegrenzt: bei 4348 Token noch okay, ab rund 4350 Token
+immer der Fehler — voellig unabhaengig vom eingestellten
+Kontextfenster von 125873 Token. Kein `n_keep`-Feld existiert im
+OpenAI-kompatiblen Request, den `mc.py` schickt (`model`, `messages`,
+`stream`, `stream_options`, `usage`, `frequency_penalty` — das ist
+alles); die Fehlerursache sitzt komplett server-/engine-seitig, mutmasslich
+ein Bug in LM Studios MLX-Backend fuer dieses Modell, der ab einer
+Prompt-Laenge nahe 4096 Token faelschlich "Kontext ueberschritten" meldet.
+Warum es "frueher" ging: vermutlich ein LM-Studio- oder Engine-Update
+in der Zwischenzeit, das diese Schwelle neu eingefuehrt hat — nicht
+etwas, das an `mc.py`s Anfragen aenderte.
+
+Kein Code-Fix in `mc.py` diesmal (es gibt am eigenen Request nichts zu
+reparieren), sondern zwei Optionen fuer die Werkstatt-Seite: LM Studio
+aktualisieren oder auf eine andere Engine/Quantisierung fuer dasselbe
+Modell wechseln — plus die Erkenntnis, dass die eigene Bisektions-
+Methode (Prompt haelften- und dann Char-weise kuerzen, `curl` direkt
+gegen den Endpoint) ein scharfes Werkzeug ist, um "liegt es am Modell,
+am Server oder an uns" in Minuten statt Rateraten zu beantworten.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
