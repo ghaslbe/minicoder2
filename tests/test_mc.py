@@ -280,6 +280,12 @@ def test_system_prompt_lehrt_basedir_und_kein_debug():
     assert "debug=True" in sp
 
 
+def test_system_prompt_lehrt_sqlite_view_delete():
+    sp = mc.system_prompt(True)
+    assert "SQLite" in sp
+    assert "DELETE" in sp
+
+
 def test_check_prompt_verlangt_eingabe_validierung():
     # Kleine Modelle testen wortwoertlich, was der Prompt nennt — leeres
     # Pflichtfeld muss deshalb explizit als Pruef-Fall dastehen.

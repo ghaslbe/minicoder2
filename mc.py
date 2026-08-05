@@ -3095,6 +3095,15 @@ Rules:
   "daten.db")) instead of relative to the working directory — otherwise it
   depends on WHERE the app is started from, and it can no longer find its own
   database.
+- If a project needs to PERSIST data (entries, history, records — anything
+  that should survive a restart), use SQLite (Python: sqlite3, part of the
+  standard library, no extra package needed) instead of plain files, JSON
+  blobs, or pure in-memory state. This applies to EXISTING projects too, not
+  just new ones. A SQLite store is only useful if the data stays usable
+  afterward: always provide a way to LIST/VIEW the stored entries again
+  (e.g. a GET endpoint) and to DELETE one (e.g. a DELETE endpoint or a
+  delete control in the UI) — not a write-only store nobody can look at or
+  clean up again.
 - Finished code runs WITHOUT debug mode (e.g. Flask: app.run without
   debug=True — the debugger allows code execution in the browser and has no
   place in a finished app).
