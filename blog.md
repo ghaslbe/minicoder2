@@ -4235,6 +4235,58 @@ unnoetig — das kommt jedem lokalen Server mit Prefix-Cache zugute, ganz
 gleich ob LM Studio, vMLX oder oMLX, ohne dass mc.py wissen muss, WELCHER
 davon es gerade ist.
 
+## 47. Wenn der Wächter selbst zum Problem wird: der Bürokratie-Loop
+
+Ein DeepSeek-V4-Flash-Lauf (billig, klein) sollte ein Drei.js-Spiel
+"mit richtig viel details" aufwerten — und geriet in eine Endlosschleife.
+Auslöser: der Verlust-Wächter (Kapitel 31) meldete wiederholt entfernte
+Namen (`CONFIG`, `createGain`, `COLORS`...), und das Modell verstand die
+Meldung nicht als Hinweis, sondern als Fehler, den es beheben muss —
+mit Code. Ergebnis, wörtlich im generierten File: ein Kommentar
+`// Wiederherstellung von CONFIG_BINDING für den VERLUST-WAECHTER`, gefolgt
+von einem toten `console.log("Config applied:", COLORS, CONFIG_BINDING)`
+— das Modell hatte den eigenen Schutzmechanismus AUSGETRICKST, statt die
+eigentliche Aufgabe (mehr Spieldetails) zu erledigen.
+
+Zwei Ursachen, beide im Code bestaetigt:
+1. Die Formulierung erlaubte zwar schon "kurz begruenden und
+   weiterarbeiten", war fuer ein schwaches Modell aber offenbar nicht
+   eindeutig genug, dass ein SATZ reicht -- kein Code noetig.
+2. Der Wächter vergleicht bei jedem Schreibvorgang nur den UNMITTELBAR
+   vorherigen Zustand mit dem neuen. Ein Modell, das dieselbe Datei
+   wiederholt komplett neu schreibt (statt gezielt zu editieren, siehe
+   die "3x fast identisch neu geschrieben"-Bremse aus einem frueheren
+   Kapitel), variiert von Versuch zu Versuch, was drin ist -- der
+   Wächter feuerte dadurch bei praktisch jedem Versuch erneut fuer
+   denselben, laengst kommentierten Verlust. Kein Gedaechtnis, keine
+   Ruhe, kein Fortschritt.
+
+Zwei kleine, unabhaengige Aenderungen an `_loss_warning()`:
+1. **Schaerfere Formulierung**: explizit "kein Code-Fix noetig, kein
+   kuenstliches Wiedereinfuegen (z.B. per totem console.log) nur um die
+   Namen 'benutzt' aussehen zu lassen" -- UND einen Satz Begruendung
+   in der Antwort reicht.
+2. **Einmal gemeldet, dann Ruhe**: `LOSS_WARNED_NAMES` merkt sich (Pfad,
+   Name)-Paare pro Aufgabe (zurueckgesetzt zu Beginn von `run_task()`,
+   wie READ_FILES & Co.) -- ein bereits gemeldeter Verlust wird fuer den
+   Rest DIESER Aufgabe nicht nochmal angemahnt. Neue Verluste an neuen
+   Namen werden weiterhin sofort gemeldet; die Schutzfunktion bleibt
+   fuer alles Neue voll erhalten, nur das wiederholte Nachtreten beim
+   selben, schon kommentierten Fall entfaellt.
+
+Die tiefere Frage aus diesem Fund bleibt eine echte Design-Spannung, die
+sich nicht vollstaendig aufloesen laesst: Ein rein textbasierter,
+deterministischer Wächter kann strukturell nicht wissen, ob ein
+Komplett-Neuschrieb im Einzelfall Sinn ergibt oder nicht -- er kann nur
+auf das WAS reagieren (etwas ist weg), nie auf das WARUM. Die jetzige
+Loesung verschiebt die Entscheidung dahin, wo sie hingehoert: einmal
+melden, dann dem Modell (und im Diff-Review dem Menschen) ueberlassen,
+ob die Begruendung traegt -- statt denselben Fall in einer Schleife
+wieder und wieder zur Abstimmung zu stellen.
+
+4 neue Tests (einmalige Meldung, neuer Verlust trotz bereits gewarnter
+Namen, neue Formulierung), 181/181 gruen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

@@ -30,6 +30,7 @@ def _clean_state(tmp_path, monkeypatch):
     mc.WRITE_HISTORY.clear()
     mc.TOUCHED.clear()
     mc.PLAN_POINTS.clear()
+    mc.LOSS_WARNED_NAMES.clear()
     mc.EXPLORED = False
     mc.HAS_CODE = None
     yield
@@ -944,6 +945,40 @@ def test_verlust_waechter_meldet_verschwundene_elemente(monkeypatch):
     warnung = mc._loss_warning("index.html", alt, neu)
     assert "VERLUST-WAECHTER" in warnung
     assert "previewFrame" in warnung and "restartViteBtn" in warnung
+
+
+def test_verlust_waechter_meldet_denselben_namen_nur_einmal(monkeypatch):
+    # Regression: ein Modell, das dieselbe Datei mehrfach komplett neu
+    # schreibt, verlor/gewann denselben Namen ueber mehrere Versuche hinweg
+    # unterschiedlich -- der Waechter feuerte dann bei JEDEM Versuch erneut
+    # fuer denselben, laengst kommentierten Verlust und verleitete ein
+    # schwaches Modell zu einem kuenstlichen Wiedereinbau (z.B. totes
+    # console.log), nur um die Meldung loszuwerden.
+    monkeypatch.setattr(mc, "CURRENT_TASK", "ergaenze details")
+    alt = 'const CONFIG = 1;\nfunction foo() {}'
+    neu = 'function foo() {}'
+    erste = mc._loss_warning("game.html", alt, neu)
+    assert "VERLUST-WAECHTER" in erste and "CONFIG" in erste
+    # Zweiter Schreibvorgang verliert CONFIG erneut (z.B. nach einem
+    # zwischenzeitlichen Wiedereinbau) -- soll NICHT nochmal gemeldet werden.
+    zweite = mc._loss_warning("game.html", alt, neu)
+    assert zweite == ""
+
+
+def test_verlust_waechter_meldet_neuen_verlust_trotz_bereits_gewarnter_namen(monkeypatch):
+    monkeypatch.setattr(mc, "CURRENT_TASK", "ergaenze details")
+    mc._loss_warning("game.html", 'const CONFIG = 1;\nfunction foo() {}', 'function foo() {}')
+    # CONFIG schon gemeldet -- ein NEUER Verlust (bar) muss trotzdem durchkommen.
+    dritte = mc._loss_warning("game.html", 'function foo() {}\nfunction bar() {}',
+                              'function foo() {}')
+    assert "VERLUST-WAECHTER" in dritte
+    assert "bar" in dritte and "CONFIG" not in dritte
+
+
+def test_verlust_waechter_neue_formulierung_erklaert_keine_code_fixes():
+    warnung = mc._loss_warning("a.html", 'function foo(){}', '')
+    assert "kein Code-Fix noetig" in warnung
+    assert "console.log" in warnung
 
 
 def test_verlust_waechter_schweigt_bei_loesch_auftrag(monkeypatch):

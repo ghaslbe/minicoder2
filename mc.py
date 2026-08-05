@@ -131,6 +131,7 @@ PLAN_POINTS = []           # Aenderungsplan aus der Analyse-Phase (--analyse)
 SYSTEM_CONTEXT = ""        # Projektueberblick-Teil der System-Message (fuer Phasenwechsel)
 CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/Prosa-Ende)
 WRITE_HISTORY = {}         # Pfad -> (letzter Inhalt, Anzahl fast identischer Wiederholungen)
+LOSS_WARNED_NAMES = set()  # (Pfad, Name) -- vom Verlust-Waechter in DIESEM Lauf schon gemeldet
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
 
 # Robustheit (aus dem GPU-Benchmark gelernt):
@@ -2137,18 +2138,33 @@ def _loss_warning(path, alt, neu):
     ein Modell ersetzte beim 'Ergaenzen' einer Werkzeugleiste das komplette
     Preview-iframe und nickte die Loeschung im Diff-Review selbst ab. Auf
     sorgfaeltige Prompts ('nur hinzufuegen, nichts entfernen') kann man sich
-    bei tippfaulen Menschen nicht verlassen — der Schutz gehoert ins Tool."""
+    bei tippfaulen Menschen nicht verlassen — der Schutz gehoert ins Tool.
+
+    Jeder (Pfad, Name) wird PRO AUFGABE nur EINMAL gemeldet (LOSS_WARNED_
+    NAMES) -- sonst feuert die Meldung bei jedem weiteren Komplett-Neuschrieb
+    erneut fuer denselben, laengst kommentierten Verlust und verleitet ein
+    schwaches Modell dazu, den entfernten Namen kuenstlich (z.B. per totem
+    console.log) wieder einzubauen, nur um die Warnung loszuwerden -- real
+    beobachtet. Eine einmalige Meldung reicht: sie steht im Diff-Review
+    weiterhin sichtbar, muss aber nicht jeden Schritt neu verhandelt werden."""
     if REMOVAL_WORDS_RE.search(CURRENT_TASK or ""):
         return ""  # Entfernen ist Teil des Auftrags
     verloren = sorted(_kennungen(alt) - _kennungen(neu))
-    if not verloren:
+    neu_verloren = [v for v in verloren if (path, v) not in LOSS_WARNED_NAMES]
+    if not neu_verloren:
         return ""
+    for v in neu_verloren:
+        LOSS_WARNED_NAMES.add((path, v))
     return ("\nVERLUST-WAECHTER: dieser Schreibvorgang hat bestehende benannte "
-            "Elemente aus " + path + " ENTFERNT: " + ", ".join(verloren[:8])
-            + (" …" if len(verloren) > 8 else "") + ". Die Aufgabe verlangt "
-            "kein Entfernen. Pruefe das JETZT: unbeabsichtigt Entferntes im "
-            "naechsten Schritt wiederherstellen — beabsichtigtes Entfernen "
-            "kurz begruenden und weiterarbeiten.")
+            "Elemente aus " + path + " ENTFERNT: " + ", ".join(neu_verloren[:8])
+            + (" …" if len(neu_verloren) > 8 else "") + ". Die Aufgabe verlangt "
+            "kein Entfernen. Das ist NUR ein Hinweis, kein Fehler: kein "
+            "Code-Fix noetig, kein kuenstliches Wiedereinfuegen (z.B. per "
+            "totem console.log) nur um die Namen 'benutzt' aussehen zu "
+            "lassen. Entweder im naechsten Schritt echt wiederherstellen "
+            "(falls unbeabsichtigt) ODER in EINEM Satz in deiner naechsten "
+            "Antwort begruenden, warum es weg sollte — dann normal "
+            "weiterarbeiten. Diese Meldung erscheint pro Name nur einmal.")
 
 
 def _duplicate_warning(path, alt, neu):
@@ -3841,6 +3857,7 @@ def run_task(messages, model):
     OVERWRITE_REJECTS.clear()
     WRITE_HISTORY.clear()
     SHELL_READS.clear()
+    LOSS_WARNED_NAMES.clear()
     RAN_SINCE_WRITE = False
     finish_rejects = 0
     parse_error_streak = 0
