@@ -723,8 +723,24 @@ def download_zip():
 def cleanup():
     stop_vite_server()
 
-# Wir nutzen atexit für den sauberen Cleanup
+# Wir nutzen atexit für den sauberen Cleanup -- greift aber NUR bei einem
+# normalen Prozessende (sys.exit(), Rueckkehr aus main, unbehandelte
+# Exception). Ein externes 'kill <pid>' (SIGTERM) beendet den Prozess
+# OHNE atexit-Handler auszufuehren -- der per start_new_session=True bewusst
+# vom Server-Prozess entkoppelte Vite-Kindprozess blieb dadurch bei jedem
+# per SIGTERM beendeten Server-Neustart als Zombie zurueck (real beobachtet:
+# 10 verwaiste Vite-Prozesse nach mehreren Testneustarts waehrend der
+# Entwicklung). Deshalb zusaetzlich ein expliziter Signal-Handler.
 atexit.register(cleanup)
+
+
+def _beende_sauber(signum, frame):
+    cleanup()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _beende_sauber)
+signal.signal(signal.SIGINT, _beende_sauber)
 
 if __name__ == '__main__':
     # Beim Start von server.py: Einstellungen laden, dann Vite starten

@@ -4427,6 +4427,41 @@ fremder Commit-Hashes) sowie eine statische HTML/JS-Konsistenzpruefung
 in dieser Umgebung verfuegbar — die visuelle/interaktive Pruefung der
 neuen Oberflaeche bleibt beim Nutzer offen.
 
+## 51. Zehn verwaiste Vite-Prozesse: kill -TERM loest kein atexit aus
+
+Nachtrag noch am selben Tag: "laeuft da noch was zum jump and run, und
+was ist das Problem?" Antwort auf den ersten Teil: ja, das Spiel lief
+weiterhin einwandfrei. Der zweite Teil deckte aber einen echten
+Ressourcen-Leck auf -- zehn Vite-Kindprozesse liefen gleichzeitig fuer
+dasselbe Projekt, Reste jedes einzelnen manuellen Server-Neustarts
+waehrend der Redesign-Arbeit aus Kapitel 50.
+
+Ursache: `vite_process = subprocess.Popen(..., start_new_session=True)`
+entkoppelt den Vite-Kindprozess bewusst vom Server-Prozess (er soll die
+Konsolen-Session ueberleben) -- aber genau das bedeutet auch, dass ein
+externes `kill <pid>` gegen den Flask-Server NUR den Server selbst
+beendet, nicht sein Kind. `atexit.register(cleanup)` haette den Vite-
+Prozess sauber mitbeendet, ABER: Pythons `atexit`-Handler laufen nur bei
+einem NORMALEN Prozessende (`sys.exit()`, Rueckkehr aus main(),
+unbehandelte Exception) -- ein von aussen gesendetes SIGTERM ueberspringt
+sie komplett, sofern kein expliziter Signal-Handler registriert ist. Jeder
+`kill -TERM` gegen den Server liess den Vite-Kindprozess also als Zombie
+zurueck; nur einer davon (der aelteste, der den Port zuerst bekam) diente
+tatsaechlich die Vorschau aus, die anderen neun hingen nutzlos herum.
+
+Fix: ein expliziter `signal.signal(signal.SIGTERM, _beende_sauber)` (und
+SIGINT dazu), der `cleanup()` VOR dem Prozessende aufruft -- ab jetzt
+raeumt auch ein externes `kill` den Vite-Kindprozess korrekt auf. Die
+zehn bestehenden Leichen manuell per PID beendet, ein sauberer Neustart
+bestaetigte danach: genau ein Vite-Prozess, HTTP 200, richtiges Projekt.
+
+Der zweite Teil des Fundes (kurzzeitig war ploetzlich das falsche,
+unabhaengige Alt-Projekt "jumprun" statt "jumprun3d" aktiv) hatte gar
+keinen Code-Grund: der Nutzer hatte selbst im geoeffneten Browser-Tab am
+Projekt-Dropdown geklickt. Guter Reminder, bei ueberraschendem Zustand
+zuerst den einfachsten Erklaerungsweg zu pruefen, bevor man einen Bug
+vermutet.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
