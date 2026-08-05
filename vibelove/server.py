@@ -86,6 +86,73 @@ def add_build_lines(text):
     for line in text.splitlines():
         BUILD_STATUS['zeilen'].append(line)
 
+# mc.py haengt seine finish-Zusammenfassung als eine Zeile "✓ <text>" DIREKT
+# vor der Token-/Kosten-Zeile "Σ ... Requests" an (print_usage_summary()
+# laeuft unmittelbar nach run_task()s Rueckkehr, ohne dass etwas anderes
+# dazwischen gedruckt wird) -- das ist die einzige Stelle, an der ein sauber
+# abgeschlossener Lauf sein Ergebnis in EINEM kurzen Satz zusammenfasst.
+_FINISH_SUMMARY_RE = re.compile(r"^✓ (.+)$", re.MULTILINE)
+_USAGE_LINE_RE = re.compile(r"^Σ \d+ Requests", re.MULTILINE)
+# Grobe Version von mc.pys eigener Endlos-/Wiederholungs-Erkennung (DEGEN_
+# CHAR_RE/DEGEN_WORD_RE) -- Sicherheitsnetz, falls trotz allem doch mal
+# degenerierter Text als Zusammenfassung durchrutschen sollte.
+_DEGEN_CHAR_RE = re.compile(r"(.)\1{119,}", re.DOTALL)
+_DEGEN_WORD_RE = re.compile(r"(\b\w{1,20})(?:[ \t]+\1\b){19,}")
+
+
+def _looks_degenerate(text):
+    return bool(_DEGEN_CHAR_RE.search(text) or _DEGEN_WORD_RE.search(text))
+
+
+def _extract_run_summary(full_output):
+    """Zieht mc.pys eigene finish-Zusammenfassung aus der kompletten
+    Prozessausgabe -- statt (wie frueher) blind die letzten 500 Zeichen zu
+    nehmen. Real beobachtet: ein Lauf entgleiste (degenerierendes Modell,
+    Endlos-Wiederholungen/Meta-Kommentar-Muell) und wurde abgebrochen, bevor
+    ein finish erreicht wurde -- die alten letzten 500 Zeichen bestanden dann
+    aus genau diesem Muell und wurden UNGEFILTERT als 'Ergebnis' des
+    vorherigen Schritts in den naechsten Bauauftrag (BUILD_HISTORY)
+    uebernommen, was den naechsten Lauf mit sinnlosem Kontext fuetterte.
+    Ohne sauberes finish (oder bei degeneriert wirkendem Fund) gibt es
+    einen neutralen Platzhalter statt Rohtext."""
+    usage_match = _USAGE_LINE_RE.search(full_output)
+    if usage_match:
+        vor_usage = full_output[:usage_match.start()]
+        finish_matches = list(_FINISH_SUMMARY_RE.finditer(vor_usage))
+        if finish_matches:
+            kandidat = finish_matches[-1].group(1).strip()
+            if kandidat and not _looks_degenerate(kandidat):
+                return kandidat
+    return ("Lauf nicht sauber abgeschlossen (kein finish erreicht) -- "
+            "Details im Build-Log, nicht als Kontext uebernommen.")
+
+
+def stelle_sauberen_arbeitsbaum_sicher(project_dir):
+    """Committet liegen gebliebene Aenderungen VOR einem neuen Bauauftrag --
+    real beobachtet: ein per SIGTERM abgebrochener Lauf hinterliess neue,
+    NIE committete Dateien (frontend/, MC-NOTIZEN.md). mc.pys eigene
+    Git-Absicherung (git_usable()) verlangt fuer JEDEN Lauf einen sauberen
+    Arbeitsbaum -- fand sie stattdessen 'offene Aenderungen' vor, blieb
+    GIT_ROLLBACK fuer den GESAMTEN naechsten Lauf deaktiviert, obwohl dieser
+    selbst sauber durchlief. Ergebnis: kein Commit trotz erfolgreichem Build,
+    und damit kein Rollback-Ziel fuer die Chat-Oberflaeche. Ohne eigenes
+    Git-Repo (z.B. 'workspace') passiert hier nichts."""
+    if not os.path.isdir(os.path.join(project_dir, '.git')):
+        return
+    try:
+        status = subprocess.run(['git', 'status', '--porcelain'], cwd=project_dir,
+                                 capture_output=True, text=True, timeout=10)
+        if not status.stdout.strip():
+            return  # Arbeitsbaum bereits sauber -- nichts zu tun
+        subprocess.run(['git', 'add', '-A'], cwd=project_dir, capture_output=True, timeout=15)
+        subprocess.run(
+            ['git', 'commit', '-m', 'vibelove: Zwischenstand (vor naechster Anweisung gesichert)'],
+            cwd=project_dir, capture_output=True, text=True, timeout=15
+        )
+    except Exception:
+        pass  # best effort -- ein Fehlschlag hier soll den Bauauftrag nicht blockieren
+
+
 def reset_history():
     global BUILD_HISTORY
     BUILD_HISTORY = []
@@ -293,6 +360,10 @@ def build():
     # Bauziel: das aktive Projekt (Verzeichnis sicherstellen)
     aktives_projekt_dir = projekt_dir(CURRENT_PROJECT)
     os.makedirs(aktives_projekt_dir, exist_ok=True)
+    # Liegen gebliebene Aenderungen (z.B. von einem abgebrochenen Lauf) VOR
+    # dem neuen Bauauftrag sichern -- sonst faellt mc.pys eigene Git-
+    # Absicherung fuer den GESAMTEN naechsten Lauf aus (siehe Docstring).
+    stelle_sauberen_arbeitsbaum_sicher(aktives_projekt_dir)
 
     # Befehl zusammenbauen
     command = [
@@ -362,7 +433,7 @@ def build():
                 ensure_vite_running()
                 full_output = "".join(output_lines)
                 output = full_output
-                summary = full_output[-500:] if len(full_output) > 500 else full_output
+                summary = _extract_run_summary(full_output)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""
 
@@ -517,6 +588,76 @@ def push_project():
         })
     except Exception as e:
         return jsonify({'ok': False, 'ausgabe': str(e)})
+
+
+@app.route('/projects/git-log', methods=['GET'])
+def project_git_log():
+    """Liefert die Commit-Historie des AKTIVEN Projekts als Grundlage fuer die
+    Chat-Oberflaeche: jeder saubere mc-Lauf erzeugt bereits einen eigenen
+    Commit (mc.pys eigene git_commit_run()) -- die Git-Historie ist damit die
+    natuerliche, ueber Seiten-Reloads hinweg persistente Quelle fuer 'was
+    wurde wann gebaut', OHNE eine zweite, parallele Chat-Historie im Server
+    pflegen zu muessen. Kein eigenes Git-Repo -> leere Liste (kein Fehler),
+    damit die Oberflaeche einfach einen leeren Chat zeigt."""
+    if not aktives_projekt_hat_eigenes_git_repo():
+        return jsonify({'commits': []})
+    project_path = projekt_dir(CURRENT_PROJECT)
+    try:
+        result = subprocess.run(
+            ['git', 'log', '--reverse', '--pretty=format:%H%x1f%P%x1f%ci%x1f%s',
+             '-n', '100'],
+            cwd=project_path, capture_output=True, text=True, timeout=15
+        )
+    except Exception as e:
+        return jsonify({'commits': [], 'error': str(e)})
+    if result.returncode != 0:
+        return jsonify({'commits': []})
+    commits = []
+    for line in result.stdout.splitlines():
+        teile = line.split('\x1f')
+        if len(teile) != 4:
+            continue
+        commit_hash, eltern, datum, nachricht = teile
+        commits.append({
+            'hash': commit_hash,
+            'parent': eltern.split(' ')[0] if eltern else None,
+            'date': datum,
+            'message': nachricht,
+        })
+    return jsonify({'commits': commits})
+
+
+@app.route('/projects/rollback', methods=['POST'])
+def rollback_project():
+    """Setzt das AKTIVE Projekt per 'git reset --hard' + 'git clean -fd' auf
+    einen zuvor per /projects/git-log erfassten Commit zurueck -- die
+    Chat-Oberflaeche bietet das pro Nachricht als 'Rueckgaengig' an, um exakt
+    den Stand VOR jener Anweisung wiederherzustellen (Lovable-/Undo-
+    Semantik). 'git clean -fd' entfernt dabei nur echte Neuzugaenge, die nie
+    committet wurden (z.B. Reste eines fehlgeschlagenen Laufs) -- .gitignore-
+    Eintraege wie node_modules/ bleiben unangetastet (kein -x)."""
+    fehler = git_repo_fehler()
+    if fehler:
+        return fehler
+    data = request.get_json(silent=True) or {}
+    commit = str(data.get('commit', '')).strip()
+    if not re.fullmatch(r'[0-9a-fA-F]{7,40}', commit or ''):
+        return jsonify({'ok': False, 'error': 'Ungueltiger oder fehlender Commit-Hash'}), 400
+    project_path = projekt_dir(CURRENT_PROJECT)
+    # Erst pruefen, dass der Commit WIRKLICH in DIESEM Repo existiert -- sonst
+    # koennte ein veralteter Hash (z.B. nach Projektwechsel im Browser-Tab)
+    # versehentlich im falschen Projekt landen.
+    check = subprocess.run(['git', 'cat-file', '-e', commit + '^{commit}'],
+                            cwd=project_path, capture_output=True, text=True)
+    if check.returncode != 0:
+        return jsonify({'ok': False, 'error': 'Commit nicht in diesem Projekt gefunden'}), 400
+    reset = subprocess.run(['git', 'reset', '--hard', commit],
+                            cwd=project_path, capture_output=True, text=True)
+    if reset.returncode != 0:
+        return jsonify({'ok': False, 'error': reset.stderr.strip()[:300]}), 500
+    subprocess.run(['git', 'clean', '-fd'], cwd=project_path, capture_output=True, text=True)
+    ensure_vite_running()
+    return jsonify({'ok': True})
 
 
 @app.route('/restart-vite', methods=['POST'])

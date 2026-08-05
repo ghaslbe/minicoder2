@@ -7,71 +7,49 @@
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 h-screen flex overflow-hidden">
-    <!-- LEFT: Form & Logs -->
-    <div class="w-1/2 h-full flex flex-col p-4 border-r border-gray-300 bg-white">
-        <h1 class="text-xl font-bold mb-4">Vibelove Builder</h1>
-        <div class="flex items-center gap-2 mb-3">
-            <label for="projektSelect" class="text-sm font-medium text-gray-600">Projekt:</label>
+    <!-- LEFT: kompakte Toolbar + Chat-Verlauf -->
+    <div class="w-1/2 h-full flex flex-col border-r border-gray-300 bg-white">
+        <!-- Kompakte Toolbar -->
+        <div class="flex items-center gap-1.5 px-3 py-2 border-b border-gray-200">
+            <h1 class="text-sm font-bold text-gray-800 mr-1 whitespace-nowrap">Vibelove</h1>
             <select
                 id="projektSelect"
-                class="flex-1 p-1.5 border border-gray-300 rounded text-sm bg-white"
+                class="flex-1 min-w-0 p-1 border border-gray-300 rounded text-xs bg-white"
             ></select>
-            <button
-                type="button"
-                id="gitButton"
-                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-            >
-                Git
-            </button>
-            <button
-                type="button"
-                id="neuesProjektBtn"
-                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-            >
-                Neues Projekt
-            </button>
+            <button type="button" id="neuesProjektBtn" title="Neues Projekt"
+                class="icon-btn">➕</button>
+            <button type="button" id="gitButton" title="Git-Remote"
+                class="icon-btn">🔗</button>
+            <a href="/download-zip" title="Projekt als ZIP herunterladen"
+                class="icon-btn no-underline">⬇️</a>
+            <button type="button" id="resetButton" title="Kontext-Verlauf zurücksetzen (nicht Git)"
+                class="icon-btn">🔄</button>
+            <button type="button" id="settingsButton" title="Einstellungen"
+                class="icon-btn">⚙️</button>
         </div>
-        <form id="buildForm" class="flex flex-col gap-2">
+
+        <!-- Chat-Verlauf (aus Git-Historie des Projekts rekonstruiert) -->
+        <div id="chatFeed" class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5 bg-gray-50"></div>
+
+        <!-- Eingabe unten, Chat-Stil -->
+        <form id="buildForm" class="flex items-end gap-2 p-3 border-t border-gray-200 bg-white">
             <textarea
                 id="instruction"
                 name="instruction"
-                class="w-full h-32 p-2 border border-gray-300 rounded shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                placeholder="Beschreibe deine App..."
+                rows="1"
+                class="flex-1 resize-none max-h-32 p-2.5 border border-gray-300 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-blue-500 leading-snug"
+                placeholder="Was soll gebaut/geändert werden?"
             ></textarea>
             <button
                 type="submit"
                 id="buildButton"
-                class="bg-blue-600 text-white font-bold py-2 px-4 rounded hover:bg-blue-700 transition-colors"
-            >
-                Bauen
-            </button>
-            <button
-                type="button"
-                id="resetButton"
-                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-            >
-                Verlauf zurücksetzen
-            </button>
-            <a
-                href="/download-zip"
-                class="inline-block bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm text-center no-underline"
-            >
-                Projekt als ZIP herunterladen
-            </a>
+                title="Senden"
+                class="shrink-0 w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >➤</button>
         </form>
-        <div class="mt-4 flex-grow overflow-auto bg-gray-900 text-green-400 p-3 rounded font-mono text-sm">
-            <pre id="logOutput" class="whitespace-pre-wrap">Warte auf Bauanweisung...</pre>
-        </div>
-        <button
-            type="button"
-            id="settingsButton"
-            class="mt-2 w-full bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-        >
-            Einstellungen
-        </button>
     </div>
 
-    <!-- RIGHT: Live Preview mit Werkzeugleiste -->
+    <!-- RIGHT: Live Preview mit Werkzeugleiste (unveraendert) -->
     <div class="w-1/2 h-full flex flex-col">
         <div class="flex items-center gap-2 bg-gray-100 border-b border-gray-300 px-3 py-2">
             <span class="text-sm font-medium text-gray-600 mr-auto">Preview</span>
@@ -178,21 +156,221 @@
         </div>
     </div>
 
+    <style>
+        .icon-btn {
+            width: 2rem;
+            height: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.375rem;
+            font-size: 0.9rem;
+            background: transparent;
+            transition: background-color 0.15s;
+            flex-shrink: 0;
+        }
+        .icon-btn:hover { background-color: #e5e7eb; }
+        .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    </style>
+
     <script>
+        // ============================================================
+        // Chat-Verlauf: rekonstruiert aus der Git-Historie des aktiven
+        // Projekts (jeder saubere mc-Lauf erzeugt bereits einen eigenen
+        // Commit) -- deshalb ueberlebt der Chat einen Seiten-Reload, ganz
+        // ohne eine zweite, parallele Historie im Browser zu pflegen.
+        // ============================================================
+        const chatFeed = document.getElementById('chatFeed');
         const form = document.getElementById('buildForm');
-        const logOutput = document.getElementById('logOutput');
         const buildButton = document.getElementById('buildButton');
         const resetButton = document.getElementById('resetButton');
         const instructionInput = document.getElementById('instruction');
 
+        let gitCommits = []; // zuletzt geladene Commit-Liste des aktiven Projekts
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Muss zu mc.pys eigener Ausgabe passen: die finish-Zusammenfassung
+        // steht als Zeile "✓ <text>" DIREKT vor der Token-/Kosten-Zeile
+        // "Σ ... Requests" (siehe vibelove/server.py: _extract_run_summary,
+        // dieselbe Logik hier client-seitig fuer die Chat-Bubble-Ueberschrift).
+        const USAGE_LINE_RE = /^Σ \d+ Requests/m;
+        const FINISH_LINE_RE = /^✓ (.+)$/gm;
+
+        function extractSummary(fullText) {
+            const usageMatch = USAGE_LINE_RE.exec(fullText);
+            const vorUsage = usageMatch ? fullText.slice(0, usageMatch.index) : fullText;
+            const matches = [...vorUsage.matchAll(FINISH_LINE_RE)];
+            if (matches.length) return matches[matches.length - 1][1].trim();
+            return null;
+        }
+
+        function appendSystemBubble(text) {
+            const div = document.createElement('div');
+            div.className = 'text-center text-xs text-gray-400 my-1';
+            div.textContent = text;
+            chatFeed.appendChild(div);
+        }
+
+        function appendUserBubble(text) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-end';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-blue-600 text-white rounded-2xl rounded-br-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap';
+            bubble.textContent = text;
+            wrap.appendChild(bubble);
+            chatFeed.appendChild(wrap);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+            return wrap;
+        }
+
+        function machRollbackButton(commitHash, wrapEl) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'mt-1 text-xs text-gray-500 hover:text-red-600 underline block';
+            btn.textContent = '↩ Rückgängig (Stand davor)';
+            btn.onclick = () => rollbackZu(commitHash, wrapEl);
+            return btn;
+        }
+
+        function appendAssistantBubble({ headline, rollbackTo, pending }) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-3 py-2 max-w-[85%] text-sm shadow-sm';
+
+            const headlineEl = document.createElement('div');
+            headlineEl.className = pending
+                ? 'text-gray-500 italic'
+                : 'text-gray-800 whitespace-pre-wrap';
+            headlineEl.textContent = headline;
+            bubble.appendChild(headlineEl);
+
+            if (rollbackTo) {
+                bubble.appendChild(machRollbackButton(rollbackTo, wrap));
+            }
+
+            wrap.appendChild(bubble);
+            chatFeed.appendChild(wrap);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+            return { wrap, bubble, headlineEl };
+        }
+
+        function fuegeDetailsHinzu(bubble, initialText) {
+            const details = document.createElement('details');
+            details.className = 'mt-1.5';
+            details.open = true;
+            const summary = document.createElement('summary');
+            summary.className = 'text-xs text-blue-600 cursor-pointer select-none';
+            summary.textContent = 'Terminal-Details';
+            const pre = document.createElement('pre');
+            pre.className = 'mt-1 max-h-56 overflow-auto whitespace-pre-wrap bg-gray-900 text-green-400 p-2 rounded text-xs';
+            pre.textContent = initialText || '';
+            details.appendChild(summary);
+            details.appendChild(pre);
+            bubble.appendChild(details);
+            return pre;
+        }
+
+        async function rollbackZu(commitHash, wrapEl) {
+            if (!confirm('Wirklich auf den Stand VOR dieser Anweisung zurücksetzen? Alle Änderungen danach gehen unwiderruflich verloren.')) return;
+            try {
+                const res = await fetch('/projects/rollback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ commit: commitHash })
+                });
+                const data = await res.json();
+                if (!data.ok) {
+                    alert('Rollback fehlgeschlagen: ' + (data.error || 'unbekannter Fehler'));
+                    return;
+                }
+                await ladeGitLogUndRenderChat();
+                reloadPreview();
+            } catch (err) {
+                alert('Rollback fehlgeschlagen: ' + err.message);
+            }
+        }
+
+        function renderChatAusGitLog() {
+            chatFeed.innerHTML = '';
+            if (!gitCommits.length) {
+                appendSystemBubble('Noch kein Verlauf für dieses Projekt.');
+                return;
+            }
+            gitCommits.forEach((c, i) => {
+                if (i === 0) {
+                    appendSystemBubble('🆕 Projekt erstellt');
+                    return;
+                }
+                const msg = c.message.replace(/^mc:\s*/, '');
+                appendAssistantBubble({ headline: msg, rollbackTo: c.parent, pending: false });
+            });
+        }
+
+        async function ladeGitLogUndRenderChat() {
+            try {
+                const res = await fetch('/projects/git-log');
+                const data = await res.json();
+                gitCommits = data.commits || [];
+            } catch (e) {
+                gitCommits = [];
+            }
+            renderChatAusGitLog();
+        }
+
+        // Nach einem Bauauftrag: pruefen, ob ein NEUER Commit entstand (nur
+        // dann gibt es ueberhaupt etwas zum Zuruecksetzen) und den Rollback-
+        // Button an die GERADE gezeigte Bubble haengen, statt den kompletten
+        // Chat neu zu rendern (die eben gestreamte Antwort bliebe sonst kurz
+        // verschwunden, bis der Re-Render fertig ist).
+        async function aktualisiereRollbackFuer(assistantBubble) {
+            const vorherLetzterHash = gitCommits.length ? gitCommits[gitCommits.length - 1].hash : null;
+            try {
+                const res = await fetch('/projects/git-log');
+                const data = await res.json();
+                const neu = data.commits || [];
+                gitCommits = neu;
+                if (neu.length && neu[neu.length - 1].hash !== vorherLetzterHash) {
+                    const letzter = neu[neu.length - 1];
+                    if (letzter.parent) {
+                        assistantBubble.bubble.appendChild(
+                            machRollbackButton(letzter.parent, assistantBubble.wrap)
+                        );
+                    }
+                }
+            } catch (e) {
+                // Git-Log nicht verfuegbar -> einfach keinen Rollback anbieten
+            }
+        }
+
+        // --- Eingabefeld: automatisch mitwachsen (wie Chat-Apps ueblich) ---
+        function autoResizeTextarea() {
+            instructionInput.style.height = 'auto';
+            instructionInput.style.height = Math.min(instructionInput.scrollHeight, 128) + 'px';
+        }
+        instructionInput.addEventListener('input', autoResizeTextarea);
+        instructionInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                form.requestSubmit();
+            }
+        });
+
         form.onsubmit = async (e) => {
             e.preventDefault();
-            const instruction = instructionInput.value;
+            const instruction = instructionInput.value.trim();
             if (!instruction) return;
 
+            appendUserBubble(instruction);
+            instructionInput.value = '';
+            autoResizeTextarea();
+
             buildButton.disabled = true;
-            buildButton.innerText = 'Baut …';
-            buildButton.classList.add('animate-pulse');
 
             const statusEl = document.getElementById('buildStatus');
             const statusDot = statusEl.querySelector('span');
@@ -201,8 +379,9 @@
             statusDot.className = 'w-2 h-2 rounded-full bg-yellow-500 inline-block animate-pulse';
             statusEl.lastChild.textContent = ' arbeitet …';
 
-            const separator = '\n\n=== Anweisung: ' + instruction + ' ===\n';
-            logOutput.textContent += separator;
+            const assistant = appendAssistantBubble({ headline: 'Baue …', rollbackTo: null, pending: true });
+            const pre = fuegeDetailsHinzu(assistant.bubble, '');
+            let rawText = '';
 
             try {
                 const response = await fetch('/build', {
@@ -216,19 +395,27 @@
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    logOutput.textContent += decoder.decode(value, { stream: true });
-                    logOutput.scrollTop = logOutput.scrollHeight;
+                    rawText += decoder.decode(value, { stream: true });
+                    pre.textContent = rawText;
+                    pre.scrollTop = pre.scrollHeight;
+                    chatFeed.scrollTop = chatFeed.scrollHeight;
                 }
-
-                instructionInput.value = '';
             } catch (err) {
-                logOutput.textContent += '\nFehler: ' + err.message;
+                rawText += '\nFehler: ' + err.message;
+                pre.textContent = rawText;
             } finally {
-                buildButton.disabled = false;
-                buildButton.innerText = 'Bauen';
-                buildButton.classList.remove('animate-pulse');
+                const summary = extractSummary(rawText);
+                assistant.headlineEl.textContent = summary || 'Lauf nicht sauber abgeschlossen — Details unten prüfen.';
+                assistant.headlineEl.className = summary
+                    ? 'text-gray-800 whitespace-pre-wrap'
+                    : 'text-red-600 whitespace-pre-wrap';
+                // Details standardmaessig einklappen, sobald ein Ergebnis da ist --
+                // die Kurzfassung in der Bubble reicht im Regelfall.
+                const detailsEl = assistant.bubble.querySelector('details');
+                if (detailsEl && summary) detailsEl.open = false;
 
-                // Fertig-Meldung im Status-Indikator, dann Preview laden und kurz danach ausblenden
+                buildButton.disabled = false;
+
                 statusDot.className = 'w-2 h-2 rounded-full bg-green-500 inline-block';
                 statusEl.lastChild.textContent = ' fertig — Preview neu geladen';
                 reloadPreview();
@@ -238,19 +425,16 @@
                     statusDot.className = '';
                     statusEl.lastChild.textContent = '';
                 }, 2500);
+
+                await aktualisiereRollbackFuer(assistant);
             }
         };
 
         resetButton.onclick = async () => {
-            if (!confirm('Möchtest du den Verlauf wirklich zurücksetzen?')) return;
-
+            if (!confirm('Kontext-Verlauf für den Assistenten zurücksetzen? (Betrifft nur, was mc.py sich merkt — NICHT die Git-Historie/den Chat.)')) return;
             try {
-                const response = await fetch('/reset', {
-                    method: 'POST'
-                });
-                if (response.ok) {
-                    logOutput.textContent = 'Verlauf wurde zurueckgesetzt.\nWarte auf Bauanweisung...';
-                }
+                const response = await fetch('/reset', { method: 'POST' });
+                if (response.ok) appendSystemBubble('Kontext-Verlauf zurückgesetzt.');
             } catch (err) {
                 console.error('Reset failed:', err);
             }
@@ -278,14 +462,13 @@
                 settingsFeedback.textContent = '';
                 settingsFeedback.classList.add('hidden');
             } catch (err) {
-                logOutput.textContent += '\nFehler beim Laden der Einstellungen: ' + err.message;
+                appendSystemBubble('Fehler beim Laden der Einstellungen: ' + err.message);
             }
             settingsModal.classList.remove('hidden');
         };
 
         cancelSettingsBtn.onclick = () => settingsModal.classList.add('hidden');
 
-        // Klick ausserhalb des Modals schliesst es
         settingsModal.addEventListener('click', (e) => {
             if (e.target === settingsModal) settingsModal.classList.add('hidden');
         });
@@ -305,10 +488,9 @@
                     body: JSON.stringify(payload)
                 });
                 if (!res.ok) throw new Error('POST /settings fehlgeschlagen');
-                logOutput.textContent += '\neinstellungen gespeichert ✓';
-                logOutput.scrollTop = logOutput.scrollHeight;
+                appendSystemBubble('Einstellungen gespeichert ✓');
             } catch (err) {
-                logOutput.textContent += '\neinstellungen speichern fehlgeschlagen: ' + err.message;
+                appendSystemBubble('Einstellungen speichern fehlgeschlagen: ' + err.message);
             }
             settingsModal.classList.add('hidden');
         };
@@ -462,8 +644,7 @@
             body: JSON.stringify({ name })
         });
         if (res.ok) {
-            document.getElementById('logOutput').textContent =
-                'Projekt gewechselt zu "' + name + '".\nWarte auf Bauanweisung...';
+            await ladeGitLogUndRenderChat();
             setTimeout(reloadPreview, 3500); // Vite braucht einen Moment
         }
     }
@@ -482,8 +663,7 @@
         });
         if (res.ok) {
             await ladeProjekte();
-            document.getElementById('logOutput').textContent =
-                'Neues Projekt "' + name + '" angelegt und aktiv.\nWarte auf Bauanweisung...';
+            await ladeGitLogUndRenderChat();
             reloadPreview();
         } else {
             alert('Projekt konnte nicht angelegt werden.');
@@ -491,6 +671,7 @@
     });
 
     ladeProjekte();
+    ladeGitLogUndRenderChat();
 </script>
 </body>
 </html>
