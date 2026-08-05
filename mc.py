@@ -4980,21 +4980,39 @@ def main():
         if "eine FRAGE" in zusatz:
             info("Frage-Weiche aktiv: nur lesen und antworten.")
         messages.append({"role": "user", "content": user + hints + zusatz})
-        if plan_mode and not plan_phase(messages, args.model):
-            continue
-        # Skill-Flags (check/analyse) gelten nur fuer DIESE Aufgabe: Globals
-        # setzen, System-Prompt neu bauen, nach dem Lauf zuruecksetzen.
+        # Ctrl-C WAEHREND einer laufenden Aufgabe (Plan-Phase oder Agenten-
+        # Schleife) soll NICHT gleich das ganze Terminal beenden -- nur den
+        # aktuellen Vorgang abbrechen und zur Eingabe zurueckkehren. Ein
+        # zweites Ctrl-C direkt an der naechsten du>-Eingabe beendet mc.py
+        # dann ganz regulaer ueber das bestehende EOFError/KeyboardInterrupt
+        # im input()-try oben -- kein Timer/Zaehler noetig, "einmal
+        # abbrechen, nochmal wirklich beenden" ergibt sich von selbst.
         prev_check, prev_analyse = CHECK, ANALYSE
-        if sflags.get("check") or sflags.get("analyse"):
-            CHECK = CHECK or sflags.get("check", False)
-            ANALYSE = ANALYSE or sflags.get("analyse", False)
-            messages[0]["content"] = _system_message_for_mode()
-            info("Skill-Flags aktiv fuer diese Aufgabe: " + ", ".join(
-                k for k in ("check", "analyse") if sflags.get(k)))
-        result = run_task(messages, args.model)
-        if (CHECK, ANALYSE) != (prev_check, prev_analyse):
-            CHECK, ANALYSE = prev_check, prev_analyse
-            messages[0]["content"] = _system_message_for_mode()
+        result = None
+        try:
+            if plan_mode and not plan_phase(messages, args.model):
+                continue
+            # Skill-Flags (check/analyse) gelten nur fuer DIESE Aufgabe: Globals
+            # setzen, System-Prompt neu bauen, nach dem Lauf zuruecksetzen.
+            if sflags.get("check") or sflags.get("analyse"):
+                CHECK = CHECK or sflags.get("check", False)
+                ANALYSE = ANALYSE or sflags.get("analyse", False)
+                messages[0]["content"] = _system_message_for_mode()
+                info("Skill-Flags aktiv fuer diese Aufgabe: " + ", ".join(
+                    k for k in ("check", "analyse") if sflags.get(k)))
+            result = run_task(messages, args.model)
+        except KeyboardInterrupt:
+            print(f"\n{C.YELLOW}⚠ Aufgabe abgebrochen (Ctrl-C) — zurueck zur "
+                  f"Eingabe. Nochmal Ctrl-C druecken, um mc.py zu "
+                  f"beenden.{C.RESET}")
+        finally:
+            if (CHECK, ANALYSE) != (prev_check, prev_analyse):
+                CHECK, ANALYSE = prev_check, prev_analyse
+                messages[0]["content"] = _system_message_for_mode()
+        # after_run() bewusst IMMER aufrufen, auch nach Ctrl-C-Abbruch: bei
+        # result=None bietet es (wie beim Schrittlimit-/Kontext-Abbruch schon
+        # immer) einen Rollback fuer die bis dahin gemachten Aenderungen an,
+        # statt sie kommentarlos liegen zu lassen.
         after_run(result if isinstance(result, str) else "")
     if mc_terminal:
         mc_terminal.save_history()
