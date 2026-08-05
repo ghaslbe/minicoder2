@@ -169,7 +169,10 @@ alias mc='python3 ~/tools/mc.py'
 
 **Prompt mitgeben:** alles nach den Optionen wird als Aufgabe genommen
 (`python3 mc.py "deine aufgabe"`). Ohne Prompt startet der interaktive Modus —
-dort beendet `exit`, `quit` oder `Ctrl-D` die Sitzung.
+dort beendet `exit`, `quit` oder `Ctrl-D` die Sitzung. Ein einzelnes `Ctrl-C`
+waehrend eines laufenden Auftrags bricht NUR diesen Auftrag ab und kehrt zur
+Eingabe zurueck; erst ein zweites `Ctrl-C` (an der Eingabe selbst) beendet
+mc.py ganz.
 
 **Server & Modell mitgeben:** per Flag (`--base-url`, `--model`) oder per
 Env-Variable (`MC_BASE_URL`, `MC_MODEL`); das Flag hat Vorrang.

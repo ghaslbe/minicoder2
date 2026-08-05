@@ -4287,6 +4287,146 @@ wieder und wieder zur Abstimmung zu stellen.
 4 neue Tests (einmalige Meldung, neuer Verlust trotz bereits gewarnter
 Namen, neue Formulierung), 181/181 gruen.
 
+## 48. Ctrl-C soll den Auftrag abbrechen, nicht das ganze Terminal
+
+Kleiner, aber spuerbarer Komfort-Wunsch: ein einzelnes Ctrl-C waehrend
+eines laufenden Auftrags beendete bisher gleich die komplette Sitzung —
+kein Weg, nur den aktuellen (z.B. feststeckenden oder unerwuenschten)
+Lauf abzubrechen und im Terminal weiterzuarbeiten.
+
+Die Loesung kommt ohne Zaehler oder Timer aus: `KeyboardInterrupt`
+waehrend der Plan-Phase oder der Agenten-Schleife (`run_task()`) wird
+jetzt in der interaktiven Schleife selbst abgefangen — druckt eine
+Abbruch-Meldung samt Hinweis ("Nochmal Ctrl-C druecken, um mc.py zu
+beenden") und kehrt zur naechsten `du>`-Eingabe zurueck. Ein ZWEITES
+Ctrl-C direkt an dieser naechsten Eingabe lauft in das ohnehin schon
+bestehende `except (EOFError, KeyboardInterrupt)` rund um `input()` und
+beendet mc.py ganz reguleaer — "einmal abbrechen, nochmal wirklich
+beenden" ergibt sich also aus der bestehenden Struktur, ohne eigene
+Zustandsverwaltung. `after_run()` wird bewusst auch nach einem Abbruch
+aufgerufen: bei `result=None` bietet es (wie beim Erreichen des
+Schrittlimits schon immer) einen Rollback der bis dahin gemachten
+Aenderungen an, statt sie kommentarlos liegen zu lassen.
+
+## 49. "Das Tool verrennt sich total" — ein Live-Sezieren via vibelove, und was dabei zutage kam
+
+Direkter Auftrag: ein 3D-Jump'n'Run mit Three.js in einem neuen vibelove-
+Projekt bauen lassen (`google/gemma-4-26b-a4b-it:free` via OpenRouter),
+und GENAU beobachten, wo es hakt. Ergebnis: ein veritabler Modell-
+Zusammenbruch, live mitverfolgt.
+
+**Der Zusammenbruch selbst.** Nach zwei sauberen Schritten (Vite-Geruest,
+Abhaengigkeiten installieren) geriet das Modell beim eigentlichen
+Schreiben der Spiel-Logik in eine Spirale aus Selbstkorrektur-Meta-Text:
+`<Wait - looking at my previous attempt...>`, erfundene "System Alert"-
+Nachrichten, geleakte Chat-Template-Sondertoken (`<channel|>`), kaputte
+JSON-Pfade (`"main most}_wait_"`, `"main://NO_"`), zunehmend hysterische
+Grossschreibung (`GO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`) und einen einzelnen
+Lauf ueber 65.000 Tokens fuer eine einzige Datei. mc.pys bestehende
+Absicherung griff dabei zuverlaessig: `_looks_runaway()` schnitt die
+degenerierte Antwort zweimal ab ("Antwort ausser Kontrolle... gekappt"),
+und der fehlende ` ```content `-Block danach loeste den bekannten
+"write_file ohne Inhalt"-Fehler aus — die Datei blieb in BEIDEN Faellen
+unveraendert (der urspruengliche Vite-Demo-Code), kein Byte Muell
+gelangte auf die Platte. Nach zwei Nudges fing sich das Modell tatsaechlich
+selbst und schrieb sauberen Code — bis es in einem ZWEITEN Content-Block
+mitten im selben Schreibversuch erneut kippte. Nach ueber sieben Minuten
+in derselben Schleife wurde der Lauf abgebrochen.
+
+**Die Erklaerung: "gleiches Modell" ist bei OpenRouter kein Versprechen.**
+Waehrend der Untersuchung fiel auf: derselbe HTTP-429-Fehler nannte
+`"provider_name":"Google AI Studio"`, ein direkter Test Sekunden spaeter
+lief ueber `"provider":"Darkbloom"` — OpenRouter routet ein Gratis-
+Modell-Label ueber MEHRERE Backend-Anbieter, je nach Verfuegbarkeit.
+Dieselbe gemma-4-26b, mit der frueher gute Erfahrungen gemacht wurden,
+kann also technisch eine ganz andere Serving-Instanz sein (andere Last,
+andere Quantisierung/Konfiguration) — "gleiches Modell" ist bei
+Gratis-Routing kein Versprechen auf gleiche Infrastruktur.
+
+**Der Vergleich, der alles einordnete.** Derselbe Auftrag, dasselbe
+Projekt, mit `deepseek/deepseek-v4-flash-0731`: 7 Schritte, sauberer
+Batch-Read aller relevanten Dateien zu Beginn, strukturierter Code mit
+Nebel-Effekt, geklonten Baumobjekten, Delta-Zeit-Physik und korrekter
+AABB-Kollision, zweimal `npm run build` zur Selbstpruefung, ein
+begruendetes `finish` — fuer $0.0088. Kein einziger Rueckfall.
+
+**Ein echter vibelove-Bug, gefunden waehrend der Aufraeumarbeiten danach.**
+`server.py` nahm fuer die BUILD_HISTORY (den Kontext, der dem NAECHSTEN
+Bauauftrag mitgegeben wird) bisher ungefiltert die letzten 500 Zeichen
+der kompletten Prozessausgabe. Bei einem entgleisten Lauf bestehen genau
+diese letzten 500 Zeichen aus Zusammenbruch-Muell — der dann UNGEFILTERT
+als "Ergebnis des vorherigen Schritts" in den naechsten Prompt
+uebernommen wurde. `_extract_run_summary()` zieht jetzt stattdessen
+gezielt mc.pys eigene finish-Zusammenfassung (die Zeile `✓ <text>`
+unmittelbar vor der Token-/Kosten-Zeile) heraus; ohne sauberes finish
+(oder bei degeneriert wirkendem Fund, per Mini-Version von mc.pys
+DEGEN_CHAR_RE/DEGEN_WORD_RE) gibt es einen neutralen Platzhalter statt
+Rohtext.
+
+## 50. Vibelove-Redesign: Chat statt Terminal-Formular, kompakte Toolbar, Git-natives Rollback
+
+Direkt im Anschluss ein UI-Wunsch fuer vibelove selbst: kleinere Buttons
+statt der breiten Formularleiste, eine Chat-Oberflaeche (Lovable-/
+WhatsApp-Stil) statt reinem Terminal-Auswurf fuer die Ergebnisse, und
+IMMER die Moeglichkeit, auf den Stand vor der letzten Anweisung
+zurueckzuspringen.
+
+**Die Design-Entscheidung**: keine zweite, parallele Chat-Historie im
+Server pflegen. Jeder sauber abgeschlossene mc-Lauf erzeugt bereits einen
+eigenen Git-Commit (mc.pys eigene `git_commit_run()`) — die Git-Historie
+des Projekts IST die Chat-Historie, nur anders dargestellt. Ein neuer
+Endpunkt `GET /projects/git-log` liefert Hash/Parent/Nachricht jedes
+Commits; die Oberflaeche baut daraus die Chat-Bubbles (Nutzer-Anweisung
+rechts, Ergebnis-Zusammenfassung links mit einklappbaren Terminal-
+Details). Ergebnis: der Chat-Verlauf ueberlebt Seiten-Reloads und
+Projekt-Wechsel von selbst, ganz ohne eigene Persistenz-Schicht.
+
+**Rollback als direkte Konsequenz**: jede Ergebnis-Bubble bekommt einen
+"↩ Rueckgaengig"-Knopf, der den ELTERN-Commit dieser Bubble uebergibt.
+Ein neuer Endpunkt `POST /projects/rollback` prueft zuerst, dass der
+angegebene Commit-Hash ueberhaupt in DIESEM Projekt-Repo existiert
+(schuetzt vor einem veralteten Hash aus einem Browser-Tab, der z.B. nach
+Projektwechsel auf ein FALSCHES Projekt zeigen wuerde), dann `git reset
+--hard` + `git clean -fd` (entfernt nur echte, nie committete
+Neuzugaenge — .gitignore-Eintraege wie `node_modules/` bleiben
+unangetastet, kein `-x`).
+
+**Der Realitaetscheck, der einen zweiten echten Bug freilegte**: Beim
+Live-Test des neuen Features (im selben `jumprun3d`-Projekt aus Kapitel
+48) zeigte `/projects/git-log` nur EINEN Commit, obwohl der erfolgreiche
+DeepSeek-Lauf sichtbar Dateien geschrieben hatte. Grund: der zuvor per
+SIGTERM abgebrochene gemma-4-Lauf hatte neue, nie committete Dateien
+hinterlassen (`frontend/`, `MC-NOTIZEN.md` als "untracked"). mc.pys
+eigene Git-Absicherung verlangt fuer JEDEN Lauf einen SAUBEREN
+Arbeitsbaum beim Start — fand sie stattdessen "offene Aenderungen" vor,
+blieb ihre Commit-Logik fuer den GESAMTEN naechsten Lauf deaktiviert,
+obwohl dieser selbst sauber durchlief. Genau das stand sogar sichtbar in
+der Lauf-Ausgabe ("Git-Absicherung nicht verfuegbar (Arbeitsbaum nicht
+sauber)"), war zuvor aber nicht als Problem erkannt worden.
+
+Das untergraebt das "immer moeglich"-Versprechen des neuen Rollback-
+Features direkt an der Wurzel — also behoben an der Wurzel:
+`stelle_sauberen_arbeitsbaum_sicher()` committet liegen gebliebene
+Aenderungen VOR jedem neuen Bauauftrag (nur falls tatsaechlich etwas
+unsauber ist, kein leerer Commit im Normalfall), damit mc.pys eigene
+Git-Absicherung bei JEDEM Lauf funktionsfaehig bleibt — unabhaengig
+davon, ob ein vorheriger Lauf sauber durchlief, scheiterte oder
+abgebrochen wurde. Zweifacher Live-Test (zwei Bauauftraege + ein
+Rollback dazwischen) bestaetigte die durchgehende Commit-Kette:
+`Erst-Commit → vibelove: Zwischenstand → mc: HUD-Titel angepasst`, danach
+sauberer Rollback auf den mittleren Commit, danach ein weiterer sauberer
+mc-Commit OHNE erneuten Zwischenstand (Baum war ja schon sauber) — die
+Kette haelt.
+
+Kein automatisierter Test-Unterbau fuer `vibelove/server.py` vorhanden
+(anders als `mc.py`) — die Verifikation lief vollstaendig live gegen den
+echten Flask-Server per curl (Endpunkt-Antworten, Git-Log-Inhalt,
+Rollback-Effekt auf die tatsaechliche Datei, Ablehnung ungueltiger/
+fremder Commit-Hashes) sowie eine statische HTML/JS-Konsistenzpruefung
+(Tag-Balance, referenzierte IDs). Kein Zugriff auf einen echten Browser
+in dieser Umgebung verfuegbar — die visuelle/interaktive Pruefung der
+neuen Oberflaeche bleibt beim Nutzer offen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
