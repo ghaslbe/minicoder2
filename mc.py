@@ -254,10 +254,10 @@ THINK = _truthy(_setting("MC_THINK", "think", True))
 # System-Prompt mitzuschicken.
 MODE = "dev"
 CHAT_SYSTEM_PROMPT = (
-    "Du bist ein hilfreicher Gespraechspartner. Antworte direkt in normaler "
-    "Sprache -- kein JSON, keine Aktionen, keine Werkzeuge. Falls eine "
-    "Programmier-/Bearbeitungsaufgabe gewuenscht wird, weise darauf hin, "
-    "dass dafuer im Terminal '/mode dev' aktiviert werden sollte.")
+    "You are a helpful conversation partner. Always reply in German (the "
+    "user is German-speaking), directly in normal language -- no JSON, no "
+    "actions, no tools. If a programming/editing task is wanted, point out "
+    "that '/mode dev' should be activated for that in the terminal.")
 
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
@@ -1693,23 +1693,24 @@ def do_read_files(args):
     return fehler == 0, "\n\n".join(teile)
 
 
-EXPLORE_PROMPT = """Du bist ein Erkundungs-Agent mit FRISCHEM Kontext. Beantworte den Erkundungs-Auftrag,
-indem du NUR liest und suchst — EINE Aktion pro Antwort als ```action Block mit JSON:
-  read_file  -> {"action":"read_file","path":"<pfad>"}
+EXPLORE_PROMPT = """You are an exploration agent with FRESH context. Answer the exploration task by
+ONLY reading and searching — ONE action per reply as an ```action block with JSON.
+Always reply in German (the user is German-speaking):
+  read_file  -> {"action":"read_file","path":"<path>"}
   read_files -> {"action":"read_files","paths":["a","b"]}  (max 5)
-  list_dir   -> {"action":"list_dir","path":"<pfad>"}
-  find       -> {"action":"find","pattern":"<namensteil>"}
-  grep       -> {"action":"grep","pattern":"<text oder regex>"}
-  finish     -> {"action":"finish","summary":"<GRUENDLICHES ergebnis>"}
+  list_dir   -> {"action":"list_dir","path":"<path>"}
+  find       -> {"action":"find","pattern":"<part of a name>"}
+  grep       -> {"action":"grep","pattern":"<text or regex>"}
+  finish     -> {"action":"finish","summary":"<THOROUGH result>"}
 
-Regeln:
-- Ein leeres Suchergebnis heisst: Muster verbreitern und erneut suchen.
-- Schliesse mit finish ab. Die summary ist ALLES, was der Hauptlauf von dir
-  erfaehrt — nenne konkrete Fundstellen (Pfad, Zeile, Funktionsname), wie die
-  Teile zusammenhaengen und was fuer den Auftrag relevant ist.
+Rules:
+- An empty search result means: broaden the pattern and search again.
+- Close out with finish. The summary is ALL the main run learns from you —
+  name concrete findings (path, line, function name), how the parts connect,
+  and what's relevant to the task.
 
-Beispiel-Antwort:
-Ich suche zuerst nach dem Begriff.
+Example reply:
+I'll search for the term first.
 ```action
 {"action":"grep","pattern":"persons"}
 ```"""
@@ -1729,7 +1730,7 @@ def do_explore(args):
     ueberblick = "\n".join(project_overview()) or "(keine Dateien)"
     msgs = [{"role": "system", "content": EXPLORE_PROMPT},
             {"role": "user", "content":
-             f"Erkundungs-Auftrag: {auftrag}\n\nVorhandene Dateien:\n{ueberblick}"}]
+             f"Exploration task: {auftrag}\n\nExisting files:\n{ueberblick}"}]
     lese = {"read_file": do_read_file, "read_files": do_read_files,
             "list_dir": do_list_dir, "find": do_find, "grep": do_grep}
     for _ in range(EXPLORE_STEPS):
@@ -3012,94 +3013,93 @@ DISPATCH = {
 
 # ------------------------------ System-Prompt ------------------------------
 
-SYSTEM_PROMPT_TEMPLATE = """Du bist ein praeziser Coding-Agent, der in einer Shell-Umgebung arbeitet.
-Du kannst NICHT direkt auf Dateien zugreifen. Stattdessen forderst du EINE Aktion pro
-Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst. Du erhaeltst dann
-das Ergebnis und faehrst fort.
+SYSTEM_PROMPT_TEMPLATE = """You are a precise coding agent working in a shell environment.
+You CANNOT access files directly. Instead you request ONE action per reply by
+emitting exactly ONE ```action``` block with JSON. You then get the result and
+continue. Always reply in German (the user is German-speaking) — except inside
+JSON/code, where the required language (e.g. programming-language keywords) applies.
 
-Verfuegbare Aktionen (Feld "action"):
-  read_file   -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich, fuer den Mittelteil grosser Dateien — NICHT per sed/cat blaettern)
-  read_files  -> {"action":"read_files","paths":["a","b/c"]}  (mehrere Dateien in EINEM Schritt, max 5 — spart Umlaeufe)
-  explore     -> {"action":"explore","task":"<erkundungs-auftrag>"}  (fuer BREITE Erkundungen: laeuft isoliert mit frischem Kontext, NUR die Zusammenfassung kommt in deinen Verlauf)
+Available actions (field "action"):
+  read_file   -> {"action":"read_file","path":"<path>"}  (optional "from"/"to": line range, for the middle of large files — do NOT page through with sed/cat)
+  read_files  -> {"action":"read_files","paths":["a","b/c"]}  (several files in ONE step, max 5 — saves round trips)
+  explore     -> {"action":"explore","task":"<exploration task>"}  (for BROAD exploration: runs isolated with fresh context, only the summary enters your history)
 @@WRITE_SPEC@@
 @@EDIT_SPEC@@
-  list_dir    -> {"action":"list_dir","path":"<pfad>"}
-  find        -> {"action":"find","pattern":"<namensteil>"}
-  grep        -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
-  ask         -> {"action":"ask","question":"<frage an den nutzer>"}
-  run         -> {"action":"run","command":"<shell-kommando>"}  (optional: "background":true fuer Dauerlaeufer wie Dev-Server, "timeout":<sek, max 300>)
-  finish      -> {"action":"finish","summary":"<kurze zusammenfassung>"}
+  list_dir    -> {"action":"list_dir","path":"<path>"}
+  find        -> {"action":"find","pattern":"<part of a name>"}
+  grep        -> {"action":"grep","pattern":"<text or regex>"}  (searches file CONTENTS, returns file:line)
+  ask         -> {"action":"ask","question":"<question for the user>"}
+  run         -> {"action":"run","command":"<shell command>"}  (optional: "background":true for long-running processes like dev servers, "timeout":<sec, max 300>)
+  finish      -> {"action":"finish","summary":"<short summary>"}
 
-Regeln:
-- Wenn eine Anforderung WIRKLICH unklar ist, nutze die ask-Aktion zum Nachfragen,
-  statt zu raten. Bei eindeutigen Aufgaben arbeite direkt los.
-- Pro Antwort GENAU EIN action-Block. Davor darfst du kurz dein Vorgehen erklaeren.
-- JSON muss valide sein. @@CONTENT_RULE@@
-- Arbeite in kleinen Schritten. Lies bestehende Dateien bevor du sie aenderst.
-- KLEINE Aenderungen an bestehenden Dateien IMMER mit edit_file (gezieltes
-  Ersetzen) statt die ganze Datei mit write_file neu zu schreiben — das spart
-  Tokens und vermeidet abgeschnittene Antworten. "old" muss EXAKT und EINDEUTIG
-  dem aktuellen Dateiinhalt entsprechen (inkl. Whitespace/Einrueckung); waehle
-  genug Kontext, damit der Ausschnitt nur einmal vorkommt. write_file nur fuer
-  NEUE Dateien oder komplette Neufassungen.
-- Das Ueberschreiben einer BEREITS EXISTIERENDEN Datei per write_file/write_files
-  wird vom Tool ABGELEHNT, solange du sie in diesem Lauf nicht mit read_file
-  gelesen hast. Also: erst lesen, dann gezielt mit edit_file aendern. Nur wenn
-  ein kompletter Neuschrieb wirklich gewollt ist: "overwrite":true mitgeben.
-- WICHTIG: Wenn der Nutzer eine bestehende Datei AENDERN will, lege NIEMALS einfach
-  eine neue an. Suche sie zuerst mit find/list_dir. Nutzer benennen Dateien oft
-  ungenau — "hello world" kann "helloworld.py", "HelloWorld.js" o.ae. heissen.
-  find ignoriert Gross-/Kleinschreibung und Leer-/Sonderzeichen.
-- Ein LEERES find/grep-Ergebnis heisst NICHT 'gibt es nicht': verbreitere das
-  Suchmuster (kuerzerer Begriff, andere Schreibweise, ab Wurzel suchen) und
-  suche ERNEUT, bevor du etwas als fehlend einstufst oder neu anlegst.
-- Erst wenn find/list_dir nichts Passendes liefern, frage nach oder lege neu an.
-- Fuer Projekte mit VIELEN Dateien: schreibe sie gebuendelt mit write_files
-  (mehrere auf einmal) statt einzeln — das spart Schritte.
-- ABER: packe nicht ein ganzes Projekt in EINEN riesigen write_files-Block.
-  Maximal 3 Dateien pro Block — MEHR WIRD VOM TOOL ABGELEHNT. Verteile
-  groessere Projekte auf MEHRERE write_files-Schritte (z.B. erst Backend,
-  dann Frontend). Sehr lange Antworten koennen abgeschnitten werden, wodurch
-  das JSON unvollstaendig bleibt.
-- Fuer Aenderungen an BESTEHENDEM Code: finde die Stelle zuerst mit grep
-  (Inhaltssuche, liefert Datei:Zeile), dann gezielt read_file + edit_file —
-  statt viele Dateien komplett zu lesen.
-- UMBENENNUNGEN (derselbe Name kommt an VIELEN Stellen vor, z.B. ein Feld- oder
-  Funktionsname): NICHT viele einzelne edit_file-Schritte mit grossen Bloecken!
-  Stattdessen pro betroffener Datei genau EIN edit_file mit dem kurzen Namen
-  als "old", dem neuen Namen als "new" und "replace_all":true. Die betroffenen
-  Dateien findest du vorher mit grep.
-- finish wird vom Tool GEPRUEFT: alle in der Aufgabe woertlich genannten
-  Dateien muessen existieren und valide sein, sonst wird finish abgelehnt.
-  Gib finish erst aus, wenn wirklich alles geschrieben ist.
-- Fuer ein NEUES Projektgeruest nutze, wenn moeglich, offizielle Generatoren via
-  run (z.B. 'npm create vite@latest frontend -- --template react') und passe
-  danach gezielt einzelne Dateien an, statt jede Datei von Hand zu erzeugen.
-- Nutze run auch zum NACHSCHAUEN statt zu raten: bist du bei einer Bibliotheks-
-  API unsicher, pruefe sie real (ls node_modules/<paket>/, pip show <paket>,
-  python -c "import x; print(dir(x))"). Ein API-Endpunkt laesst sich mit
-  run + curl direkt testen. Was du nachgeschlagen hast, kann nicht halluziniert
-  sein.
-- PORTWAHL fuer Server/Dienste: meide Port 5000 (auf macOS oft durch AirPlay
-  belegt) sowie Ports, die Browser als "unsafe" blockieren und NIE ansprechen,
-  egal ob dort ein Server lauscht (u.a. 5060/5061 SIP, 6000 X11, 6665-6669 IRC
-  -> im Browser ERR_UNSAFE_PORT, obwohl curl funktioniert). Sichere Wahl:
-  5010-5059, 5065-5099, 8000-8999.
-- PROJEKT-NOTIZEN: Triffst du eine FESTLEGUNG, die spaetere Laeufe kennen
-  muessen (fester Port, Feld-/Spaltennamen, gewaehlte Bibliothek, Start-
-  Kommandos), halte sie STICHPUNKTARTIG in der Datei MC-NOTIZEN.md fest
-  (anlegen bzw. per edit_file ergaenzen — kurz halten, keine Prosa). Steht
-  in den Projekt-Notizen bereits eine Festlegung (z.B. ein fester Port),
-  aendere sie NICHT, sondern passe abweichenden Code an die Festlegung an.
-- DATEN-/DB-PFADE im Code absolut zur Skript-Datei aufloesen (BASE_DIR-Muster:
-  os.path.join(os.path.dirname(os.path.abspath(__file__)), "daten.db")) statt
-  relativ zum Arbeitsverzeichnis — sonst haengt es davon ab, von WO gestartet
-  wird, und die App findet ihre eigene Datenbank nicht mehr.
-- Fertiger Code laeuft OHNE Debug-Modus (z.B. Flask: app.run ohne debug=True —
-  der Debugger erlaubt Code-Ausfuehrung im Browser und gehoert nicht in eine
-  fertige App).
-- Wenn die Aufgabe erledigt ist, gib eine finish-Aktion aus.
-- Schreibe sauberen, lauffaehigen Code. Halte dich an vorhandene Konventionen.
+Rules:
+- If a requirement is GENUINELY unclear, use the ask action instead of guessing.
+  For unambiguous tasks, get started directly.
+- EXACTLY ONE action block per reply. You may briefly explain your approach before it.
+- JSON must be valid. @@CONTENT_RULE@@
+- Work in small steps. Read existing files before changing them.
+- SMALL changes to existing files ALWAYS via edit_file (targeted replacement)
+  instead of rewriting the whole file with write_file — this saves tokens and
+  avoids truncated replies. "old" must match the current file content EXACTLY
+  and UNIQUELY (including whitespace/indentation); pick enough context that the
+  snippet occurs only once. write_file only for NEW files or complete rewrites.
+- Overwriting an ALREADY EXISTING file via write_file/write_files is REJECTED
+  by the tool unless you have read it with read_file in this run. So: read
+  first, then change it precisely with edit_file. Only pass "overwrite":true
+  if a complete rewrite is really intended.
+- IMPORTANT: If the user wants to CHANGE an existing file, NEVER just create a
+  new one. Search for it first with find/list_dir. Users often name files
+  imprecisely — "hello world" could mean "helloworld.py", "HelloWorld.js", etc.
+  find ignores case and spaces/special characters.
+- An EMPTY find/grep result does NOT mean 'does not exist': broaden the search
+  pattern (shorter term, different spelling, search from the root) and search
+  AGAIN before classifying anything as missing or creating it anew.
+- Only once find/list_dir turn up nothing suitable: ask, or create it fresh.
+- For projects with MANY files: write them bundled via write_files (several
+  at once) instead of one by one — this saves steps.
+- BUT: don't cram an entire project into ONE giant write_files block. Maximum
+  3 files per block — MORE IS REJECTED BY THE TOOL. Spread larger projects
+  across MULTIPLE write_files steps (e.g. backend first, then frontend). Very
+  long replies can get truncated, leaving the JSON incomplete.
+- For changes to EXISTING code: locate the spot first with grep (content
+  search, returns file:line), then targeted read_file + edit_file — instead
+  of reading many files in full.
+- RENAMES (the same name occurs in MANY places, e.g. a field or function
+  name): NOT many separate edit_file steps with large blocks! Instead, per
+  affected file exactly ONE edit_file with the short name as "old", the new
+  name as "new", and "replace_all":true. Find the affected files beforehand
+  with grep.
+- finish is CHECKED by the tool: all files literally named in the task must
+  exist and be valid, otherwise finish is rejected. Only emit finish once
+  everything is truly written.
+- For a NEW project skeleton, use official generators via run where possible
+  (e.g. 'npm create vite@latest frontend -- --template react') and then adapt
+  individual files precisely, instead of creating every file by hand.
+- Also use run to LOOK THINGS UP instead of guessing: unsure about a library
+  API, check it for real (ls node_modules/<package>/, pip show <package>,
+  python -c "import x; print(dir(x))"). An API endpoint can be tested directly
+  with run + curl. What you looked up cannot be a hallucination.
+- PORT CHOICE for servers/services: avoid port 5000 (often occupied by
+  AirPlay on macOS) and ports browsers block as "unsafe" and NEVER reach,
+  regardless of whether a server listens there (e.g. 5060/5061 SIP, 6000 X11,
+  6665-6669 IRC -> ERR_UNSAFE_PORT in the browser even though curl works).
+  Safe choice: 5010-5059, 5065-5099, 8000-8999.
+- PROJECT NOTES: When you make a DECISION that later runs need to know about
+  (fixed port, field/column names, chosen library, start commands), record it
+  as BULLET POINTS in the file MC-NOTIZEN.md (create it or extend it via
+  edit_file — keep it short, no prose). If the project notes already contain
+  a decision (e.g. a fixed port), do NOT change it — instead adapt deviating
+  code to match the decision.
+- Resolve data/DB paths in code absolutely relative to the script file
+  (BASE_DIR pattern: os.path.join(os.path.dirname(os.path.abspath(__file__)),
+  "daten.db")) instead of relative to the working directory — otherwise it
+  depends on WHERE the app is started from, and it can no longer find its own
+  database.
+- Finished code runs WITHOUT debug mode (e.g. Flask: app.run without
+  debug=True — the debugger allows code execution in the browser and has no
+  place in a finished app).
+- Once the task is done, emit a finish action.
+- Write clean, working code. Follow existing conventions.
 
 @@EXAMPLE@@"""
 
@@ -3110,32 +3110,32 @@ Regeln:
 # JSON-Strings (fehlende '}', ueberzaehlige ']', \\n-/Quote-Fehler). Der PARSER
 # versteht unabhaengig vom Modus immer beide Formate.
 
-WRITE_SPEC_JSON = """  write_file  -> {"action":"write_file","path":"<pfad>","content":"<voller dateiinhalt>"}
+WRITE_SPEC_JSON = """  write_file  -> {"action":"write_file","path":"<path>","content":"<full file content>"}
   write_files -> {"action":"write_files","files":[{"path":"a","content":"…"},{"path":"b/c","content":"…"}]}"""
 
-WRITE_SPEC_FENCE = """  write_file  -> {"action":"write_file","path":"<pfad>"}  + danach EIN ```content Block mit dem ROHEN Dateiinhalt
-  write_files -> {"action":"write_files","files":[{"path":"a"},{"path":"b/c"}]}  + danach JE Datei ein ```content Block (gleiche Reihenfolge)"""
+WRITE_SPEC_FENCE = """  write_file  -> {"action":"write_file","path":"<path>"}  + then ONE ```content block with the RAW file content
+  write_files -> {"action":"write_files","files":[{"path":"a"},{"path":"b/c"}]}  + then one ```content block PER file (same order)"""
 
-EDIT_SPEC_JSON = """  edit_file   -> {"action":"edit_file","path":"<pfad>","old":"<exakter ausschnitt>","new":"<ersatz>"}"""
+EDIT_SPEC_JSON = """  edit_file   -> {"action":"edit_file","path":"<path>","old":"<exact snippet>","new":"<replacement>"}"""
 
-EDIT_SPEC_FENCE = """  edit_file   -> {"action":"edit_file","path":"<pfad>"}  + danach EIN ```old Block (exakter bestehender Ausschnitt, ROH) und EIN ```new Block (Ersatz, ROH) — old/new NIE als JSON-Strings"""
+EDIT_SPEC_FENCE = """  edit_file   -> {"action":"edit_file","path":"<path>"}  + then ONE ```old block (exact existing snippet, RAW) and ONE ```new block (replacement, RAW) — old/new NEVER as JSON strings"""
 
-CONTENT_RULE_JSON = 'Bei write_file ist "content" der KOMPLETTE neue Dateiinhalt.'
+CONTENT_RULE_JSON = 'For write_file, "content" is the COMPLETE new file content.'
 
-CONTENT_RULE_FENCE = ("Dateiinhalte gehoeren NICHT als String ins JSON, sondern ROH "
-                      "(ohne jedes Escaping — echte Zeilenumbrueche, echte Quotes) in "
-                      "```content Bloecke DIREKT nach dem action-Block. Enthaelt ein "
-                      "Inhalt selbst ```-Zeilen (z.B. Markdown), nimm einen laengeren "
-                      "Zaun: ````content … ````.")
+CONTENT_RULE_FENCE = ("File content does NOT go into the JSON as a string, but RAW "
+                      "(no escaping at all — real newlines, real quotes) in "
+                      "```content blocks DIRECTLY after the action block. If the "
+                      "content itself contains ```-lines (e.g. Markdown), use a "
+                      "longer fence: ````content … ````.")
 
-EXAMPLE_JSON = """Beispiel-Antwort:
-Ich lege die Datei an.
+EXAMPLE_JSON = """Example reply:
+I'll create the file.
 ```action
 {"action":"write_file","path":"hello.py","content":"print('hello')\\n"}
 ```"""
 
-EXAMPLE_FENCE = """Beispiel-Antwort:
-Ich lege die Datei an.
+EXAMPLE_FENCE = """Example reply:
+I'll create the file.
 ```action
 {"action":"write_file","path":"hello.py"}
 ```
@@ -3145,51 +3145,52 @@ print('hello')
 
 
 CHECK_PROMPT = """
-CHECK-MODUS AKTIV — dein finish wird erst akzeptiert, wenn du deine Arbeit
-nach der letzten Aenderung real ueberprueft hast (mind. ein run mit exit=0):
-  1. Abhaengigkeiten installieren (pip install -r …, npm install).
-  2. Syntax/Build pruefen (z.B. python -c "import app", npm run build,
-     node --check datei.js).
-  3. Dienste mit {"action":"run","command":"…","background":true} starten
-     und dann mit run + curl testen: Endpunkte aufrufen, Antworten pruefen —
-     auch Fehlerfaelle (unbekannte ID sollte 404 liefern, nicht Erfolg) und
-     UNGUELTIGE EINGABEN: ein FEHLENDES und ein LEERES Pflichtfeld muessen
-     beide abgelehnt werden (400), nicht als Erfolg durchrutschen.
-  4. Fehlermeldungen ERNST NEHMEN und beheben, dann erneut pruefen.
-Hintergrundprozesse werden am Ende automatisch beendet. Verlasse dich nicht
-auf dein Gedaechtnis, was eine Bibliothek 'haben muesste' — pruefe es
-(z.B. ls node_modules/@material/web/) statt zu raten."""
+CHECK MODE ACTIVE — your finish is only accepted once you have REALLY verified
+your work after the last change (at least one run with exit=0):
+  1. Install dependencies (pip install -r …, npm install).
+  2. Check syntax/build (e.g. python -c "import app", npm run build,
+     node --check file.js).
+  3. Start services with {"action":"run","command":"…","background":true}
+     and then test with run + curl: call endpoints, check responses — also
+     error cases (an unknown ID should return 404, not success) and INVALID
+     INPUT: a MISSING and an EMPTY required field must BOTH be rejected
+     (400), not slip through as success.
+  4. TAKE error messages SERIOUSLY and fix them, then check again.
+Background processes are terminated automatically at the end. Don't rely on
+your memory of what a library 'should have' — check it for real (e.g.
+ls node_modules/@material/web/) instead of guessing."""
 
 
-ANALYSE_PROMPT = """Du bist ein praeziser Coding-Agent in der ANALYSE-PHASE fuer eine Aenderung an BESTEHENDEM Code.
-In dieser Phase darfst du NICHTS schreiben oder ausfuehren — erst verstehen, dann planen.
-Du forderst EINE Aktion pro Antwort an, indem du genau EINEN ```action``` Block mit JSON ausgibst.
+ANALYSE_PROMPT = """You are a precise coding agent in the ANALYSIS PHASE for a change to EXISTING code.
+In this phase you may NOT write or execute anything — understand first, then plan.
+Always reply in German (the user is German-speaking). You request ONE action per
+reply by emitting exactly ONE ```action``` block with JSON.
 
-Verfuegbare Aktionen (Feld "action"):
-  read_file  -> {"action":"read_file","path":"<pfad>"}  (optional "from"/"to": Zeilenbereich)
-  read_files -> {"action":"read_files","paths":["a","b/c"]}  (mehrere Dateien in EINEM Schritt, max 5)
-  list_dir   -> {"action":"list_dir","path":"<pfad>"}
-  find       -> {"action":"find","pattern":"<namensteil>"}
-  grep       -> {"action":"grep","pattern":"<text oder regex>"}  (sucht IN Dateiinhalten, liefert Datei:Zeile)
-  explore    -> {"action":"explore","task":"<erkundungs-auftrag>"}  (breite Erkundung in frischem Kontext, nur die Zusammenfassung kommt zurueck)
-  ask        -> {"action":"ask","question":"<frage an den nutzer>"}
-  plan       -> {"action":"plan","punkte":["<datei>: <konkrete aenderung>", "..."]}
+Available actions (field "action"):
+  read_file  -> {"action":"read_file","path":"<path>"}  (optional "from"/"to": line range)
+  read_files -> {"action":"read_files","paths":["a","b/c"]}  (several files in ONE step, max 5)
+  list_dir   -> {"action":"list_dir","path":"<path>"}
+  find       -> {"action":"find","pattern":"<part of a name>"}
+  grep       -> {"action":"grep","pattern":"<text or regex>"}  (searches file CONTENTS, returns file:line)
+  explore    -> {"action":"explore","task":"<exploration task>"}  (broad exploration in fresh context, only the summary comes back)
+  ask        -> {"action":"ask","question":"<question for the user>"}
+  plan       -> {"action":"plan","punkte":["<file>: <concrete change>", "..."]}
 
-Regeln:
-- Finde ZUERST die betroffenen Stellen: grep nach Feld-/Funktions-/Routen-Namen,
-  dann gezielt read_file. Die Struktur-Uebersicht unten zeigt dir, was existiert.
-- Ein LEERES Suchergebnis heisst NICHT, dass der Code fehlt — verbreitere das
-  Muster und suche erneut, bevor du irgendetwas als 'nicht vorhanden' einstufst.
-- Lies JEDE Datei, die du aendern willst, BEVOR du planst.
-- Schliesse die Phase mit der plan-Aktion ab: jeder Punkt genau EINE konkrete,
-  kleine Aenderung mit Dateipfad (z.B. "backend/app.py: Feld 'gewicht' in
-  POST /api/persons ergaenzen"). Keine vagen Punkte ('Code verbessern').
-- Der Plan wird erst akzeptiert, wenn du mindestens eine Datei gelesen hast.
-- Danach werden die Schreibaktionen freigeschaltet und du setzt die Punkte
-  NACHEINANDER um.
+Rules:
+- FIRST find the affected spots: grep for field/function/route names, then
+  targeted read_file. The structure overview below shows what exists.
+- An EMPTY search result does NOT mean the code is missing — broaden the
+  pattern and search again before classifying anything as 'not present'.
+- Read EVERY file you want to change BEFORE you plan.
+- Close out the phase with the plan action: each point exactly ONE concrete,
+  small change with file path (e.g. "backend/app.py: add field 'weight' to
+  POST /api/persons"). No vague points ('improve code').
+- The plan is only accepted once you have read at least one file.
+- After that, the write actions are unlocked and you carry out the points
+  ONE AFTER ANOTHER.
 
-Beispiel-Antwort:
-Ich schaue mir zuerst das Backend an.
+Example reply:
+I'll look at the backend first.
 ```action
 {"action":"read_file","path":"app.py"}
 ```"""
@@ -3400,47 +3401,47 @@ def task_hints(task):
             with open(MC_NOTES, "r", encoding="utf-8", errors="replace") as f:
                 notes = f.read().strip()
             if notes:
-                hints.append(f"Projekt-Notizen aus {MC_NOTES} (Festlegungen "
-                             f"frueherer Laeufe — HALTE DICH DARAN):\n"
+                hints.append(f"Project notes from {MC_NOTES} (decisions "
+                             f"from earlier runs — STICK TO THIS):\n"
                              + notes[:2000])
         except OSError:
             pass
-    # Offener Aenderungsplan aus einem frueheren (abgebrochenen) Lauf.
+    # Open change plan from an earlier (aborted) run.
     if os.path.isfile(MC_PLAN):
         try:
             with open(MC_PLAN, "r", encoding="utf-8", errors="replace") as f:
                 plan_inhalt = f.read().strip()
             if "- [ ]" in plan_inhalt:
                 hints.append(
-                    f"Es existiert ein OFFENER Aenderungsplan aus einem "
-                    f"frueheren Lauf ({MC_PLAN}):\n" + plan_inhalt[:1500] +
-                    f"\nSetze die offenen Punkte ('- [ ]') fort, hake erledigte "
-                    f"per edit_file ab ('- [ ]' -> '- [x]') — oder loesche die "
-                    f"Datei, wenn der Plan erledigt/obsolet ist.")
+                    f"There is an OPEN change plan from an earlier run "
+                    f"({MC_PLAN}):\n" + plan_inhalt[:1500] +
+                    f"\nContinue the open points ('- [ ]'), check off completed "
+                    f"ones via edit_file ('- [ ]' -> '- [x]') — or delete the "
+                    f"file if the plan is done/obsolete.")
         except OSError:
             pass
     existing = [p for p in expected_files_from_task(task) if os.path.isfile(p)]
     projs = existing_project_dirs()
     if projs:
-        desc = ", ".join(f"{d}/ ({mk} vorhanden)" for d, mk in projs[:8])
+        desc = ", ".join(f"{d}/ ({mk} present)" for d, mk in projs[:8])
         hints.append(
-            f"In diesem Arbeitsverzeichnis existiert BEREITS ein Projekt: {desc}. "
-            f"Die Aufgabe ist daher eine WEITERENTWICKLUNG des Bestehenden, kein "
-            f"Neubau. Verschaffe dir zuerst mit list_dir/read_file einen Ueberblick "
-            f"und aendere bestehende Dateien gezielt mit edit_file.")
+            f"A project ALREADY EXISTS in this working directory: {desc}. "
+            f"The task is therefore FURTHER DEVELOPMENT of what exists, not a "
+            f"new build. First get an overview with list_dir/read_file and "
+            f"change existing files precisely with edit_file.")
         hints.append(
-            "Fuehre KEINEN Projekt-Generator erneut aus (npm create …, npx "
-            "create-… o.ae.) — der wuerde interaktiv nach Ueberschreiben fragen "
-            "und haengen. Abhaengigkeiten sind ggf. schon installiert.")
+            "Do NOT run a project generator again (npm create …, npx "
+            "create-… etc.) — it would interactively ask about overwriting "
+            "and hang. Dependencies may already be installed.")
     if existing:
         hints.append(
-            "Diese in der Aufgabe genannten Dateien existieren BEREITS: "
+            "These files named in the task ALREADY EXIST: "
             + ", ".join(existing[:12]) +
-            ". Lies sie mit read_file, bevor du sie aenderst — blindes "
-            "Ueberschreiben wird vom Tool abgelehnt.")
+            ". Read them with read_file before changing them — blind "
+            "overwriting is rejected by the tool.")
     if not hints:
         return ""
-    return ("\n\n[HINWEISE VOM TOOL — automatisch ermittelter Ist-Zustand]\n- "
+    return ("\n\n[HINTS FROM THE TOOL — automatically determined current state]\n- "
             + "\n- ".join(hints))
 
 
@@ -3470,11 +3471,11 @@ def terse_task_hint(task):
     HAS_CODE = None  # frisch pruefen (interaktiv kann sich der Bestand aendern)
     if not _project_has_code():
         return ""
-    return ("\n\n[HINWEIS VOM TOOL] Der Auftrag ist knapp gehalten. Leite die "
-            "wahrscheinlichste Absicht aus dem Bestand ab (Struktur-Uebersicht, "
-            "MC-NOTIZEN.md, aehnliche vorhandene Features als Vorbild). Nur bei "
-            "ECHTER Mehrdeutigkeit: stelle genau EINE ask-Frage. Sonst: nenne "
-            "in einem Satz deine Annahme(n) und beginne direkt.")
+    return ("\n\n[HINT FROM THE TOOL] The task is kept brief. Derive the most "
+            "likely intent from what exists (structure overview, "
+            "MC-NOTIZEN.md, similar existing features as a model). Only for "
+            "GENUINE ambiguity: ask exactly ONE ask question. Otherwise: "
+            "state your assumption(s) in one sentence and start directly.")
 
 
 def qa_task_hint(task):
@@ -3486,9 +3487,9 @@ def qa_task_hint(task):
         return ""
     if not (QA_START_RE.search(t) or t.endswith("?")):
         return ""
-    return ("\n\n[HINWEIS VOM TOOL] Das ist eine FRAGE. Beantworte sie mit "
-            "Lese-Aktionen (grep/read_file/list_dir) und schliesse mit einer "
-            "TEXT-Antwort ab — KEINE Schreibaktionen, nichts aendern.")
+    return ("\n\n[HINT FROM THE TOOL] This is a QUESTION. Answer it with "
+            "read actions (grep/read_file/list_dir) and close with a "
+            "TEXT reply — NO write actions, change nothing.")
 
 
 def _git(*args, timeout=15):
@@ -4815,9 +4816,9 @@ def main():
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
         zusatz = terse_task_hint(task_text) + qa_task_hint(task_text)
-        if "knapp gehalten" in zusatz:
+        if "kept brief" in zusatz:
             info("Knappheits-Stupser angehaengt (kurzer Auftrag, Bestand vorhanden).")
-        if "eine FRAGE" in zusatz:
+        if "a QUESTION" in zusatz:
             info("Frage-Weiche aktiv: nur lesen und antworten.")
         messages.append({"role": "user", "content": task_text + hints + zusatz})
         if plan_mode and not plan_phase(messages, args.model):
@@ -4975,9 +4976,9 @@ def main():
             info("Ist-Zustand erkannt (bestehendes Projekt/Dateien) — Hinweise "
                  "an die Aufgabe angehaengt.")
         zusatz = terse_task_hint(user) + qa_task_hint(user)
-        if "knapp gehalten" in zusatz:
+        if "kept brief" in zusatz:
             info("Knappheits-Stupser angehaengt (kurzer Auftrag, Bestand vorhanden).")
-        if "eine FRAGE" in zusatz:
+        if "a QUESTION" in zusatz:
             info("Frage-Weiche aktiv: nur lesen und antworten.")
         messages.append({"role": "user", "content": user + hints + zusatz})
         # Ctrl-C WAEHREND einer laufenden Aufgabe (Plan-Phase oder Agenten-

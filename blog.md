@@ -4462,6 +4462,192 @@ Projekt-Dropdown geklickt. Guter Reminder, bei ueberraschendem Zustand
 zuerst den einfachsten Erklaerungsweg zu pruefen, bevor man einen Bug
 vermutet.
 
+## 52. Der Protokoll-Kern spricht jetzt Englisch — 4352 Tokens sind 4352 Tokens
+
+Ausloeser war ein Rueckschritt: gemma-4-26b-a4b-it-mxfp4 lief frueher
+zuverlaessig ueber LM Studio auf dem Mac mini unter .191 (siehe die
+fruehen Kapitel), inzwischen aber nicht mehr. Der Grund war kein Bug,
+sondern schlichtes Wachstum: jedes neue Feature dieses Projekts hat den
+System-Prompt um ein paar Zeilen erweitert, und die Maschine hat via LM
+Studios eigenem `context_fit`-Log eine reale, hardware-bedingte
+Speichergrenze von exakt 4352 Tokens fuer genau dieses Modell -- kein
+Software-Limit, das sich durch eine groessere `context_length`-Anfrage
+umgehen liesse (dreimal probiert, dreimal identisch stillschweigend auf
+4352 gekappt).
+
+Drei Stellschrauben standen zur Wahl: Prompts knapper formulieren,
+Prompts auf Englisch umstellen, oder die Prompt-Groesse adaptiv an das
+erkannte Kontextfenster anpassen. Gegen das blinde Kuerzen sprach Kapitel
+40: explizite, ausformulierte Praezision ist genau das, was kleine
+Modelle zuverlaessig macht -- vage machen waere ein Rueckschritt an
+anderer Stelle. Ein kontrollierter Versuch (identischer Inhalt, einmal
+deutsch, einmal englisch, echte Tokenizer-Anfrage an das tatsaechlich
+betroffene Modell) ergab 2142 vs. 1758 Tokens -- rund 18% Ersparnis, ohne
+ein Wort an Bedeutung zu verlieren. Adaptive Groessenanpassung bleibt ein
+sinnvoller struktureller Folgeschritt, ist aber groessere Chirurgie; die
+Uebersetzung war der schnelle, risikoarme Gewinn und wurde zuerst
+umgesetzt.
+
+Uebersetzt wurde bewusst nur der FESTE Protokoll-Kern -- der Teil, der
+bei praktisch jedem Lauf mitgeschickt wird: `SYSTEM_PROMPT_TEMPLATE`
+samt den `WRITE_SPEC`/`EDIT_SPEC`/`CONTENT_RULE`/`EXAMPLE`-Bausteinen,
+`CHECK_PROMPT`, `ANALYSE_PROMPT`, `EXPLORE_PROMPT`, `CHAT_SYSTEM_PROMPT`
+und die deterministischen Task-Hint-Funktionen (`task_hints`,
+`terse_task_hint`, `qa_task_hint`). Die ~30 situativen Waechter- und
+Fehlermeldungen (Verlust-Waechter, Duplikat-Waechter, JSON-Koerzierungs-
+fehler und aehnliche, die nur bei bestimmten Ereignissen ueberhaupt im
+Kontext landen) bleiben bewusst ein eigener, spaeterer Uebersetzungsblock
+-- kleinere Hebelwirkung pro Aufwand, und jede Uebersetzung ist eine
+Gelegenheit, eine Nuance zu verlieren.
+
+Zwei Faktoren mussten mitgezogen werden, sonst waere die Uebersetzung
+unbemerkt kaputtgegangen:
+
+Erstens die Sprache der Modell-Antworten selbst. Der Nutzer liest
+Deutsch; ein rein englischer Protokoll-Prompt haette das Modell ohne
+Not auf Englisch antworten lassen koennen. Jeder uebersetzte
+System-/Analyse-/Explore-/Chat-Prompt bekam deshalb einen expliziten
+Satz: "Always reply in German (the user is German-speaking)."
+
+Zweitens eine interne Kopplung, die erst der Grep vor der eigentlichen
+Aenderung offenlegte: `terse_task_hint()` und `qa_task_hint()` erzeugen
+Text, der NICHT nur an das Modell geht, sondern von mc.py's eigener
+Interaktions-Schleife per Substring geprueft wird, um zu entscheiden, ob
+eine Info-Zeile im Terminal erscheint ("Knappheits-Stupser angehaengt",
+"Frage-Weiche aktiv") -- an vier Stellen im Code (einmal fuer den
+Single-Task-Modus, einmal fuer den interaktiven REPL-Modus, je zwei
+Pruefungen). Die deutschen Marker "knapp gehalten" und "eine FRAGE"
+wurden durch die im uebersetzten Hint-Text tatsaechlich vorkommenden
+englischen Phrasen "kept brief" und "a QUESTION" ersetzt -- an ALLEN
+vier Stellen gleichzeitig, sonst haette die Terminal-Anzeige lautlos
+aufgehoert zu funktionieren, obwohl das Modell weiterhin korrekt
+reagiert.
+
+Ein einziger Test hing an konkretem Prompt-Text (`"LEERES Pflichtfeld"
+in mc.CHECK_PROMPT`), sieben weitere an den Marker-Substrings der
+Hint-Funktionen -- alle mit auf die neuen englischen Formulierungen
+umgestellt. Danach: 181 Tests gruen. Ergebnis in Zeichen: der reale
+System-Prompt (Fence-Modus) schrumpfte von etwas mehr als 8000 auf
+6729 Zeichen -- die Groessenordnung passt zur fruehen Messung, auch
+wenn Zeichen kein Tokens sind. Das eigentliche Kriterium bleibt die
+naechste Live-Session mit gemma-4-26b-a4b-it-mxfp4 auf .191: passt der
+Prompt jetzt wieder unter 4352 Tokens.
+
+## 53. Die Live-Session: oMLX luegt nicht, es verhungert -- und LM Studio war die ganze Zeit der bessere Nachbar
+
+Der Test kam schneller als gedacht: neues vibelove-Projekt "pacman",
+oMLX auf .191 mit gemma-4-26b-a4b-it-mxfp4, Auftrag "baue ein
+Pac-Man-aehnliches Spiel". Die ersten vier Schritte liefen sauber --
+`index.html`, `style.css` und ein 6450 Zeichen grosses `script.js` mit
+Labyrinth, Punkten, zwei Geistern (einfacher Greedy-Algorithmus) und
+Score/Game-Over, alles auf Deutsch kommentiert, das uebersetzte
+Protokoll aus Kapitel 52 wurde korrekt verstanden und beantwortet. Dann,
+Schritt 5: drei leere Antworten in Folge, sauberer Abbruch durch mc.py's
+eigene Kontext-Kalibrierung -- kein Crash, keine kaputte Datei, aber
+auch kein `finish`. oMLX hatte sein reales nutzbares Fenster inzwischen
+auf 6861 Token herunterkalibriert.
+
+Die eigentliche Frage danach war nicht "wie schreibt man kompaktere
+Prompts" (das war Kapitel 52, und half hier kaum -- das feste
+Protokoll ist nur ein kleiner Bruchteil von 6861 Token), sondern: WARUM
+ist das Fenster so klein, und laesst sich das vergroessern? Eine Reihe
+echter Messungen statt Vermutungen:
+
+**oMLX' eigener Speicherstatus** (`/v1/models/status`) zeigte den
+Grund direkt: `final_ceiling` (oMLX' Sicherheitsbudget) lag bei ~19.07
+GB, das geladene 26B-Modell allein verbrauchte ~15.28 GB davon -- nur
+~3.79 GB blieben fuer den KV-Cache/Kontext. Ein `/model-reset` (dieselbe
+Funktion, die mc.py fuer den ehrlichen Neuladen-Bericht nutzt) aenderte
+daran nichts -- keine Fragmentierung, sondern eine feste Rechnung.
+
+**Ein Umstieg auf ein kleineres Modell** (`gemma-4-e4b-it-4bit`, ~5.4 GB
+Gewichte) zeigte sofort ~13.67 GB frei -- rund 3.6x mehr Kopfraum.
+Interessanterweise galt das NICHT linear fuer jedes kleinere Modell:
+`gemma-4-12b-coder-fable5-composer2.5-8bit` hatte zwar mehr freien
+Speicher als das 26B-Modell (~5.39 GB), aber ein per Bisektion
+gemessenes REALES Fenster von nur ~4300-4900 Token -- kleiner als beim
+26B-Modell trotz mehr freiem Speicher. Vermutlich ein Architektur-
+Unterschied (`vlm`/`gemma4_unified` vs. schlichtes `gemma4`) mit
+hoeherem KV-Cache-Verbrauch pro Token. Freier Speicher in GB sagt also
+nichts Verlaessliches ueber die nutzbare Token-Zahl aus, ohne Modell
+fuer Modell echt zu messen.
+
+**Ein Dashboard-Etikettierungsfehler**: der Nutzer setzte im oMLX-
+Dashboard ein Feld, das dort "context window" hiess, auf 132768 --
+`/v1/models/status` zeigte danach aber `max_tokens: 132768` (die
+Obergrenze fuer generierte AUSGABE-Token), waehrend `max_context_window`
+unveraendert bei 262144 blieb. Ein identischer Bisektions-Test vorher/
+nachher zeigte exakt denselben Fehlschlag bei derselben Prompt-Groesse
+-- die Einstellung hatte keinerlei Wirkung auf den tatsaechlichen
+Prefill-Speicher-Wächter. Erst ein zweiter Dashboard-Versuch traf die
+richtige Einstellung: `max_context_window` sprang auf 132000 (26B) bzw.
+123000 (12B-Coder) -- aber auch das aenderte am realen Fenster nichts,
+weil die eigentliche Grenze gar nicht durch diesen Wert, sondern durch
+den echten Speicherplatz bestimmt wird.
+
+**Der Kernel-Hebel**: oMLX' eigene Fehlermeldung nannte diesmal den
+wahren Namen: *"Raise kernel iogpu.wired_limit_mb in Terminal (currently
+caps Metal at 17.76 GB)"* -- ein macOS-Kernelparameter, der begrenzt,
+wieviel GPU-Speicher ueberhaupt fest zugewiesen (gewired) werden darf.
+Der Nutzer fuehrte direkt auf .191 aus:
+
+```bash
+sudo sysctl iogpu.wired_limit_mb=19456
+```
+
+(vorher testweise schon `=18432`, danach weiter auf `=19456` erhoeht).
+Nach einem oMLX-Neustart uebernahm `/v1/models/status` den neuen Wert
+exakt (`final_ceiling` sprang von 19069665280 auf 19327352832 Bytes --
+byteweise passend zu 18432 MB). Der Effekt blieb trotzdem winzig (+240
+MB) und wurde von etwas viel Groesserem ueberdeckt: identische
+Bisektions-Anfragen derselben Groesse fielen im Sekundentakt zwischen
+Erfolg und Fehlschlag um -- eine kleinere Anfrage scheiterte, wo eine
+groessere Sekunden zuvor noch durchging.
+
+**Was die Schwankungen NICHT erklaert**: naheliegend war der Verdacht,
+oMLX und LM Studio haetten gleichzeitig dasselbe Modell im Speicher
+gehalten und sich den Metal-Speicherpool streitig gemacht -- das haette
+zu den wilden, nicht-monotonen Fehlschlaegen gepasst. Der Nutzer stellte
+klar: beide liefen nie gleichzeitig, er hat zwischen den beiden Engines
+umgeschaltet (jeweils die eine beendet, bevor die andere startete). Die
+Ursache der Schwankungen WAEHREND der oMLX-Phase bleibt damit offen --
+vermutlich eigene Admin-Dashboard-Aktionen (das Neuladen "mit einer
+extra Einstellung fuer Context") liefen zeitlich parallel zu den
+Bisektions-Anfragen aus diesem Gespraech, oder oMLX' eigene
+Speicher-Schaetzung ist unter schnellen Wiederholanfragen selbst
+ungenau. Festhalten laesst sich nur, was tatsaechlich gemessen wurde,
+nicht die spekulative Erklaerung dafuer.
+
+Klar und mehrfach reproduziert ist dagegen: sobald NUR LM Studio das
+Modell hielt (oMLX-Modell explizit entladen), meldete es fuer
+gemma-4-26b-a4b-it@mxfp4 ein `loaded_context_length` von 18688 -- und
+anders als oMLX' theoretisches `max_context_window` ist dieser Wert bei
+LM Studio bereits an anderer Stelle (Kapitel 33/`_loaded_ctx_tokens()`)
+als vertrauenswuerdig bekannt. Eine echte Bisektion bestaetigte es
+sauber und STABIL: 17833 Token OK, 18350 Token OK, 18867 Token FEHLER
+-- derselbe Fehlertyp wie beim urspruenglichen 4352-Token-Fall, nur
+diesmal bei einer mehr als vierfach groesseren Grenze, und ohne das
+geringste Hin-und-Her bei Wiederholung.
+
+Mit LM Studio als Halter des Modells (vibelove auf
+`http://192.168.178.191:1234/v1` umgestellt) lief der
+Pac-Man-Bauauftrag zu Ende: 7 Anfragen, 46924 Token in Summe (die
+Kontext-Beschneidung von mc.py haelt jede EINZELNE Anfrage unter der
+realen Grenze, auch wenn die Summe darueber liegt), sauberer
+Git-Commit, `node --check` fehlerfrei. Das Spiel selbst bekam dabei noch
+eine echte kleine Verbesserung spendiert: die Geister liefen anfangs
+bei JEDEM Update-Schritt (alle 200ms), das Modell erkannte das selbst
+als zu hektisch und bremste sie per Zaehler auf jeden zweiten Schritt.
+
+Die Lehre: der gemeldete "Kontextfenster"-Wert einer lokalen Engine ist
+im besten Fall eine Konfigurationsabsicht, kein Versprechen -- die reale
+Grenze steckt im tatsaechlich freien GPU-Speicher in genau diesem
+Moment, und muss per echter Bisektion gemessen werden, nicht aus einer
+Status-Antwort abgelesen. Und: eine plausible Erklaerung fuer
+beobachtete Flakiness ist nicht dasselbe wie eine bestaetigte -- die
+Dual-Engine-Theorie klang stimmig, war aber schlicht falsch, bis der
+Nutzer sie korrigiert hat.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

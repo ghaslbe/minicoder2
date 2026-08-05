@@ -252,8 +252,8 @@ def test_task_hints_erkennt_bestehendes_projekt():
     with open("frontend/package.json", "w") as f:
         f.write("{}")
     hints = mc.task_hints("erweitere die app")
-    assert "WEITERENTWICKLUNG" in hints
-    assert "Generator" in hints
+    assert "FURTHER DEVELOPMENT" in hints
+    assert "generator" in hints
 
 
 def test_task_hints_leer_bei_leerem_verzeichnis():
@@ -265,7 +265,7 @@ def test_task_hints_liest_projekt_notizen():
         f.write("- Backend-Port: 5010 (FEST)\n- Feld heisst 'geburtstag'\n")
     hints = mc.task_hints("mach irgendwas")
     assert "Backend-Port: 5010" in hints
-    assert "HALTE DICH DARAN" in hints
+    assert "STICK TO THIS" in hints
 
 
 def test_system_prompt_lehrt_notizen():
@@ -283,7 +283,7 @@ def test_system_prompt_lehrt_basedir_und_kein_debug():
 def test_check_prompt_verlangt_eingabe_validierung():
     # Kleine Modelle testen wortwoertlich, was der Prompt nennt — leeres
     # Pflichtfeld muss deshalb explizit als Pruef-Fall dastehen.
-    assert "LEERES Pflichtfeld" in mc.CHECK_PROMPT
+    assert "EMPTY required field" in mc.CHECK_PROMPT
 
 
 # --------------------------- Kontext-Beschneidung ---------------------------
@@ -627,7 +627,7 @@ def test_system_prompt_fence_und_json_varianten():
     sp_fence = mc.system_prompt(True)
     sp_json = mc.system_prompt(False)
     assert "```old" in sp_fence and "```content" in sp_fence
-    assert '"old":"<exakter ausschnitt>"' in sp_json
+    assert '"old":"<exact snippet>"' in sp_json
     assert "@@" not in sp_fence and "@@" not in sp_json  # alle Platzhalter ersetzt
 
 
@@ -757,7 +757,7 @@ def test_is_venv_dir():
 def test_terse_hint_nur_bei_kurzem_auftrag_mit_bestand():
     with open("app.py", "w") as f:
         f.write("x = 1\n")
-    assert "knapp" in mc.terse_task_hint("fix die liste")
+    assert "kept brief" in mc.terse_task_hint("fix die liste")
     assert mc.terse_task_hint("Baue eine ausfuehrliche Anwendung mit "
                               "vielen Details und Erklaerungen dazu") == ""
     os.remove("app.py")
@@ -766,8 +766,8 @@ def test_terse_hint_nur_bei_kurzem_auftrag_mit_bestand():
 
 
 def test_qa_hint_erkennt_fragen_und_ignoriert_auftraege():
-    assert "FRAGE" in mc.qa_task_hint("warum ist die liste leer?")
-    assert "FRAGE" in mc.qa_task_hint("wo wird der port gesetzt")
+    assert "QUESTION" in mc.qa_task_hint("warum ist die liste leer?")
+    assert "QUESTION" in mc.qa_task_hint("wo wird der port gesetzt")
     assert mc.qa_task_hint("baue eine app") == ""
     assert mc.qa_task_hint("ergaenze das feld beruf?") == ""  # Imperativ schlaegt '?'
 
@@ -825,10 +825,10 @@ def test_plan_datei_und_wiederaufnahme_hinweis():
     inhalt = open(mc.MC_PLAN, encoding="utf-8").read()
     assert "- [ ] 1. app.py: Feld ergaenzen" in inhalt
     hints = mc.task_hints("mach weiter")
-    assert "OFFENER Aenderungsplan" in hints
+    assert "OPEN change plan" in hints
     with open(mc.MC_PLAN, "w", encoding="utf-8") as f:
         f.write("# Plan\n\n- [x] 1. fertig\n")  # alles abgehakt
-    assert "OFFENER" not in mc.task_hints("mach weiter")
+    assert "OPEN" not in mc.task_hints("mach weiter")
 
 
 def test_plan_datei_zaehlt_nicht_als_bestand():
