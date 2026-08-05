@@ -409,10 +409,9 @@
                 assistant.headlineEl.className = summary
                     ? 'text-gray-800 whitespace-pre-wrap'
                     : 'text-red-600 whitespace-pre-wrap';
-                // Details standardmaessig einklappen, sobald ein Ergebnis da ist --
-                // die Kurzfassung in der Bubble reicht im Regelfall.
-                const detailsEl = assistant.bubble.querySelector('details');
-                if (detailsEl && summary) detailsEl.open = false;
+                // Terminal-Details bleiben bewusst aufgeklappt, auch nach
+                // Abschluss -- Nutzerwunsch: das Terminalfenster soll
+                // sichtbar bleiben, nicht automatisch verschwinden.
 
                 buildButton.disabled = false;
 
