@@ -19,11 +19,22 @@ app = Flask(__name__)
 # Konfiguration
 PORT_VIBELOVE = 5050
 PORT_VITE = 5173
+# Feste Portkonvention wie bei PORT_VITE: JEDES Projekt-Backend (falls
+# vorhanden) lauscht immer auf demselben Port -- kein Aushandeln/Parsen
+# eines variablen Ports noetig, genau wie Vite auch immer auf PORT_VITE laeuft.
+BACKEND_PORT = 5001
+API_PREFIX = '/api/'
 WORKSPACE_DIR = os.path.join(os.getcwd(), 'workspace')
 PROJEKTE_ROOT = os.path.join(os.getcwd(), 'projekte')
 CURRENT_PROJECT = 'workspace'
 # mc.py liegt eine Ebene hoeher
 MC_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'mc.py'))
+STATIC_PREVIEW_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static_preview_server.py')
+# Manifest-Datei, ueber die ein Projekt sein Backend beschreibt -- mc.py wird
+# in der Bauaufgabe angewiesen, sie zu erzeugen. Deterministisch zu parsen
+# (im Gegensatz zu freiem Text in MC-NOTIZEN.md), das ist es, was
+# ensure_backend_running() unten liest.
+BACKEND_MANIFEST_NAME = 'vibelove-backend.json'
 
 # ── Laufzeit-Einstellungen (konfigurierbar über /settings) ────────────────
 SETTINGS_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mc_settings.json')
@@ -74,6 +85,11 @@ def load_settings():
 
 # Globaler Prozess-Speicher für den Vite-Server
 vite_process = None
+
+# Globaler Prozess-Speicher fuer das Backend eines Projekts (siehe
+# ensure_backend_running weiter unten) -- getrennt von vite_process, weil
+# beide unabhaengig voneinander laufen/neu starten koennen.
+backend_process = None
 
 # Chat-Verlauf
 BUILD_HISTORY = []
@@ -164,11 +180,15 @@ def projekt_dir(name):
         return WORKSPACE_DIR
     return os.path.join(PROJEKTE_ROOT, name)
 
+STATIC_SERVER_MARKER = 'vibelove_static_preview_marker'
+
 def stop_vite_processes():
-    """Beendet alle laufenden Vite-Prozesse dieses Projekts (pkill + gemerktes Handle)."""
+    """Beendet alle laufenden Vite-/Statik-Vorschau-Prozesse dieses Projekts
+    (pkill + gemerktes Handle)."""
     global vite_process
     try:
         subprocess.run(['pkill', '-f', 'node_modules/.bin/vite'], capture_output=True)
+        subprocess.run(['pkill', '-f', STATIC_SERVER_MARKER], capture_output=True)
     except Exception as e:
         print(f'pkill vite: {e}')
     if vite_process:
@@ -179,7 +199,7 @@ def stop_vite_processes():
         vite_process = None
 
 def switch_project(name, start_vite=True):
-    """Wechselt das aktive Projekt und startet Vite bei Bedarf neu."""
+    """Wechselt das aktive Projekt und startet Vite/Backend bei Bedarf neu."""
     global CURRENT_PROJECT
     cleaned = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
     if not cleaned:
@@ -191,11 +211,13 @@ def switch_project(name, start_vite=True):
     if not start_vite:
         return
     stop_vite_processes()
-    # Kurz warten bis der Vite-Port freigegeben wurde (max ~5s)
+    stop_backend_server()
+    # Kurz warten bis Vite-/Backend-Port freigegeben wurden (max ~5s)
     for _ in range(50):
-        if not is_port_in_use(PORT_VITE):
+        if not is_port_in_use(PORT_VITE) and not is_port_in_use(BACKEND_PORT):
             break
         time.sleep(0.1)
+    start_backend_server()
     start_vite_server()
 
 def extract_urls(text, max_urls=3):
@@ -208,11 +230,108 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
 
+def _static_frontend_dir(proj):
+    """Findet ein Verzeichnis mit einer index.html (frontend/ oder Wurzel) fuer
+    Projekte OHNE package.json -- reine HTML/CSS/JS-Bauten (z.B. ein
+    Canvas-Spiel ohne Build-Tool) haben sonst keine Vorschau, weil
+    start_vite_server() ohne package.json bisher schlicht nichts startete."""
+    for kandidat in (os.path.join(proj, 'frontend'), proj):
+        if os.path.isfile(os.path.join(kandidat, 'index.html')):
+            return kandidat
+    return None
+
+BACKEND_MARKER = 'vibelove_backend_marker'
+
+def _backend_manifest(proj):
+    """Liest backend/vibelove-backend.json, falls vorhanden: {"command":
+    "python3 app.py"}. mc.py wird in der Bauaufgabe angewiesen, diese Datei
+    anzulegen -- deterministisch parsebar, im Gegensatz zu freiem Text in
+    MC-NOTIZEN.md. Der Port ist NICHT Teil der Datei: genau wie Vite immer
+    auf PORT_VITE laeuft, laeuft jedes Projekt-Backend immer auf
+    BACKEND_PORT. Gibt (backend_dir, command) oder None zurueck."""
+    backend_dir = os.path.join(proj, 'backend')
+    manifest_path = os.path.join(backend_dir, BACKEND_MANIFEST_NAME)
+    if not os.path.isfile(manifest_path):
+        return None
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        command = str(data.get('command', '')).strip()
+        if not command:
+            return None
+        return backend_dir, command
+    except (OSError, ValueError, TypeError):
+        return None
+
+def _kill_port(port):
+    """Beendet JEDEN Prozess, der auf 'port' lauscht -- unabhaengig davon, ob
+    vibelove ihn selbst gestartet hat. Noetig, weil ein Backend nicht nur
+    von start_backend_server() stammen kann, sondern auch von mc.py WAEHREND
+    der --check-Verifikation gestartet worden sein kann (\"run\" mit
+    background:true, um den eigenen Endpunkt per curl zu testen) -- ein
+    solcher Prozess ist vibelove's gemerktem Handle/Marker UNBEKANNT (real
+    beobachtet: PPID 1, also bereits verwaist), pkill -f auf einen Marker
+    trifft ihn also nicht. Portbasiertes Beenden ist das einzig zuverlaessige
+    Mittel, unabhaengig vom Ursprung des Prozesses."""
+    try:
+        out = subprocess.run(['lsof', '-ti', f':{port}'], capture_output=True, text=True)
+        for pid in out.stdout.split():
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+    except Exception as e:
+        print(f'_kill_port({port}): {e}')
+
+def stop_backend_server():
+    """Beendet einen laufenden Backend-Prozess: portbasiert (siehe _kill_port,
+    der zuverlaessige Weg) PLUS Marker-pkill/gemerktes Handle als Ergaenzung."""
+    global backend_process
+    try:
+        subprocess.run(['pkill', '-f', BACKEND_MARKER], capture_output=True)
+    except Exception as e:
+        print(f'pkill backend: {e}')
+    if backend_process:
+        try:
+            os.killpg(os.getpgid(backend_process.pid), signal.SIGTERM)
+        except Exception as e:
+            print(f'Fehler beim Stoppen des gemerkten Backend-Prozesses: {e}')
+        backend_process = None
+    _kill_port(BACKEND_PORT)
+
+def start_backend_server():
+    """Startet das Backend des AKTIVEN Projekts auf BACKEND_PORT, falls eines
+    per backend/vibelove-backend.json beschrieben ist. Analog zu
+    start_vite_server(), aber fuer den API-Teil eines Projekts -- ohne das
+    bliebe ein waehrend --check gestarteter Backend-Prozess nur fuer die
+    Dauer des mc.py-Laufs am Leben (kill_bg_procs beendet ihn danach) und
+    das fertige Frontend haette nach dem Bauauftrag nichts mehr zum Reden."""
+    global backend_process
+    if is_port_in_use(BACKEND_PORT):
+        return
+    manifest = _backend_manifest(projekt_dir(CURRENT_PROJECT))
+    if not manifest:
+        return
+    backend_dir, command = manifest
+    print(f"Starte Backend fuer '{CURRENT_PROJECT}' auf Port {BACKEND_PORT}: {command}")
+    try:
+        backend_process = subprocess.Popen(
+            ["env", f"{BACKEND_MARKER}=1", "bash", "-c", command],
+            cwd=backend_dir,
+            start_new_session=True
+        )
+    except Exception as e:
+        print(f"Fehler beim Starten des Backend-Servers: {e}")
+
+def ensure_backend_running():
+    if not is_port_in_use(BACKEND_PORT):
+        start_backend_server()
+
 def start_vite_server():
     global vite_process
     if is_port_in_use(PORT_VITE):
         return
-    
+
     # Verzeichnis des AKTIVEN Projekts nutzen
     proj = projekt_dir(CURRENT_PROJECT)
     front_dir = os.path.join(proj, 'frontend')
@@ -221,9 +340,27 @@ def start_vite_server():
         if os.path.isfile(os.path.join(proj, 'package.json')):
             front_dir = proj
         else:
-            print(f"[vite] Kein package.json in '{CURRENT_PROJECT}' (frontend/ oder Wurzel) – Vite wird nicht gestartet.")
+            static_dir = _static_frontend_dir(proj)
+            if static_dir:
+                hat_backend = _backend_manifest(proj) is not None
+                backend_port = BACKEND_PORT if hat_backend else 0
+                print(f"Kein package.json in '{CURRENT_PROJECT}' -- starte "
+                      f"stattdessen einen Static-Server (mit Backend-Proxy: "
+                      f"{'ja, Port ' + str(backend_port) if backend_port else 'nein'}) "
+                      f"fuer die Vorschau auf Port {PORT_VITE}...")
+                try:
+                    vite_process = subprocess.Popen(
+                        ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
+                         STATIC_PREVIEW_SCRIPT, static_dir, str(PORT_VITE),
+                         str(backend_port), API_PREFIX],
+                        start_new_session=True
+                    )
+                except Exception as e:
+                    print(f"Fehler beim Starten des Static-Servers: {e}")
+                return
+            print(f"[vite] Kein package.json und keine index.html in '{CURRENT_PROJECT}' (frontend/ oder Wurzel) – keine Vorschau moeglich.")
             return
-    
+
     print(f"Starte Vite-Server auf Port {PORT_VITE}...")
     try:
         vite_process = subprocess.Popen(
@@ -430,6 +567,7 @@ def build():
                 if proc.poll() is None:
                     proc.terminate()
                 BUILD_STATUS['laeuft'] = False
+                ensure_backend_running()
                 ensure_vite_running()
                 full_output = "".join(output_lines)
                 output = full_output
@@ -662,27 +800,17 @@ def rollback_project():
 
 @app.route('/restart-vite', methods=['POST'])
 def restart_vite():
-    global vite_process
-    # Alle laufenden Vite-Prozesse dieses Projekts beenden
-    try:
-        subprocess.run(['pkill', '-f', 'node_modules/.bin/vite'], capture_output=True)
-    except Exception as e:
-        print(f'pkill vite: {e}')
-    # Auch das gemerkte Handle terminieren, falls vorhanden
-    if vite_process:
-        try:
-            os.killpg(os.getpgid(vite_process.pid), signal.SIGTERM)
-        except Exception as e:
-            print(f'Fehler beim Stoppen des gemerkten Vite-Prozesses: {e}')
-        vite_process = None
-    # Kurz warten, bis Port 5173 frei ist (max ~5s)
+    stop_vite_processes()
+    stop_backend_server()
+    # Kurz warten, bis Vite-/Backend-Port frei sind (max ~5s)
     for _ in range(50):
-        if not is_port_in_use(PORT_VITE):
+        if not is_port_in_use(PORT_VITE) and not is_port_in_use(BACKEND_PORT):
             break
         time.sleep(0.1)
-    # Vite neu starten
+    # Backend + Vite neu starten
+    start_backend_server()
     start_vite_server()
-    return 'Vite-Server wurde neu gestartet.'
+    return 'Vorschau (Vite/Backend) wurde neu gestartet.'
 
 @app.route('/reset', methods=['POST'])
 def reset():
@@ -722,6 +850,7 @@ def download_zip():
 
 def cleanup():
     stop_vite_server()
+    stop_backend_server()
 
 # Wir nutzen atexit für den sauberen Cleanup -- greift aber NUR bei einem
 # normalen Prozessende (sys.exit(), Rueckkehr aus main, unbehandelte
@@ -751,6 +880,7 @@ if __name__ == '__main__':
                          or os.path.isdir(os.path.join(PROJEKTE_ROOT, _gespeichert))):
         CURRENT_PROJECT = _gespeichert
         print(f"[projekt] Aktives Projekt wiederhergestellt: {CURRENT_PROJECT}")
+    start_backend_server()
     start_vite_server()
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)
     
