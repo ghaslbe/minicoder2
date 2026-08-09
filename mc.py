@@ -459,6 +459,11 @@ def extra_headers():
 
 MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
 
+# Stillstands-Timeout fuer den Streaming-Request: siehe Kommentar in _chat_once()
+# an der Stelle, wo er geprueft wird -- schuetzt vor per Keep-Alive endlos
+# offengehaltenen, aber tatsaechlich haengenden Generierungen.
+STALL_TIMEOUT = int(_setting("MC_STALL_TIMEOUT", "stall_timeout", 150))
+
 # Runaway-Schutz: Modelle koennen mitten in EINER Antwort kollabieren (real
 # beobachtet bei einem Cloud-Reasoning-Modell: erst halluzinierte Fehlermeldungs-
 # Prosa samt erfundener Ticket-Nummer, dann Zeichenmuell — 166k Completion-
@@ -567,7 +572,23 @@ def _chat_once(messages, model):
         log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
             log(f"verbunden (HTTP {resp.status}), frage Modell '{model}', warte auf Antwort …")
+            last_progress = time.time()
             for raw in resp:
+                # Manche Endpoints (z.B. OpenRouter) schicken bei langen Laeufen
+                # periodische SSE-Keep-Alive-Kommentarzeilen (kein "data:"), rein
+                # damit der Client NICHT wegen Inaktivitaet abbricht -- das
+                # setzt den Socket-Timeout unten (timeout=300) bei JEDER
+                # Kommentarzeile zurueck, auch wenn die eigentliche Generierung
+                # laengst haengt. Real beobachtet: ein Lauf stand dadurch ~800s
+                # komplett still (keine einzige Meldung), bis ein AEUSSERER
+                # Watchdog (vibelove) den Prozess hart killen musste. Eigener,
+                # von echten SSE-Datenereignissen (nicht Keep-Alives) gemessener
+                # Stillstands-Timeout faengt das ab und nutzt die bestehende
+                # Retry-/Fortsetzungs-Logik (ueber NET_ERRORS/TimeoutError).
+                if time.time() - last_progress > STALL_TIMEOUT:
+                    raise TimeoutError(
+                        f"kein echtes SSE-Datenereignis seit {STALL_TIMEOUT}s "
+                        f"(Verbindung lebt evtl. noch per Keep-Alive)")
                 line = raw.decode("utf-8", "replace").strip()
                 if not line or not line.startswith("data:"):
                     continue
@@ -578,6 +599,7 @@ def _chat_once(messages, model):
                     obj = json.loads(chunk)
                 except json.JSONDecodeError:
                     continue
+                last_progress = time.time()
                 # Der Usage-Chunk hat oft leere/keine choices -> sicher zugreifen.
                 choices = obj.get("choices") or []
                 if choices:
