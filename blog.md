@@ -4872,6 +4872,54 @@ noch von Hand passieren, um den echten Bug vom Fehlalarm zu trennen --
 ein automatisierter "Richter"-Schritt waere der naechste logische Test,
 aber noch nicht gebaut.
 
+## 57. Die MVP-Stufen-Pipeline: was das Verifikations-Experiment fuer den Entwurf bedeutet
+
+Nach Kapitel 56 blieb die naheliegende Anschlussfrage: heisst das
+Ergebnis, dass die urspruenglich angedachte MVP-Stufen-Pipeline (Wunsch
+-> po zerlegt in Stufen wie "Grundspiel", "+ Highscore", "+
+Multiplayer" -> jede Stufe wird gebaut, verifiziert, erst dann geht es
+weiter -- alles unbeaufsichtigt) verworfen werden muss? Nein, aber der
+Entwurf muss die Messung ernst nehmen statt sie zu ignorieren.
+
+Was Kapitel 56 tatsaechlich zeigt: das "irgendetwas stimmt hier nicht"-
+Signal der Verifikation ist real -- sie fand einen Bug, den weder der
+Bau-Lauf noch die eigene manuelle Review zuvor gefunden hatten. Ihr
+"und zwar deswegen" ist es nicht -- falsche Ursachenzuschreibung beim
+echten Fund, vermutlich ein Fehlalarm beim zweiten. Und: von den 6
+gemeldeten PASS-Ergebnissen wurde KEINS unabhaengig nachgeprueft --
+es gibt schlicht keine Evidenz, ob "PASS" zuverlaessiger ist als "FAIL"
+mit falscher Begruendung. Ein stiller Fehl-PASS waere fuer eine
+automatische Stufen-Pipeline das gefaehrlichere Versagen: eine kaputte
+Stufe wuerde unbemerkt in die naechste durchgereicht.
+
+Der angepasste Entwurf zieht daraus eine einzige, aber wichtige
+Konsequenz: der Verifikations-Schritt bleibt drin, entscheidet aber
+nicht mehr allein. Konkret vier Teile:
+
+1. **Stufen-Zerlegung durch po.py** -- reine Planungsarbeit, kein
+   Ausfuehrungsrisiko, bleibt wie angedacht.
+2. **Sequentieller Bau je Stufe durch mc.py** -- mit vorherigen Stufen
+   als Kontext, genau wie vibelove das heute schon zwischen einzelnen
+   Bauauftraegen macht (BUILD_HISTORY), nur automatisch statt auf
+   erneute Nutzereingabe wartend.
+3. **Die Verifikation laeuft weiter automatisch nach jeder Stufe** --
+   sie liefert echtes Signal und soll nicht wegfallen, nur weil sie
+   nicht perfekt ist.
+4. **Aber: das Ergebnis wird angezeigt statt automatisch zu entscheiden.**
+   Dasselbe Muster, das diese ganze Session ueber tatsaechlich
+   funktioniert hat -- Plan vor dem Bauen zeigen, Bugliste vor dem
+   Fix-Auftrag zeigen -- wandert an die naechste Risikostelle: das
+   Verifikationsergebnis vor dem naechsten Schritt (Fix-Schleife ODER
+   naechste Stufe) zeigen, nicht stillschweigend danach handeln.
+
+Die Automatisierung bleibt damit real (Stufen werden vorgeschlagen, der
+Reihe nach gebaut, automatisch geprueft) -- nur der EINE Schritt, fuer
+den in Kapitel 56 direkt belegt wurde, dass er nicht unbeaufsichtigt
+laufen darf, bleibt ein Kontrollpunkt statt eine Blackbox-Entscheidung.
+Noch nicht gebaut, aber jetzt mit einem Entwurf, der auf einer echten
+Messung beruht statt auf der Annahme, dass ein zweiter LLM-Durchlauf
+automatisch vertrauenswuerdiger ist als der erste.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
