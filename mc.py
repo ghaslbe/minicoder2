@@ -3806,7 +3806,18 @@ def git_commit_run(summary):
     paths = sorted(p for p in set(TOUCHED) if os.path.isfile(p))
     if not paths:
         return
-    _git("add", "--", *paths)
+    add_rc, add_out = _git("add", "--", *paths)
+    if add_rc != 0:
+        # Bisher stillschweigend ignoriert: schlug "git add" fehl (z.B.
+        # Lock-Kontention), sah der folgende "git commit" nichts Gestagtes
+        # und meldete irrefuehrend "keine Aenderungen", obwohl echte,
+        # gueltige Dateien auf der Platte lagen -- real beobachtet, ein
+        # kompletter Lauf (Breakout-Build) blieb dadurch unkommittet, ohne
+        # dass der eigentliche Fehler (das fehlgeschlagene "add") je sichtbar
+        # wurde.
+        print(f"{C.RED}Git-Add fehlgeschlagen, kein Commit: "
+              f"{add_out.strip()[:200]}{C.RESET}")
+        return
     rc, out = _git("commit", "-m", f"mc: {summary[:72]}")
     if rc == 0:
         print(f"{C.GREEN}Git-Commit erstellt ({len(paths)} Datei(en)) — "
