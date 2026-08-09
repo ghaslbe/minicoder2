@@ -339,6 +339,21 @@ def ensure_backend_running():
     if not is_port_in_use(BACKEND_PORT):
         start_backend_server()
 
+def _hat_dev_skript(package_json_pfad):
+    """True nur wenn package.json einen 'dev'-Skript-Eintrag hat -- ein
+    package.json allein bedeutet noch nicht Vite. mc.py legt auch fuer
+    reine Static-Projekte (z.B. ein Canvas-Spiel ohne Build-Tool) ein
+    package.json mit eigenen scripts wie 'start'/'build' an, aber ohne
+    'dev'. Ohne diese Pruefung wuerde start_vite_server() faelschlich
+    'npm run dev' versuchen (Skript fehlt -> Prozess bricht sofort ab,
+    keine Vorschau), statt auf den Static-Server-Fallback auszuweichen."""
+    try:
+        with open(package_json_pfad, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return 'dev' in (data.get('scripts') or {})
+    except (OSError, ValueError, TypeError):
+        return False
+
 def start_vite_server():
     global vite_process
     if is_port_in_use(PORT_VITE):
@@ -347,9 +362,11 @@ def start_vite_server():
     # Verzeichnis des AKTIVEN Projekts nutzen
     proj = projekt_dir(CURRENT_PROJECT)
     front_dir = os.path.join(proj, 'frontend')
-    if not os.path.isfile(os.path.join(front_dir, 'package.json')):
+    front_pkg = os.path.join(front_dir, 'package.json')
+    if not (os.path.isfile(front_pkg) and _hat_dev_skript(front_pkg)):
         # Fallback: manche Projekte liegen direkt im Wurzelverzeichnis
-        if os.path.isfile(os.path.join(proj, 'package.json')):
+        root_pkg = os.path.join(proj, 'package.json')
+        if os.path.isfile(root_pkg) and _hat_dev_skript(root_pkg):
             front_dir = proj
         else:
             static_dir = _static_frontend_dir(proj)
