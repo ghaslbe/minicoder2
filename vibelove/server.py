@@ -13,8 +13,14 @@ import select
 import zipfile
 from collections import deque
 from flask import Flask, render_template, request, jsonify, send_file
+from werkzeug.utils import secure_filename
+
+# po.py liegt eine Ebene hoeher, direkt neben mc.py.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import po
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB Obergrenze fuer Datei-Uploads
 
 # Konfiguration
 PORT_VIBELOVE = 5050
@@ -94,6 +100,11 @@ backend_process = None
 # Chat-Verlauf
 BUILD_HISTORY = []
 
+# Gespraechsverlauf mit dem Product-Owner-Miniagenten (po.py) fuer die
+# GERADE laufende Klaerung einer Aufgabe -- wird geleert, sobald ein
+# Bauauftrag tatsaechlich an mc.py geht oder das Projekt wechselt.
+PO_HISTORY = []
+
 # Status eines laufenden Bauauftrags für das Polling bei Stream-Abbrüchen.
 BUILD_STATUS = {'laeuft': False, 'zeilen': deque(maxlen=200)}
 
@@ -170,8 +181,9 @@ def stelle_sauberen_arbeitsbaum_sicher(project_dir):
 
 
 def reset_history():
-    global BUILD_HISTORY
+    global BUILD_HISTORY, PO_HISTORY
     BUILD_HISTORY = []
+    PO_HISTORY = []
 
 def projekt_dir(name):
     """Bereinigt den Projektnamen und liefert den zugehörigen Verzeichnispfad."""
@@ -459,11 +471,48 @@ def build_status():
         'letzte_zeilen': list(BUILD_STATUS['zeilen'])[-15:],
     })
 
+
+def _po_project_context():
+    """Kurzer Kontext-Text ueber das aktive Projekt fuer po.py -- die eigentliche
+    Sammel-Logik lebt in po.gather_project_context() (auch von po.py's eigener
+    Kommandozeile genutzt), hier nur mit dem aktiven vibelove-Projektnamen
+    vorangestellt statt eines nackten Pfades."""
+    return (f"Aktives Projekt: {CURRENT_PROJECT}\n\n"
+            + po.gather_project_context(projekt_dir(CURRENT_PROJECT)))
+
+
+@app.route('/refine', methods=['POST'])
+def refine_instruction():
+    """Ein Schritt des Produktdialogs mit po.py: nimmt entweder den
+    urspruenglichen Nutzer-Wunsch oder die Antwort auf eine vorige
+    Rueckfrage entgegen und gibt entweder eine weitere Rueckfrage oder eine
+    fertig ausformulierte Aufgabe fuer mc.py zurueck."""
+    data = request.get_json(silent=True) or {}
+    message = str(data.get('message', '')).strip()
+    if not message:
+        return jsonify({'type': 'error', 'error': 'Keine Nachricht erhalten'}), 400
+    global PO_HISTORY
+    context_text = _po_project_context()
+    decision, PO_HISTORY = po.refine(
+        message, context_text, PO_HISTORY,
+        MC_SETTINGS['base_url'], MC_SETTINGS['model'], MC_SETTINGS['api_key'])
+    return jsonify(decision)
+
+
+@app.route('/refine/reset', methods=['POST'])
+def refine_reset():
+    global PO_HISTORY
+    PO_HISTORY = []
+    return jsonify({'ok': True})
+
+
 @app.route('/build', methods=['POST'])
 def build():
     instruction = request.form.get('instruction', '')
     if not instruction:
         return "Keine Anweisung erhalten."
+    global PO_HISTORY
+    PO_HISTORY = []  # der Produktdialog fuer DIESE Aufgabe ist mit dem Bauauftrag abgeschlossen
 
     # Kontext-Text zusammenbauen aus BUILD_HISTORY (letzte 5 Einträge)
     context_parts = []
@@ -796,6 +845,94 @@ def rollback_project():
     subprocess.run(['git', 'clean', '-fd'], cwd=project_path, capture_output=True, text=True)
     ensure_vite_running()
     return jsonify({'ok': True})
+
+
+# ── Datei-Explorer: alle Dateien eines Projekts ansehen und hochladen ──────
+
+BROWSE_IGNORE_DIRS = {'.git', 'node_modules', '__pycache__', 'dist', '.venv', 'venv'}
+FILE_PREVIEW_LIMIT = 2 * 1024 * 1024  # 2 MB -- reicht fuer Quelltext, keine Vorschau fuer riesige Binaries
+
+
+def _resolve_project_path(relpath):
+    """Loest einen vom Client kommenden relativen Pfad GEGEN das AKTIVE
+    Projektverzeichnis auf und stellt sicher, dass das Ergebnis dort auch
+    WIRKLICH drinbleibt (kein '../../etc/passwd') -- Datei-Explorer und
+    Upload sind sonst ein klassischer Path-Traversal-Weg nach draussen.
+    Gibt den absoluten Pfad zurueck oder None, wenn er ausserhalb liegt."""
+    base = os.path.realpath(projekt_dir(CURRENT_PROJECT))
+    target = os.path.realpath(os.path.join(base, (relpath or '').lstrip('/')))
+    if target != base and not target.startswith(base + os.sep):
+        return None
+    return target
+
+
+@app.route('/projects/files', methods=['GET'])
+def list_project_files():
+    """Listet alle Dateien des aktiven Projekts (rekursiv, ohne .git/
+    node_modules/__pycache__/dist/venv) fuer den Datei-Explorer-Tab."""
+    base = os.path.realpath(projekt_dir(CURRENT_PROJECT))
+    files = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames
+                              if d not in BROWSE_IGNORE_DIRS and not d.startswith('.'))
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, base).replace(os.sep, '/')
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            files.append({'path': rel, 'size': size})
+    files.sort(key=lambda f: f['path'])
+    return jsonify({'files': files})
+
+
+@app.route('/projects/file', methods=['GET'])
+def get_project_file():
+    """Liefert den Inhalt EINER Datei des aktiven Projekts fuer die
+    Datei-Explorer-Vorschau. Text bis FILE_PREVIEW_LIMIT wird als String
+    geliefert, groessere/binaere Dateien nur mit binary:true markiert
+    (kein Download-Zwang -- dafuer gibt es bereits /download-zip)."""
+    relpath = request.args.get('path', '')
+    full = _resolve_project_path(relpath)
+    if not full or not os.path.isfile(full):
+        return jsonify({'error': 'Datei nicht gefunden'}), 404
+    size = os.path.getsize(full)
+    try:
+        with open(full, 'rb') as f:
+            raw = f.read(FILE_PREVIEW_LIMIT + 1)
+    except OSError as e:
+        return jsonify({'error': str(e)}), 500
+    truncated = len(raw) > FILE_PREVIEW_LIMIT
+    raw = raw[:FILE_PREVIEW_LIMIT]
+    try:
+        content = raw.decode('utf-8')
+        return jsonify({'path': relpath, 'size': size, 'binary': False,
+                         'truncated': truncated, 'content': content})
+    except UnicodeDecodeError:
+        return jsonify({'path': relpath, 'size': size, 'binary': True,
+                         'truncated': truncated})
+
+
+@app.route('/projects/upload', methods=['POST'])
+def upload_project_file():
+    """Laedt eine Datei in ein (optional angegebenes) Unterverzeichnis des
+    aktiven Projekts hoch -- Pfad wird ueber _resolve_project_path
+    abgesichert, Dateiname ueber secure_filename bereinigt."""
+    target_dir = _resolve_project_path(request.form.get('dir', ''))
+    if not target_dir or not os.path.isdir(target_dir):
+        return jsonify({'ok': False, 'error': 'Ungueltiges Zielverzeichnis'}), 400
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'error': 'Keine Datei erhalten'}), 400
+    upload = request.files['file']
+    filename = secure_filename(upload.filename or '')
+    if not filename:
+        return jsonify({'ok': False, 'error': 'Ungueltiger Dateiname'}), 400
+    dest = os.path.join(target_dir, filename)
+    upload.save(dest)
+    base = os.path.realpath(projekt_dir(CURRENT_PROJECT))
+    rel = os.path.relpath(dest, base).replace(os.sep, '/')
+    return jsonify({'ok': True, 'path': rel})
 
 
 @app.route('/restart-vite', methods=['POST'])

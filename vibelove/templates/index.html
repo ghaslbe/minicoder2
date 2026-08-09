@@ -52,55 +52,62 @@
     <!-- RIGHT: Live Preview mit Werkzeugleiste (unveraendert) -->
     <div class="w-1/2 h-full flex flex-col">
         <div class="flex items-center gap-2 bg-gray-100 border-b border-gray-300 px-3 py-2">
-            <span class="text-sm font-medium text-gray-600 mr-auto">Preview</span>
+            <div class="flex items-center gap-1 mr-auto">
+                <button type="button" id="tabPreviewBtn" onclick="zeigeTab('preview')"
+                    class="view-tab-btn bg-gray-700 text-white font-medium py-1 px-2.5 rounded text-sm">Vorschau</button>
+                <button type="button" id="tabFilesBtn" onclick="zeigeTab('files')"
+                    class="view-tab-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded text-sm">Dateien</button>
+            </div>
             <span id="buildStatus" class="text-sm text-yellow-600 font-medium hidden items-center gap-1">
                 <span class="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span>
                 arbeitet …
             </span>
-            <div class="flex items-center gap-1">
+            <div id="previewControls" class="flex items-center gap-2">
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        data-width="375"
+                        onclick="setPreviewWidth('375')"
+                        class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                        title="Mobil (375px)"
+                    >
+                        375px
+                    </button>
+                    <button
+                        type="button"
+                        data-width="768"
+                        onclick="setPreviewWidth('768')"
+                        class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                        title="Tablet (768px)"
+                    >
+                        768px
+                    </button>
+                    <button
+                        type="button"
+                        data-width="desktop"
+                        onclick="setPreviewWidth('desktop')"
+                        class="preview-width-btn bg-gray-700 text-white font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
+                        title="Volle Breite"
+                    >
+                        Desktop
+                    </button>
+                </div>
                 <button
                     type="button"
-                    data-width="375"
-                    onclick="setPreviewWidth('375')"
-                    class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
-                    title="Mobil (375px)"
+                    onclick="reloadPreview()"
+                    class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
                 >
-                    375px
+                    Preview neu laden
                 </button>
                 <button
                     type="button"
-                    data-width="768"
-                    onclick="setPreviewWidth('768')"
-                    class="preview-width-btn bg-gray-200 text-gray-700 font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
-                    title="Tablet (768px)"
+                    id="restartViteBtn"
+                    onclick="restartVite()"
+                    class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
                 >
-                    768px
-                </button>
-                <button
-                    type="button"
-                    data-width="desktop"
-                    onclick="setPreviewWidth('desktop')"
-                    class="preview-width-btn bg-gray-700 text-white font-medium py-1 px-2.5 rounded hover:bg-gray-300 transition-colors text-sm"
-                    title="Volle Breite"
-                >
-                    Desktop
+                    Vite neu starten
                 </button>
             </div>
-            <button
-                type="button"
-                onclick="reloadPreview()"
-                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-            >
-                Preview neu laden
-            </button>
-            <button
-                type="button"
-                id="restartViteBtn"
-                onclick="restartVite()"
-                class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
-            >
-                Vite neu starten
-            </button>
         </div>
         <div id="previewWrapper" class="flex-grow flex items-center justify-center bg-gray-200 overflow-auto">
             <iframe
@@ -108,6 +115,28 @@
                 src="http://localhost:5173"
                 style="width:100%;height:100%;border:none;transition:width 0.3s;background:white;"
             ></iframe>
+        </div>
+
+        <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
+        <div id="filesPanel" class="hidden flex-grow overflow-hidden flex">
+            <div class="w-1/3 h-full overflow-y-auto border-r border-gray-300 bg-white">
+                <div id="fileList" class="text-sm"></div>
+            </div>
+            <div class="flex-1 h-full flex flex-col overflow-hidden bg-gray-50">
+                <form id="uploadForm" class="flex items-center gap-2 p-2 border-b border-gray-200 bg-white">
+                    <input type="text" id="uploadDir" placeholder="Zielordner (leer = Projekt-Wurzel)"
+                        class="flex-1 min-w-0 p-1.5 border border-gray-300 rounded text-xs">
+                    <input type="file" id="uploadFileInput" class="text-xs flex-1 min-w-0">
+                    <button type="submit"
+                        class="bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-sm whitespace-nowrap">
+                        Hochladen
+                    </button>
+                </form>
+                <p id="uploadStatus" class="hidden text-xs px-2 py-1"></p>
+                <div id="fileViewer" class="flex-1 overflow-auto p-3">
+                    <p class="text-sm text-gray-400">Datei links auswählen, um sie anzuzeigen.</p>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -171,6 +200,8 @@
         }
         .icon-btn:hover { background-color: #e5e7eb; }
         .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .file-list-item:hover { background-color: #f3f4f6; }
+        .file-list-item.active { background-color: #dbeafe; }
     </style>
 
     <script>
@@ -260,13 +291,84 @@
             return { wrap, bubble, headlineEl };
         }
 
-        function fuegeDetailsHinzu(bubble, initialText) {
+        // Product-Owner-Bubbles (po.py): optisch abgesetzt vom Coder
+        // (mc.py), damit klar ist, wer gerade spricht -- Rueckfrage ODER
+        // eine fertige Spezifikation mit 'Bauen'/'Anpassen'.
+        function appendPoLabel(bubble) {
+            const label = document.createElement('div');
+            label.className = 'text-xs text-indigo-500 font-semibold mb-1';
+            label.textContent = '🧭 Product Owner';
+            bubble.appendChild(label);
+        }
+
+        function appendPoQuestionBubble(question, raw) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-indigo-50 border border-indigo-200 rounded-2xl rounded-bl-sm px-3 py-2 max-w-[85%] text-sm shadow-sm';
+            appendPoLabel(bubble);
+            const text = document.createElement('div');
+            text.className = 'text-gray-800 whitespace-pre-wrap';
+            text.textContent = question;
+            bubble.appendChild(text);
+            if (raw) fuegeDetailsHinzuMitLabel(bubble, 'Product-Owner-Denken', raw);
+            wrap.appendChild(bubble);
+            chatFeed.appendChild(wrap);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
+        function appendPoSpecBubble(summary, instruction, raw, onBauen, onAnpassen) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-indigo-50 border border-indigo-200 rounded-2xl rounded-bl-sm px-3 py-2 max-w-[85%] text-sm shadow-sm';
+            appendPoLabel(bubble);
+            const text = document.createElement('div');
+            text.className = 'text-gray-800 whitespace-pre-wrap mb-2';
+            text.textContent = summary;
+            bubble.appendChild(text);
+
+            const details = document.createElement('details');
+            details.className = 'mb-2';
+            const dsummary = document.createElement('summary');
+            dsummary.className = 'text-xs text-indigo-600 cursor-pointer select-none';
+            dsummary.textContent = 'Vollständiger Auftragstext';
+            const pre = document.createElement('pre');
+            pre.className = 'mt-1 max-h-40 overflow-auto whitespace-pre-wrap bg-white border border-gray-200 rounded p-2 text-xs';
+            pre.textContent = instruction;
+            details.appendChild(dsummary);
+            details.appendChild(pre);
+            bubble.appendChild(details);
+            if (raw) fuegeDetailsHinzuMitLabel(bubble, 'Product-Owner-Denken', raw);
+
+            const btnRow = document.createElement('div');
+            btnRow.className = 'flex gap-2';
+            const bauenBtn = document.createElement('button');
+            bauenBtn.type = 'button';
+            bauenBtn.className = 'bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-xs';
+            bauenBtn.textContent = 'Jetzt bauen';
+            bauenBtn.onclick = () => { btnRow.remove(); onBauen(); };
+            const anpassenBtn = document.createElement('button');
+            anpassenBtn.type = 'button';
+            anpassenBtn.className = 'bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-xs';
+            anpassenBtn.textContent = 'Text anpassen';
+            anpassenBtn.onclick = () => { btnRow.remove(); onAnpassen(); };
+            btnRow.appendChild(bauenBtn);
+            btnRow.appendChild(anpassenBtn);
+            bubble.appendChild(btnRow);
+
+            wrap.appendChild(bubble);
+            chatFeed.appendChild(wrap);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
+        function fuegeDetailsHinzuMitLabel(bubble, label, initialText) {
             const details = document.createElement('details');
             details.className = 'mt-1.5';
             details.open = true;
             const summary = document.createElement('summary');
             summary.className = 'text-xs text-blue-600 cursor-pointer select-none';
-            summary.textContent = 'Terminal-Details';
+            summary.textContent = label;
             const pre = document.createElement('pre');
             pre.className = 'mt-1 max-h-56 overflow-auto whitespace-pre-wrap bg-gray-900 text-green-400 p-2 rounded text-xs';
             pre.textContent = initialText || '';
@@ -274,6 +376,10 @@
             details.appendChild(pre);
             bubble.appendChild(details);
             return pre;
+        }
+
+        function fuegeDetailsHinzu(bubble, initialText) {
+            return fuegeDetailsHinzuMitLabel(bubble, 'Terminal-Details', initialText);
         }
 
         async function rollbackZu(commitHash, wrapEl) {
@@ -361,15 +467,19 @@
             }
         });
 
-        form.onsubmit = async (e) => {
-            e.preventDefault();
-            const instruction = instructionInput.value.trim();
-            if (!instruction) return;
+        // Ob der naechste Text im Eingabefeld eine ANTWORT auf eine
+        // Rueckfrage von po.py ist (dann geht Senden wieder an /refine)
+        // oder eine neue, unbeantwortete Aufgabe.
+        let poDialogAktiv = false;
 
-            appendUserBubble(instruction);
-            instructionInput.value = '';
-            autoResizeTextarea();
+        function setzePoDialogAktiv(aktiv) {
+            poDialogAktiv = aktiv;
+            instructionInput.placeholder = aktiv
+                ? 'Antwort an den Product Owner …'
+                : 'Was soll gebaut/geändert werden?';
+        }
 
+        async function starteBauauftrag(instruction) {
             buildButton.disabled = true;
 
             const statusEl = document.getElementById('buildStatus');
@@ -414,10 +524,12 @@
                 // sichtbar bleiben, nicht automatisch verschwinden.
 
                 buildButton.disabled = false;
+                setzePoDialogAktiv(false);
 
                 statusDot.className = 'w-2 h-2 rounded-full bg-green-500 inline-block';
                 statusEl.lastChild.textContent = ' fertig — Preview neu geladen';
                 reloadPreview();
+                ladeDateiListe();
                 setTimeout(() => {
                     statusEl.classList.add('hidden');
                     statusEl.classList.remove('flex');
@@ -427,13 +539,67 @@
 
                 await aktualisiereRollbackFuer(assistant);
             }
+        }
+
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const nachricht = instructionInput.value.trim();
+            if (!nachricht) return;
+
+            appendUserBubble(nachricht);
+            instructionInput.value = '';
+            autoResizeTextarea();
+            buildButton.disabled = true;
+
+            try {
+                const res = await fetch('/refine', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: nachricht })
+                });
+                const decision = await res.json();
+
+                if (decision.type === 'question') {
+                    setzePoDialogAktiv(true);
+                    appendPoQuestionBubble(decision.question, decision.raw);
+                } else if (decision.type === 'spec') {
+                    setzePoDialogAktiv(false);
+                    appendPoSpecBubble(
+                        decision.summary,
+                        decision.instruction,
+                        decision.raw,
+                        () => starteBauauftrag(decision.instruction),
+                        () => {
+                            instructionInput.value = decision.instruction;
+                            autoResizeTextarea();
+                            instructionInput.focus();
+                            setzePoDialogAktiv(true);
+                        }
+                    );
+                } else {
+                    appendSystemBubble('Product Owner: ' + (decision.error || 'unbekannter Fehler'));
+                    if (decision.raw) {
+                        const pre = document.createElement('pre');
+                        pre.className = 'max-h-40 overflow-auto whitespace-pre-wrap bg-gray-900 text-green-400 p-2 rounded text-xs mx-auto max-w-[85%] mb-2';
+                        pre.textContent = decision.raw;
+                        chatFeed.appendChild(pre);
+                    }
+                }
+            } catch (err) {
+                appendSystemBubble('Product Owner nicht erreichbar: ' + err.message);
+            } finally {
+                buildButton.disabled = false;
+            }
         };
 
         resetButton.onclick = async () => {
-            if (!confirm('Kontext-Verlauf für den Assistenten zurücksetzen? (Betrifft nur, was mc.py sich merkt — NICHT die Git-Historie/den Chat.)')) return;
+            if (!confirm('Kontext-Verlauf für den Assistenten zurücksetzen? (Betrifft nur, was mc.py und der Product Owner sich merken — NICHT die Git-Historie/den Chat.)')) return;
             try {
                 const response = await fetch('/reset', { method: 'POST' });
-                if (response.ok) appendSystemBubble('Kontext-Verlauf zurückgesetzt.');
+                if (response.ok) {
+                    setzePoDialogAktiv(false);
+                    appendSystemBubble('Kontext-Verlauf zurückgesetzt.');
+                }
             } catch (err) {
                 console.error('Reset failed:', err);
             }
@@ -644,6 +810,7 @@
         });
         if (res.ok) {
             await ladeGitLogUndRenderChat();
+            ladeDateiListe();
             setTimeout(reloadPreview, 3500); // Vite braucht einen Moment
         }
     }
@@ -664,13 +831,130 @@
             await ladeProjekte();
             await ladeGitLogUndRenderChat();
             reloadPreview();
+            ladeDateiListe();
         } else {
             alert('Projekt konnte nicht angelegt werden.');
         }
     });
 
+    // ── Datei-Explorer ───────────────────────────────────────────────────
+    const tabPreviewBtn = document.getElementById('tabPreviewBtn');
+    const tabFilesBtn = document.getElementById('tabFilesBtn');
+    const previewWrapper = document.getElementById('previewWrapper');
+    const previewControls = document.getElementById('previewControls');
+    const filesPanel = document.getElementById('filesPanel');
+    const fileList = document.getElementById('fileList');
+    const fileViewer = document.getElementById('fileViewer');
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadDir = document.getElementById('uploadDir');
+    const uploadFileInput = document.getElementById('uploadFileInput');
+    const uploadStatus = document.getElementById('uploadStatus');
+
+    function zeigeTab(name) {
+        const istPreview = name === 'preview';
+        previewWrapper.classList.toggle('hidden', !istPreview);
+        previewControls.classList.toggle('hidden', !istPreview);
+        filesPanel.classList.toggle('hidden', istPreview);
+        filesPanel.classList.toggle('flex', !istPreview);
+        tabPreviewBtn.classList.toggle('bg-gray-700', istPreview);
+        tabPreviewBtn.classList.toggle('text-white', istPreview);
+        tabPreviewBtn.classList.toggle('bg-gray-200', !istPreview);
+        tabPreviewBtn.classList.toggle('text-gray-700', !istPreview);
+        tabFilesBtn.classList.toggle('bg-gray-700', !istPreview);
+        tabFilesBtn.classList.toggle('text-white', !istPreview);
+        tabFilesBtn.classList.toggle('bg-gray-200', istPreview);
+        tabFilesBtn.classList.toggle('text-gray-700', istPreview);
+        if (!istPreview) ladeDateiListe();
+    }
+
+    function formatBytes(n) {
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    async function ladeDateiListe() {
+        try {
+            const res = await fetch('/projects/files');
+            const data = await res.json();
+            fileList.innerHTML = '';
+            (data.files || []).forEach(f => {
+                const item = document.createElement('div');
+                item.className = 'file-list-item px-3 py-1.5 cursor-pointer border-b border-gray-100 flex justify-between gap-2';
+                item.dataset.path = f.path;
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'truncate';
+                nameSpan.textContent = f.path;
+                const sizeSpan = document.createElement('span');
+                sizeSpan.className = 'text-gray-400 text-xs whitespace-nowrap';
+                sizeSpan.textContent = formatBytes(f.size);
+                item.appendChild(nameSpan);
+                item.appendChild(sizeSpan);
+                item.addEventListener('click', () => zeigeDatei(f.path, item));
+                fileList.appendChild(item);
+            });
+            if (!data.files || !data.files.length) {
+                fileList.innerHTML = '<p class="text-sm text-gray-400 p-3">Keine Dateien im Projekt.</p>';
+            }
+        } catch (e) {
+            fileList.innerHTML = '<p class="text-sm text-red-600 p-3">Dateiliste konnte nicht geladen werden.</p>';
+        }
+    }
+
+    async function zeigeDatei(path, itemEl) {
+        document.querySelectorAll('.file-list-item.active').forEach(el => el.classList.remove('active'));
+        if (itemEl) itemEl.classList.add('active');
+        fileViewer.innerHTML = '<p class="text-sm text-gray-400">Lädt …</p>';
+        try {
+            const res = await fetch('/projects/file?path=' + encodeURIComponent(path));
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Datei konnte nicht geladen werden.');
+            if (data.binary) {
+                fileViewer.innerHTML = '<p class="text-sm text-gray-500">Binärdatei (' + formatBytes(data.size) + ') — keine Textvorschau möglich.</p>';
+                return;
+            }
+            const pre = document.createElement('pre');
+            pre.className = 'text-xs whitespace-pre-wrap break-all bg-white border border-gray-200 rounded p-3';
+            pre.textContent = data.content;
+            fileViewer.innerHTML = '';
+            if (data.truncated) {
+                const hinweis = document.createElement('p');
+                hinweis.className = 'text-xs text-yellow-600 mb-2';
+                hinweis.textContent = 'Datei ist groß — nur der Anfang wird angezeigt.';
+                fileViewer.appendChild(hinweis);
+            }
+            fileViewer.appendChild(pre);
+        } catch (err) {
+            fileViewer.innerHTML = '<p class="text-sm text-red-600">' + escapeHtml(err.message) + '</p>';
+        }
+    }
+
+    uploadForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const datei = uploadFileInput.files[0];
+        if (!datei) return;
+        const formData = new FormData();
+        formData.append('file', datei);
+        formData.append('dir', uploadDir.value.trim());
+        uploadStatus.textContent = 'Lädt hoch …';
+        uploadStatus.classList.remove('hidden', 'text-red-600', 'text-green-600');
+        try {
+            const res = await fetch('/projects/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'Upload fehlgeschlagen.');
+            uploadStatus.textContent = 'Hochgeladen: ' + data.path;
+            uploadStatus.classList.add('text-green-600');
+            uploadFileInput.value = '';
+            ladeDateiListe();
+        } catch (err) {
+            uploadStatus.textContent = 'Fehler: ' + err.message;
+            uploadStatus.classList.add('text-red-600');
+        }
+    });
+
     ladeProjekte();
     ladeGitLogUndRenderChat();
+    ladeDateiListe();
 </script>
 </body>
 </html>
