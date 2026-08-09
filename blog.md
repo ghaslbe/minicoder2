@@ -4648,6 +4648,161 @@ beobachtete Flakiness ist nicht dasselbe wie eine bestaetigte -- die
 Dual-Engine-Theorie klang stimmig, war aber schlicht falsch, bis der
 Nutzer sie korrigiert hat.
 
+## 54. po.py: ein Product Owner vor mc.py, weil der Coder keine Ideen haben soll
+
+Die Frage kam beim Bauen, nicht davor: "gemma-4 macht immer nur genau
+das was man sagt, es ist nie kreativ -- an was liegt das? Keine Ideen,
+kein Wissen, oder was?" Statt zu raten, ein Blick in den tatsaechlichen
+Request-Code (`_chat_once()`): mc.py setzt gar KEINE `temperature` --
+nur einen milden `frequency_penalty` von 0.3 gegen Wiederholungsschleifen.
+Der eigentliche Grund liegt also nicht in einem hart heruntergedrehten
+Zufallsregler, sondern im System-Prompt selbst: der ist bewusst eng und
+woertlich gehalten ("genau EIN action-Block pro Antwort",
+`terse_task_hint()` sagt dem Modell explizit "leite die wahrscheinlichste
+Absicht ab und beginne direkt" statt Alternativen zu erwaegen) --
+eine Design-Entscheidung aus Kapitel 40: explizite Praezision macht
+kleine Modelle zuverlaessig, und genau dieselbe Praezision unterdrueckt
+jede Abschweifung. Dazu kommt die `-it`-Instruction-Tuning-Neigung, eng
+zu befolgen statt auszuschmuecken. Kurz: dem Modell fehlen keine Ideen --
+das Harness sagt ihm explizit und wiederholt, keine zu haben.
+
+Die Konsequenz daraus war ein Architektur-Vorschlag: einen Product-Owner-
+Schritt VOR mc.py einziehen, der genau das Gegenteil darf -- frei,
+kreativ, ohne Aktions-Protokoll -- und einen knappen Wunsch in eine
+ausformulierte, durchdachte Aufgabe verwandelt, bevor der Coder sie
+woertlich umsetzt. Die Alternative waere gewesen, mc.py selbst
+"kreativer" zu machen -- genau das haette die ganze Praezisionsarbeit
+dieser Session (Kapitel 40, 52, die Kontext-Disziplin) wieder aufgeweicht.
+Sauberer: Verantwortung trennen. po.py denkt sich Dinge aus, mc.py bleibt
+klein, woertlich, zuverlaessig.
+
+**po.py** ist bewusst kein zweiter mc.py: keine Datei-/Shell-Aktionen,
+kein Fence-Protokoll -- nur EIN einziger, klar strukturierter
+```decision```-JSON-Block pro Antwort, mit genau zwei moeglichen Formen:
+entweder GENAU EINE Rueckfrage (nur bei echter Mehrdeutigkeit, nie mehr
+als eine im ganzen Dialog) oder eine fertige, kreative Aufgabenbeschreibung
+fuer mc.py. `gather_project_context()` liefert dabei denselben Zweck wie
+mc.py's eigene `task_hints()`: vorhandene Dateien und `MC-NOTIZEN.md`
+werden mitgegeben, damit Vorschlaege am Bestehenden ansetzen statt generisch
+ins Blaue zu gehen.
+
+Zwei Anbindungen, bewusst getrennt von mc.py selbst:
+
+1. **vibelove** bekommt `/refine` (haelt `PO_HISTORY` serverseitig, wird bei
+   Projektwechsel und sobald ein Auftrag tatsaechlich an mc.py geht
+   automatisch geleert) und eine eigene Bubble-Optik im Chat ("🧭 Product
+   Owner", farblich abgesetzt vom Coder). Eine Rueckfrage wird angezeigt,
+   die naechste Eingabe geht wieder an `/refine`; eine fertige Spezifikation
+   zeigt Zusammenfassung + vollstaendigen Auftragstext mit zwei Knoepfen
+   ("Jetzt bauen" -> direkt an `/build`, "Text anpassen" -> in das
+   Eingabefeld zum Bearbeiten, geht danach wieder durch `/refine`).
+
+2. **Eine eigenstaendige Kommandozeile** (`python3 po.py "wunsch" --dir
+   projekt/`) fuer die Nutzung ganz ohne vibelove: derselbe Frage-/
+   Abschluss-Dialog per `input()`, danach entweder `--no-run` (nur die
+   fertige Aufgabe ausgeben) oder automatischer Aufruf von mc.py als
+   Subprozess mit der fertigen Aufgabe. mc.py selbst wurde dafuer NICHT
+   angefasst -- po.py haengt sich als eigenstaendiges Werkzeug davor, genau
+   wie vibelove es auch nur importiert, nie mc.py's eigenen Code aendert.
+
+Live erprobt, nicht nur gelesen: ein vager Wunsch ("mach das Tool besser")
+loeste zuverlaessig GENAU EINE Rueckfrage aus (welcher Aspekt -- Design,
+Analyse-Tiefe, Funktionen); die Antwort ("das Design soll moderner wirken")
+ergab eine detaillierte, aus eigenem Antrieb ausgeschmueckte Spezifikation
+(Farbpalette, Card-Layout, Lade-Animationen -- keins davon vorgegeben),
+die dabei korrekt auf den echten bestehenden Backend-Port und die
+tatsaechlichen API-Endpunkte des Projekts Bezug nahm. Ein konkreter Wunsch
+("Statistikseite je Domain") ging direkt durch, ganz ohne Rueckfrage, und
+brachte von sich aus eine Idee mit, die nie verlangt wurde: eine
+Balkendarstellung nach Haeufigkeit.
+
+## 55. po.py bekommt eine eigene Kommandozeile, faengt sich noch einen JSON-Bug -- und besteht den echten Praxistest
+
+Drei Nacharbeiten an po.py, alle aus echtem Gebrauch entstanden, nicht
+aus Theorie.
+
+**Eine eigene Kommandozeile statt eines Kommandos in mc.py.** Die Frage
+war: soll `/po` ein Slash-Kommando IN mc.py's eigener REPL werden? Die
+bessere Antwort kam vom Nutzer selbst: nein, po.py bekommt eine eigene
+CLI (`python3 po.py "wunsch" --dir projekt/`), mc.py bleibt komplett
+unangetastet. Das passt zur mc.py-Philosophie dieser ganzen Session
+(klein, stdlib-only, moeglichst wenig Angriffsflaeche fuer neue Bugs im
+am staerksten gehaerteten Teil des Projekts) -- po.py haengt sich als
+eigenstaendiges Werkzeug davor, importiert von vibelove, aufrufbar per
+Terminal, und stoesst mc.py am Ende nur als ganz normalen Subprozess an.
+`gather_project_context()` wanderte dabei aus vibelove/server.py in
+po.py selbst, damit beide Nutzungswege dieselbe Logik teilen statt sie
+zu duplizieren.
+
+**Derselbe JSON-Escaping-Bug, den mc.py schon einmal hatte.** Live in
+vibelove gemeldet: "Ungueltiges JSON in der Entscheidung." Die erste
+Reproduktion gelang zufaellig NICHT (zweimal in Folge erfolgreich) --
+ein Hinweis darauf, dass es sich um genau die Art von Fehler handelt,
+die mc.py schon in Kapitel [Fence-Modus] geloest hat: ein kleines Modell
+soll einen LANGEN, mehrzeiligen Fliesstext als JSON-String-Wert
+einbetten (`"instruction": "..."`), und verhaspelt sich dabei
+gelegentlich an Anfuehrungszeichen/Zeilenumbruechen -- nicht
+deterministisch falsch, nur manchmal. po.py hatte genau dieses Muster
+selbst eingebaut, obwohl die Lektion im selben Projekt schon bekannt
+war. Fix: derselbe Fence-Ansatz wie bei mc.py -- der `decision`-JSON-Block
+enthaelt nur noch `{"type": "..."}`, der eigentliche Freitext (Frage,
+Zusammenfassung, Auftrag) steht in eigenen rohen ```question/```summary/
+```instruction-Bloecken. Verifiziert am tatsaechlich gescheiterten
+Nutzer-Wunsch: die neue, korrekte Antwort enthaelt mehrere woertliche
+Anfuehrungszeichen im Fliesstext, die im alten JSON-String-Format den
+Parser zuverlaessig zerschossen haetten.
+
+**Eine neue Regel: Dateien von Anfang an nach Zustaendigkeit trennen.**
+Direkt aus den Bugs der letzten Kapitel abgeleitet -- die geloeschten
+CSS-Regeln, die vergessene Ghost-Tempo-Drossel -- beides Faelle, in
+denen ein grosser Datei-Umbau Inhalt ausserhalb des gerade bearbeiteten
+Bereichs verloren hat. Neue System-Prompt-Regel: HTML/CSS/JS nie
+vermischt, JS/Backend-Code nach Zustaendigkeit in eigene Dateien
+(Routen/DB-Zugriff/Datenmodelle getrennt, ein React-Component pro
+Datei), UND das JETZT beim Planen entscheiden statt erst wenn eine
+Datei unhandlich geworden ist -- `plan_phase()`'s Prompt fragt das jetzt
+explizit ab. Live getestet: eine kleine Notizen-App-Aufgabe ergab von
+sich aus `app.py` + `database/{db_manager.py,schema.sql}` +
+`routes/note_routes.py` + `templates/index.html` +
+`static/{css/style.css,js/{api.js,ui.js}}` -- schon im Plan festgelegt,
+bevor eine einzige Datei geschrieben wurde.
+
+**Der eigentliche Praxistest: du -> po -> mc, mit einem echten Spiel.**
+"Baue einen Tetris-Klon wie auf dem Game Boy" ergab bei po.py eine
+detaillierte, unaufgefordert kreative Spezifikation (7 Tetrominoes,
+Wall Kicks, Level-System, Game-Boy-Graupalette, vier unterschiedliche
+Soundeffekte) -- und mc.py baute daraus in 15 Schritten ein
+funktionierendes, sauber nach der neuen Regel aufgeteiltes Spiel
+(`engine.js`/`renderer.js`/`input.js`/`audio.js`/`main.js`). Genauer
+Code-Review deckte danach aber echte Luecken auf, die der eigene
+Diff-Selbstreview NICHT gefunden hatte: eine tote, absichtlich als
+fehlerhaft kommentierte `rotate()`-Methode neben der korrekten
+`tryRotate()` (der Fehler wurde erkannt, aber nach vorne statt rueckwaerts
+korrigiert), und eine Sound-Anforderung, die zwar im Auftrag stand aber
+in der Umsetzung verwaesserte: kein eigener "Landing"-Sound, dafuer
+spielte `playTick()` bei jedem einzelnen Fallschritt.
+
+Der eigentliche Test folgte danach: eine praezise Bugliste (6 konkrete
+Punkte) durch genau dieselbe Kette geschickt -- po.py uebersetzte sie
+1:1 ohne Rueckfrage und ohne zusaetzlichen Umfang, mc.py setzte alle
+sechs Punkte in 20 Schritten korrekt um, ohne eine einzige unbeteiligte
+Datei anzufassen. Unabhaengig gegengeprueft (nicht nur die Abschluss-
+meldung geglaubt): `git diff` bestaetigte alle sechs Aenderungen exakt,
+`playTick()` blieb fuer seinen einen verbleibenden legitimen Einsatzzweck
+(Rotation) unangetastet.
+
+Die Lehre daraus: die Pipeline selbst funktioniert zuverlaessig in
+beide Richtungen -- po.py dichtet weder dazu noch laesst es Vorgaben
+fallen, egal ob es einen vagen Wunsch ausschmueckt oder eine praezise
+Bugliste weiterreicht. Was NICHT zuverlaessig ist: ein einzelner langer
+Bau-Durchlauf fuer eine grosse, vage Aufgabe -- der bleibt anfaellig
+fuer genau die Art von Luecken, die die eigene Abschlusspruefung nicht
+findet. Der bewaehrte Ablauf bleibt deshalb zweiphasig: grosser Wunsch
+-> po elaboriert -> mc baut -> jemand liest den Diff wirklich ->
+praezise Bugliste -> po reicht weiter -> mc fixt praezise. Die
+Ueberpruefung in der Mitte ist keine optionale Zutat, sondern genau der
+Schritt, der in dieser ganzen Session jeden echten Bug gefunden hat.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

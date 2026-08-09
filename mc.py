@@ -3107,6 +3107,27 @@ Rules:
 - Finished code runs WITHOUT debug mode (e.g. Flask: app.run without
   debug=True — the debugger allows code execution in the browser and has no
   place in a finished app).
+- Keep files SMALL and SPLIT BY CONCERN from the start, not just when they
+  get unwieldy: separate structure/style/behavior (HTML/CSS/JS in their own
+  files, never inline scripts of real size), and split JS/backend code into
+  several purpose-based files (e.g. one file for API/data calls, one per
+  major UI section, one for a specific feature) instead of one growing
+  monolith. For React (or similar component frameworks), one component per
+  file is the expected default. The SAME applies to Python/backend code:
+  don't grow one app.py forever — split off e.g. routes, database access,
+  and data models into their own files once the concerns are distinguishable
+  (Flask: Blueprints are fine, but even plain separate modules imported into
+  app.py already achieve the goal). Decide this file layout UP FRONT, as
+  part of planning the task, not reactively once a file has already become
+  hard to hold in view. Reason: a small file's FULL content fits in
+  context for read_file/edit_file — a large one only gets read/edited in
+  fragments, and content outside the edited fragment is easy to lose track
+  of (real failure seen: an unrelated large-file rewrite silently deleted
+  CSS rules another part of the page still depended on). For plain HTML/JS
+  WITHOUT a build tool, splitting JS into multiple files means getting the
+  <script src="..."> load order right yourself (no import/export without a
+  bundler or type="module") — do not let file-splitting itself introduce a
+  load-order bug.
 - Once the task is done, emit a finish action.
 - Write clean, working code. Follow existing conventions.
 
@@ -3239,6 +3260,10 @@ def plan_phase(messages, model):
     Gibt False zurueck, wenn der Nutzer abbricht."""
     ask = ("Bevor du handelst: Erstelle einen KNAPPEN, nummerierten Plan fuer diese "
            "Aufgabe — geplante Dateien/Verzeichnisse, Schritte und wichtige Annahmen. "
+           "Lege die Datei-Aufteilung dabei JETZT fest, nicht erst wenn eine Datei "
+           "spaeter zu gross wird: pro Anliegen eine eigene Datei (z.B. Routen/"
+           "Datenbankzugriff/Datenmodelle getrennt, ein React-Component pro Datei, "
+           "HTML/CSS/JS nie in einer Datei vermischt). "
            "Gib NUR den Plan als Text aus, KEINEN action-Block.")
     if CHECK:
         ask += ("\nErstelle ZUSAETZLICH einen eigenen Abschnitt \"Pruefschritte:\" mit "

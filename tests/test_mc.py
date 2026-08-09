@@ -286,6 +286,22 @@ def test_system_prompt_lehrt_sqlite_view_delete():
     assert "DELETE" in sp
 
 
+def test_system_prompt_lehrt_dateien_aufteilen():
+    sp = mc.system_prompt(True)
+    assert "SPLIT BY CONCERN" in sp
+    assert "one component per" in sp
+    assert "Python/backend" in sp
+
+
+def test_plan_phase_verlangt_datei_aufteilung(monkeypatch):
+    monkeypatch.setattr(mc, "chat_stream", lambda messages, model: "1. Plan")
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    messages = [{"role": "system", "content": "sys"}]
+    mc.plan_phase(messages, "m")
+    ask_text = messages[1]["content"]
+    assert "Datei-Aufteilung" in ask_text
+
+
 def test_check_prompt_verlangt_eingabe_validierung():
     # Kleine Modelle testen wortwoertlich, was der Prompt nennt — leeres
     # Pflichtfeld muss deshalb explizit als Pruef-Fall dastehen.
