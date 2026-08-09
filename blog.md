@@ -4803,6 +4803,75 @@ praezise Bugliste -> po reicht weiter -> mc fixt praezise. Die
 Ueberpruefung in der Mitte ist keine optionale Zutat, sondern genau der
 Schritt, der in dieser ganzen Session jeden echten Bug gefunden hat.
 
+## 56. Kann mc.py sich selbst pruefen? Ein echter Test -- mit einem ueberraschenden Ergebnis
+
+Die logische Weiterentwicklung von Kapitel 55: wenn ein grosser Bau-
+Durchlauf unzuverlaessig ist, ein gezielter Bugfix-Durchlauf aber
+zuverlaessig, waere dann nicht ein automatischer Verifikations-Schritt
+ZWISCHEN Bau-Phasen der richtige Weg, um MVP-Stufen (erst Grundspiel,
+dann Highscore, dann Multiplayer) sicher nacheinander zu bauen? Die
+Idee: po.py formuliert produktseitige Akzeptanzkriterien statt
+technischer Vorgaben, ein SEPARATER mc.py-Lauf bekommt genau diese
+Kriterien und den Auftrag, sie am echten Code zu VERIFIZIEREN (nicht
+nur zu lesen, sondern per `node`-Testskript wirklich auszufuehren) --
+erst bei Erfolg geht es zur naechsten Stufe.
+
+Ob das traegt, wurde nicht angenommen, sondern getestet: acht konkrete,
+produktseitige Kriterien fuer den bereits gebauten Tetris-Klon (7
+Tetromino-Typen, Zeilen-Loeschung, exakte Punktzahlen, der Landing-Sound
+aus Kapitel 55, genau eine Rotationsmethode, Game-Over bei Spawn-
+Kollision, Wall-Kicks an BEIDEN Raendern, Level-/Tempo-Skalierung), als
+reiner Lese-/Test-Auftrag an mc.py -- mit der ausdruecklichen Anweisung,
+Behauptungen wirklich auszufuehren statt nur zu lesen.
+
+Das Ergebnis: mc.py schrieb tatsaechlich ein echtes Testskript, das
+`engine.js` laedt und Szenarien simuliert -- keine reine Code-Lektuere.
+Ausgabe: 5/8 PASS, 2/8 FAIL. Beide FAILs wurden unabhaengig nachgeprueft,
+nicht einfach geglaubt:
+
+- **Kriterium 6 (Game Over) -- ein ECHTER Bug, der sogar der eigenen
+  manuellen Review aus Kapitel 55 entgangen war.** `spawnPiece()` ruft
+  `collides(this.currentPiece, this.currentPiece.x, this.currentPiece.y)`
+  auf -- aber `collides(piece, ox, oy)` erwartet OFFSETS (kleine Deltas
+  wie 0/±1, so wie ueberall sonst im Code, z.B. in `move()`), keine
+  absoluten Koordinaten. Das ergibt `2×piece.x + x` statt `piece.x + x`
+  -- die Kollisionspruefung beim Spawnen ist dadurch verlaesslich falsch.
+  mc.py's Verifikation erkannte korrekt, dass hier etwas nicht stimmt --
+  diagnostizierte die Ursache aber falsch (schob es auf einen Fehler im
+  eigenen Testskript statt auf den echten Bug in `spawnPiece()`). Waere
+  das automatisch in einen Fix-Schritt gelaufen, waere vermutlich das
+  Testskript "repariert" worden, nicht der eigentliche Bug.
+- **Kriterium 7 (Wall Kicks beidseitig) -- vermutlich ein Fehlalarm.**
+  Ein eigener, sauberer Test (I- und T-Stein ganz links und ganz rechts,
+  unabhaengig vom Testskript der Verifikation) zeigte: die Rotation
+  gelingt in beiden Faellen ohne Verschiebung -- weil sie an dieser
+  Position gar keinen Wall-Kick BRAUCHT, nicht weil der Mechanismus
+  kaputt ist. Die Verifikation sah "x blieb bei 0" und schloss daraus
+  faelschlich auf einen Fehler.
+
+Nebenbefund, nicht Kern der Sache: die eigene Auftragsformulierung
+("kein engine.js/audio.js/input.js/...") nutzte '/' als Trennzeichen
+zwischen Dateinamen -- mc.py's eigene `expected_files_from_task()`-
+Erkennung las das als verschachtelten Pfad und blockierte `finish`
+mehrere Runden lang. Kein mc.py-Bug im engeren Sinn, aber eine echte
+Lektion: Auftragstexte, die eine AUSSCHLUSSLISTE von Dateinamen nennen,
+sollten Kommas oder "und" nutzen, niemals '/'.
+
+**Das ehrliche Fazit**: delegierte Verifikation liefert echtes Signal --
+sie fand einen Bug, den nicht nur der Bau-Lauf, sondern auch die eigene
+manuelle Review aus Kapitel 55 uebersehen hatte. Aber ihre DIAGNOSE ist
+nicht vertrauenswuerdig genug, um blind einen Fix-Schritt daraus
+abzuleiten: von zwei gemeldeten Fehlern war einer real (mit falscher
+Ursachenzuschreibung), der andere vermutlich ein Fehlalarm durch
+Fehlinterpretation von korrektem Verhalten. Fuer eine automatische
+MVP-Stufen-Pipeline heisst das konkret: ein "FAIL" von mc.py's eigener
+Verifikation darf nicht automatisch einen Fix-Auftrag ausloesen, ohne
+dass jemand (Mensch oder ein weiterer, unabhaengiger Pruef-Schritt) den
+gemeldeten Fehler erst nachvollzieht. Genau das musste in dieser Sitzung
+noch von Hand passieren, um den echten Bug vom Fehlalarm zu trennen --
+ein automatisierter "Richter"-Schritt waere der naechste logische Test,
+aber noch nicht gebaut.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
