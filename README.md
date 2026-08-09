@@ -1170,6 +1170,48 @@ Python nicht gefunden, ich versuche python3.
 ✓ FizzBuzz von 1 bis 15 erfolgreich erstellt und ausgeführt.
 ```
 
+## po.py — Product-Owner-Dialog vor mc.py
+
+`mc` setzt eine Aufgabe woertlich und praezise um — das macht es
+zuverlaessig, aber nicht kreativ: ein knapper Wunsch bleibt ein knapper
+Wunsch. `po.py` ist ein eigenstaendiges, kleines Werkzeug davor: es
+nimmt einen knappen Wunsch entgegen, stellt bei echter Mehrdeutigkeit
+GENAU EINE Rueckfrage, und formuliert sonst eine ausformulierte,
+eigene Ideen einbringende Aufgabenbeschreibung — die dann `mc`
+umsetzt. `mc.py` selbst bleibt dabei komplett unangetastet; `po.py`
+haengt sich nur davor.
+
+```bash
+python3 po.py "Baue ein kleines Tetris" --dir meinprojekt/
+```
+
+Ablauf:
+1. `po.py` liest den Ist-Zustand von `--dir` (vorhandene Dateien,
+   `MC-NOTIZEN.md`) und schickt den Wunsch zusammen mit diesem Kontext
+   an das Modell.
+2. Bei einer Rueckfrage wird sie ausgegeben und auf eine Antwort
+   gewartet (`> `-Prompt) — der Dialog laeuft weiter, bis maximal eine
+   Frage beantwortet und eine Spezifikation fertig ist.
+3. Die fertige Aufgabe wird angezeigt; `[Enter]` startet `mc.py` direkt
+   damit, ein Text schlaegt eine Aenderung vor (geht zurueck an
+   `po.py`), `n` bricht ab.
+4. `mc.py` laeuft danach ganz normal als Subprozess mit der fertigen
+   Aufgabe als Argument.
+
+Wichtige Optionen (siehe `python3 po.py --help` fuer alle):
+
+| Option | Bedeutung |
+|---|---|
+| `--dir <pfad>` | Projektverzeichnis (Kontext + wird an `mc.py` weitergereicht, Default `.`) |
+| `--no-run` | `mc.py` NICHT automatisch starten — nur die fertige Aufgabe ausgeben (z.B. zum Kopieren) |
+| `--check` / `--plan` / `--yes` | 1:1 an `mc.py` durchgereicht |
+| `--base-url` / `--model` / `--api-key` | wie bei `mc.py`, Default aus `MC_BASE_URL` / `MC_MODEL` / `MC_API_KEY` |
+
+`po.py` nutzt denselben Endpunkt/dieselben Env-Variablen wie `mc.py`
+(inkl. `MC_HEADERS` fuer zusaetzliche HTTP-Header). In vibelove laeuft
+derselbe Dialog automatisch vor jedem Bauauftrag im Chat mit (Endpunkt
+`/refine`) — die Kommandozeile ist der Weg dahin ganz ohne vibelove.
+
 ## Ideen für Erweiterungen
 
 - Diff-/Patch-basiertes Editieren statt kompletter Datei-Überschreibung
@@ -1192,6 +1234,7 @@ oder Kosten. Details im Haftungsausschluss in der `LICENSE`-Datei.
 | Datei              | Inhalt                                       |
 |--------------------|----------------------------------------------|
 | `mc.py`            | Das komplette Tool                           |
+| `po.py`            | Product-Owner-Dialog vor `mc.py` (eigene CLI, siehe oben) |
 | `tests/test_mc.py` | pytest-Suite für die deterministischen Teile (`python3 -m pytest tests/`) |
 | `README.md`        | Diese Datei                                  |
 | `requirements.txt` | Abhängigkeiten (keine — nur Stdlib-Hinweis)  |
