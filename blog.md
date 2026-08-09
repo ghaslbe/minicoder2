@@ -4678,7 +4678,7 @@ klein, woertlich, zuverlaessig.
 
 **po.py** ist bewusst kein zweiter mc.py: keine Datei-/Shell-Aktionen,
 kein Fence-Protokoll -- nur EIN einziger, klar strukturierter
-```decision```-JSON-Block pro Antwort, mit genau zwei moeglichen Formen:
+` ```decision ` -JSON-Block pro Antwort, mit genau zwei moeglichen Formen:
 entweder GENAU EINE Rueckfrage (nur bei echter Mehrdeutigkeit, nie mehr
 als eine im ganzen Dialog) oder eine fertige, kreative Aufgabenbeschreibung
 fuer mc.py. `gather_project_context()` liefert dabei denselben Zweck wie
@@ -4746,8 +4746,8 @@ deterministisch falsch, nur manchmal. po.py hatte genau dieses Muster
 selbst eingebaut, obwohl die Lektion im selben Projekt schon bekannt
 war. Fix: derselbe Fence-Ansatz wie bei mc.py -- der `decision`-JSON-Block
 enthaelt nur noch `{"type": "..."}`, der eigentliche Freitext (Frage,
-Zusammenfassung, Auftrag) steht in eigenen rohen ```question/```summary/
-```instruction-Bloecken. Verifiziert am tatsaechlich gescheiterten
+Zusammenfassung, Auftrag) steht in eigenen rohen ` ```question ` /
+` ```summary ` / ` ```instruction ` -Bloecken. Verifiziert am tatsaechlich gescheiterten
 Nutzer-Wunsch: die neue, korrekte Antwort enthaelt mehrere woertliche
 Anfuehrungszeichen im Fliesstext, die im alten JSON-String-Format den
 Parser zuverlaessig zerschossen haetten.
