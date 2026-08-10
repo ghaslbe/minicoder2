@@ -6,6 +6,10 @@ mit einem echten Backend-Prozess sprechen, ganz ohne CORS-Konfiguration.
 
 Aufruf: python3 static_preview_server.py <static_dir> <port> <backend_port> <api_prefix>
 backend_port=0 bedeutet: kein Backend vorhanden, nur statische Dateien ausliefern.
+static_dir='' (leer) bedeutet: KEIN Frontend vorhanden -- eine monolithische
+Anwendung (z.B. Flask mit serverseitig gerenderten Templates) IST hier die
+gesamte Anwendung; JEDE Anfrage wird an das Backend weitergeleitet, nicht nur
+welche unter api_prefix.
 """
 import os
 import sys
@@ -58,6 +62,9 @@ def _proxy(path):
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 @app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 def catch_all(path):
+    if not STATIC_DIR:
+        # Kein Frontend -- das Backend IST die gesamte Anwendung.
+        return _proxy(path)
     if BACKEND_PORT and ('/' + path).startswith(API_PREFIX):
         return _proxy(path)
     if path == '':

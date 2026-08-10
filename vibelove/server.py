@@ -543,6 +543,28 @@ def start_vite_server():
                 except Exception as e:
                     print(f"Fehler beim Starten des Static-Servers: {e}")
                 return
+            if _backend_manifest(proj) is not None:
+                # Kein Frontend gefunden, aber ein Backend-Manifest -- ein
+                # eigenstaendiger Server (z.B. Flask mit serverseitig
+                # gerenderten Templates) IST hier die ganze Anwendung, kein
+                # getrenntes Frontend zum Ausliefern. static_preview_server.py
+                # bekommt einen LEEREN static_dir ('') -- in diesem Modus
+                # leitet es JEDE Anfrage an das Backend weiter, nicht nur
+                # welche unter API_PREFIX.
+                print(f"Kein Frontend, aber Backend-Manifest in "
+                      f"'{CURRENT_PROJECT}' -- leite die gesamte Vorschau auf "
+                      f"Port {PORT_VITE} an das Backend (Port {BACKEND_PORT}) "
+                      f"weiter...")
+                try:
+                    vite_process = subprocess.Popen(
+                        ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
+                         STATIC_PREVIEW_SCRIPT, "", str(PORT_VITE),
+                         str(BACKEND_PORT), API_PREFIX],
+                        start_new_session=True
+                    )
+                except Exception as e:
+                    print(f"Fehler beim Starten des Backend-Proxys: {e}")
+                return
             print(f"[vite] Kein package.json und keine index.html in '{CURRENT_PROJECT}' (frontend/ oder Wurzel) – keine Vorschau moeglich.")
             return
 
@@ -707,7 +729,15 @@ def build():
         full_instruction = instruction
 
     # Der geforderte Zusatztext
-    suffix = "\n\nLege ein NEUES Projektgeruest (npm create ...) IMMER in einen Unterordner wie frontend/ an, nie direkt ins Wurzelverzeichnis (dort liegt Git-Zubehoer, der Generator wuerde interaktiv haengen). Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
+    suffix = ("\n\nLege ein NEUES Projektgeruest (npm create ...) IMMER in einen Unterordner wie frontend/ an, nie direkt ins Wurzelverzeichnis (dort liegt Git-Zubehoer, der Generator wuerde interaktiv haengen). Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
+              f"\n\nFalls diese Aufgabe einen EIGENEN Backend-/Serverprozess braucht (z.B. eine "
+              f"Flask/Express-API -- auch wenn es KEIN separates Frontend gibt, etwa bei einer "
+              f"serverseitig gerenderten App mit Templates): lege den Backend-Code in einen "
+              f"Unterordner backend/, lass ihn IMMER auf dem FESTEN Port {BACKEND_PORT} lauschen "
+              f"(nicht konfigurierbar, nicht selbst waehlen), und lege "
+              f"backend/{BACKEND_MANIFEST_NAME} mit dem Startbefehl an, z.B. "
+              f'{{"command": "python3 app.py"}} -- nur so erkennt und startet die Live-Vorschau '
+              f"das Backend automatisch.")
     full_instruction += suffix
 
     found_urls = extract_urls(instruction)
