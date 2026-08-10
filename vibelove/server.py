@@ -666,7 +666,13 @@ def refine_instruction():
         return jsonify({'type': 'error', 'error': 'Keine Nachricht erhalten'}), 400
     global PO_HISTORY
     context_text = _po_project_context()
-    decision, PO_HISTORY = po.refine(
+    # refine_retrying(), NICHT refine(): dieselbe automatische Wiederholung
+    # bei kaputtem Protokoll-Format, die die eigenstaendige Kommandozeile
+    # (po.py _main()) schon nutzt -- ohne sie sah dieser Endpunkt hier
+    # gelegentliche Format-Aussetzer eines kleinen/schnellen Modells als
+    # harten Fehler statt sie (wie im CLI-Pfad laengst ueblich) einfach
+    # automatisch neu zu versuchen.
+    decision, PO_HISTORY = po.refine_retrying(
         message, context_text, PO_HISTORY,
         MC_SETTINGS['base_url'], MC_SETTINGS['model'], MC_SETTINGS['api_key'])
     return jsonify(decision)
