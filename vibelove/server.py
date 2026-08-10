@@ -275,6 +275,162 @@ def _backend_manifest(proj):
     except (OSError, ValueError, TypeError):
         return None
 
+def _frontend_shape(proj):
+    """Erkennt die Art des Frontends nach DEMSELBEN Muster wie
+    start_vite_server(): Vite (package.json MIT 'dev'-Skript, in frontend/
+    oder Wurzel) vor Static (index.html ohne brauchbares package.json) --
+    absichtlich dieselbe Erkennung wie die Live-Vorschau, damit 'was vibelove
+    zum Testen startet' und 'was der generierte Container ausliefert' nicht
+    auseinanderlaufen. Gibt ('vite', verzeichnis) / ('static', verzeichnis)
+    / (None, None) zurueck."""
+    front_dir = os.path.join(proj, 'frontend')
+    front_pkg = os.path.join(front_dir, 'package.json')
+    if os.path.isfile(front_pkg) and _hat_dev_skript(front_pkg):
+        return 'vite', front_dir
+    root_pkg = os.path.join(proj, 'package.json')
+    if os.path.isfile(root_pkg) and _hat_dev_skript(root_pkg):
+        return 'vite', proj
+    static_dir = _static_frontend_dir(proj)
+    if static_dir:
+        return 'static', static_dir
+    return None, None
+
+
+DOCKERIGNORE = """.git
+node_modules
+__pycache__
+*.pyc
+*.db
+*.log
+dist
+"""
+
+
+def generate_container_files(proj):
+    """Baut Dockerfile(s)/.dockerignore (+ docker-compose.yml + nginx.conf bei
+    Frontend UND Backend zusammen) fuer das aktive Projekt. Gibt
+    (files, hinweis) zurueck: files ist {relativer_pfad: inhalt}, hinweis ein
+    kurzer Start-Befehl. (None, fehlermeldung) wenn nichts erkannt wurde."""
+    kind, front_dir = _frontend_shape(proj)
+    backend = _backend_manifest(proj)  # (backend_dir, command) oder None
+
+    if not kind and not backend:
+        return None, ("Kein Frontend (index.html/package.json) und kein "
+                       "Backend-Manifest (backend/vibelove-backend.json) "
+                       "gefunden -- keine Grundlage fuer einen Container.")
+
+    def rel(p):
+        r = os.path.relpath(p, proj)
+        return '.' if r == '.' else r.replace(os.sep, '/')
+
+    backend_has_reqs = bool(backend) and os.path.isfile(
+        os.path.join(backend[0], 'requirements.txt'))
+
+    def backend_dockerfile():
+        backend_dir, command = backend
+        backend_rel = rel(backend_dir)
+        pip_step = (
+            f"COPY {backend_rel}/requirements.txt ./\n"
+            "RUN pip install --no-cache-dir -r requirements.txt\n"
+            if backend_has_reqs else
+            "# Kein requirements.txt gefunden -- keine externen Pakete zu "
+            "installieren.\n"
+        )
+        return (
+            "FROM python:3.12-slim\n"
+            "WORKDIR /app\n"
+            f"{pip_step}"
+            f"COPY {backend_rel}/ ./\n"
+            f"EXPOSE {BACKEND_PORT}\n"
+            f'CMD ["sh", "-c", {json.dumps(command)}]\n'
+        )
+
+    def frontend_dockerfile(with_nginx_conf):
+        nginx_conf_copy = ("COPY nginx.conf /etc/nginx/conf.d/default.conf\n"
+                            if with_nginx_conf else "")
+        front_rel = rel(front_dir)
+        if kind == 'vite':
+            return (
+                "FROM node:20-alpine AS build\n"
+                "WORKDIR /app\n"
+                f"COPY {front_rel}/package*.json ./\n"
+                "RUN npm install\n"
+                f"COPY {front_rel}/ ./\n"
+                "RUN npm run build\n"
+                "\n"
+                "FROM nginx:alpine\n"
+                "COPY --from=build /app/dist /usr/share/nginx/html\n"
+                f"{nginx_conf_copy}"
+                "EXPOSE 80\n"
+            )
+        copy_src = f"{front_rel}/" if front_rel != '.' else "."
+        return (
+            "FROM nginx:alpine\n"
+            f"COPY {copy_src} /usr/share/nginx/html\n"
+            f"{nginx_conf_copy}"
+            "EXPOSE 80\n"
+        )
+
+    files = {'.dockerignore': DOCKERIGNORE}
+
+    if backend and kind:
+        # Getrennte Frontend-/Backend-Container statt einem gemeinsamen: ein
+        # Container fuer beide Prozesse waere ohne eigenes init-System
+        # fragil -- und static_preview_server.py macht die Trennung beim
+        # lokalen Vorschau-Testen bereits genauso vor (Proxy statt
+        # gemeinsamer Prozess).
+        files['Dockerfile.backend'] = backend_dockerfile()
+        files['Dockerfile.frontend'] = frontend_dockerfile(with_nginx_conf=True)
+        files['nginx.conf'] = (
+            "server {\n"
+            "    listen 80;\n"
+            "    root /usr/share/nginx/html;\n"
+            "    index index.html;\n"
+            "\n"
+            f"    location {API_PREFIX} {{\n"
+            f"        proxy_pass http://backend:{BACKEND_PORT}{API_PREFIX};\n"
+            "        proxy_set_header Host $host;\n"
+            "    }\n"
+            "\n"
+            "    location / {\n"
+            "        try_files $uri $uri/ /index.html;\n"
+            "    }\n"
+            "}\n"
+        )
+        files['docker-compose.yml'] = (
+            "services:\n"
+            "  backend:\n"
+            "    build:\n"
+            "      context: .\n"
+            "      dockerfile: Dockerfile.backend\n"
+            "    expose:\n"
+            f'      - "{BACKEND_PORT}"\n'
+            "  frontend:\n"
+            "    build:\n"
+            "      context: .\n"
+            "      dockerfile: Dockerfile.frontend\n"
+            "    ports:\n"
+            '      - "8080:80"\n'
+            "    depends_on:\n"
+            "      - backend\n"
+        )
+        hinweis = "docker compose up --build  (danach http://localhost:8080)"
+    elif backend:
+        files['Dockerfile'] = backend_dockerfile()
+        hinweis = (f"docker build -t projekt . && docker run -p "
+                    f"{BACKEND_PORT}:{BACKEND_PORT} projekt")
+    else:
+        files['Dockerfile'] = frontend_dockerfile(with_nginx_conf=False)
+        hinweis = "docker build -t projekt . && docker run -p 8080:80 projekt"
+
+    if backend and not backend_has_reqs:
+        hinweis += ("\nHinweis: backend/requirements.txt fehlt -- falls das "
+                     "Backend externe Pakete importiert, fehlen die im "
+                     "Container.")
+
+    return files, hinweis
+
+
 def _kill_port(port):
     """Beendet JEDEN Prozess, der auf 'port' lauscht -- unabhaengig davon, ob
     vibelove ihn selbst gestartet hat. Noetig, weil ein Backend nicht nur
@@ -1000,6 +1156,37 @@ def download_zip():
         as_attachment=True,
         download_name='vibelove-projekt.zip'
     )
+
+
+@app.route('/generate-container', methods=['POST'])
+def generate_container():
+    """Erzeugt Dockerfile(s)/.dockerignore (+ docker-compose.yml + nginx.conf
+    bei Frontend UND Backend) fuer das AKTIVE Projekt und schreibt sie
+    hinein -- dieselbe Erkennung wie die Live-Vorschau (_frontend_shape/
+    _backend_manifest), damit Container und lokale Vorschau nicht
+    auseinanderlaufen. Committet das Ergebnis als eigenen, benannten
+    Sicherungspunkt (nicht den generischen 'Zwischenstand', damit die
+    Historie erkennen laesst, WAS committet wurde)."""
+    projekt = projekt_dir(CURRENT_PROJECT)
+    if not os.path.isdir(projekt):
+        return jsonify({'ok': False, 'error': 'Projektverzeichnis nicht gefunden'}), 404
+    files, hinweis_oder_fehler = generate_container_files(projekt)
+    if files is None:
+        return jsonify({'ok': False, 'error': hinweis_oder_fehler}), 400
+    for relpfad, inhalt in files.items():
+        with open(os.path.join(projekt, relpfad), 'w', encoding='utf-8') as f:
+            f.write(inhalt)
+    try:
+        if os.path.isdir(os.path.join(projekt, '.git')):
+            subprocess.run(['git', 'add', '--'] + sorted(files), cwd=projekt,
+                            capture_output=True, timeout=15)
+            subprocess.run(
+                ['git', 'commit', '-m', f'vibelove: Container-Setup generiert ({", ".join(sorted(files))})'],
+                cwd=projekt, capture_output=True, timeout=15
+            )
+    except Exception as e:
+        print(f'generate_container: Commit fehlgeschlagen: {e}')
+    return jsonify({'ok': True, 'dateien': sorted(files), 'hinweis': hinweis_oder_fehler})
 
 
 def cleanup():

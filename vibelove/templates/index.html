@@ -22,6 +22,8 @@
                 class="icon-btn">🔗</button>
             <a href="/download-zip" title="Projekt als ZIP herunterladen"
                 class="icon-btn no-underline">⬇️</a>
+            <button type="button" id="containerButton" title="Container-Setup generieren (Dockerfile)"
+                class="icon-btn">🐳</button>
             <button type="button" id="resetButton" title="Kontext-Verlauf zurücksetzen (nicht Git)"
                 class="icon-btn">🔄</button>
             <button type="button" id="settingsButton" title="Einstellungen"
@@ -215,6 +217,7 @@
         const form = document.getElementById('buildForm');
         const buildButton = document.getElementById('buildButton');
         const resetButton = document.getElementById('resetButton');
+        const containerButton = document.getElementById('containerButton');
         const instructionInput = document.getElementById('instruction');
 
         let gitCommits = []; // zuletzt geladene Commit-Liste des aktiven Projekts
@@ -242,7 +245,7 @@
 
         function appendSystemBubble(text) {
             const div = document.createElement('div');
-            div.className = 'text-center text-xs text-gray-400 my-1';
+            div.className = 'text-center text-xs text-gray-400 my-1 whitespace-pre-wrap';
             div.textContent = text;
             chatFeed.appendChild(div);
         }
@@ -602,6 +605,27 @@
                 }
             } catch (err) {
                 console.error('Reset failed:', err);
+            }
+        };
+
+        containerButton.onclick = async () => {
+            containerButton.disabled = true;
+            try {
+                const response = await fetch('/generate-container', { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok || !data.ok) {
+                    appendSystemBubble('Container-Setup: ' + (data.error || 'Fehlgeschlagen.'));
+                    return;
+                }
+                appendSystemBubble(
+                    'Container-Setup generiert: ' + data.dateien.join(', ') +
+                    '\nStart: ' + data.hinweis
+                );
+            } catch (err) {
+                console.error('Container-Generierung fehlgeschlagen:', err);
+                appendSystemBubble('Container-Setup: Anfrage fehlgeschlagen.');
+            } finally {
+                containerButton.disabled = false;
             }
         };
 
