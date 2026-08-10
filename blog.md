@@ -5098,6 +5098,219 @@ lieferte die echte Flask-Antwort. Beide Test-Container und -Images
 danach wieder entfernt, nur das Ergebnis (die generierten Dateien in
 den echten Projekten) blieb.
 
+## 61. Ein Projektname kollidiert, und /refine bekommt seine eigene Haertung nachgereicht
+
+Ein viertes Spiel ("Neon Invaders", Space-Invaders-Prinzip) sollte als
+neues Projekt entstehen -- und legte sofort zwei echte, unabhaengige
+Luecken offen.
+
+**Erstens: `/projects` (POST) legt ein Projekt NIE wirklich neu an.**
+`os.makedirs(..., exist_ok=True)` schluckt eine bereits bestehende
+gleichnamige Verzeichnisstruktur stillschweigend -- es gab bereits ein
+"spaceinvaders" aus einer fruehreren Session mit echter Historie (ein
+Basis-Build UND ein spaeterer Bugfix-Commit). po.py's eigener
+Projekt-Steckbrief las diese bestehenden Dateien korrekt und
+formulierte den Auftrag entsprechend als "erweitere das Bestehende" um
+-- fachlich richtig, aber nicht das, was hier gewollt war. Kein Datenverlust
+(git init auf einem bestehenden Repo ist ein sicherer No-Op), aber eine
+echte Ueberraschung. Geloest durch einen simplen Namenswechsel
+("spaceinvaders2") statt eines Codefixes -- der Nutzer entscheidet hier
+bewusst per Nachfrage, nicht automatisch.
+
+**Zweitens, wichtiger: `/refine` nutzte die eigene Haertung von po.py
+nicht.** Ein Format-Aussetzer des Modells (decision "spec" ohne
+zugehoerigen summary-Block) liess die Web-Route hart fehlschlagen --
+obwohl genau dieser Fall laengst durch `refine_retrying()` (automatische
+Wiederholung bei als "retryable" markierten Protokollfehlern, Kapitel
+58) abgefangen wird. Der Grund: `/refine` rief bislang direkt `po.refine()`
+auf, nicht den gehaerteten Wrapper -- nur der CLI-Pfad (`po.py`'s eigene
+`_main()`) profitierte von der Haertung. Fix: eine Zeile, `refine()` durch
+`refine_retrying()` ersetzt. Live verifiziert: derselbe Wunsch, erneut
+gesendet, ergab sofort eine saubere Spezifikation.
+
+Das fertige Spiel selbst: 47 Anfragen, $1,44 -- spuerbar teurer als die
+vorherigen drei (Bunker-Abnutzung, Wellen-Skalierung, Alien-KI-Feuer sind
+mehr Zustand als ein einzelnes Canvas-Spiel ohne solche Wechselwirkungen).
+Live gespielt und verifiziert: Punktestand stieg korrekt bei Treffern,
+Formation und Bunker rendern wie spezifiziert, das Ruecksende-Feuer der
+Aliens ist sichtbar.
+
+## 62. SEO Insight: ein Praxis-Realitaetscheck fuer "mc.py macht das schon" -- drei weitere echte Bugs
+
+Der bisher ambitionierteste Auftrag: "ein deutlich besseres SEO-Tool,
+das du selbst gestalten darfst" plus feste Anforderungen (Flask+SQLite-
+Verlauf, Diagramme, alte Ergebnisse laden/loeschen). po.py's Antwort war
+kein Minimal-Formular, sondern eine durchdachte Spezifikation inklusive
+SSRF-Schutz, deterministischer Score-Berechnung, Zeitvergleich derselben
+URL ueber mehrere Analysen und gemockten Tests (keine echten Netzwerk-/
+LLM-Aufrufe in der Testsuite) -- ohne dass ich das im Detail vorgeben
+musste.
+
+Der Bau selbst (40 Anfragen, $1,38 fuer die grosse Version) war beeindruckend
+sorgfaeltig: SSRF-Pruefung inklusive Redirect-Ketten, echte Browser-Tests
+via Playwright wo verfuegbar. Aber "beobachte bitte ob mc.py auch alles
+optimal macht" (explizit gebeten, nicht nur zu vertrauen) foerderte drei
+echte, unabhaengig verifizierte Luecken zutage -- keine davon geraten:
+
+**1. Ein DNS-Rebinding-Loch in der eigenen SSRF-Absicherung.**
+`validate_public_url()` loeste den Hostnamen EINMAL auf, um die IP zu
+pruefen -- aber `requests.get()` loest denselben Hostnamen beim
+tatsaechlichen Verbindungsaufbau ERNEUT auf. Ein Angreifer mit Kontrolle
+ueber die DNS-Antwort (kurze TTL) koennte beim Check eine oeffentliche IP
+liefern und Sekunden spaeter beim echten Connect eine private -- eine
+bekannte, reale SSRF-Umgehungstechnik. Fix (durch mc.py selbst, nach
+praeziser Auftragsbeschreibung): ein eigener `HTTPAdapter`/Connection-Pool,
+der die bereits gepruefte, NUMERISCHE IP direkt anwaehlt (kein Hostname,
+keine erneute Aufloesung moeglich), TLS-SNI aber weiterhin gegen den
+echten Hostnamen validiert. Jede Weiterleitung wird einzeln neu geprueft
+und gepinnt. Ein Test prueft das explizit: `socket.getaddrinfo` darf beim
+eigentlichen Verbindungsaufbau NIE aufgerufen werden (`pytest.fail`, falls
+doch) -- verifiziert, nicht nur gelesen.
+
+**2. Eine Luecke, die zwei Seiten nie voneinander wussten.** mc.py kannte
+vibelove's Backend-Konvention (`backend/vibelove-backend.json`, fester
+Port 5001) UEBERHAUPT NICHT -- nur vibelove's eigene Erkennung setzte sie
+voraus. Ein generiertes Flask-Backend waehlte deshalb einen eigenen Port
+und legte kein Manifest an. Nur EIN frueheres Projekt (von Hand
+nachtraeglich ergaenzt) erfuellte die Konvention zufaellig. Fix: die
+`/build`-Zusatzanweisung (dieselbe Stelle, die schon die frontend/-
+Konvention lehrt) beschreibt jetzt auch diese. Aber selbst MIT Manifest
+haette die Vorschau eine monolithische Anwendung (Flask mit
+serverseitig gerenderten Templates, KEIN separates Frontend) nicht
+angezeigt -- `start_vite_server()` kannte nur "Static-Frontend" und
+"Frontend + separates Backend", nicht "nur Backend, das die gesamte App
+ist". Ein neuer Fall startet den Vorschau-Server mit LEEREM static_dir --
+in diesem Modus leitet er JEDE Anfrage ans Backend weiter statt nur
+welche unter `/api/`. Live mit einer Test-Fixture verifiziert (eigener
+Flask-Mini-Server auf Port 5001): die Vorschau zeigte den echten
+Backend-Inhalt.
+
+**3. Ein "erfolgreicher" Lauf, der zwei Drittel seiner eigenen Aenderungen
+verlor.** Eine Backend-Migration (alle Dateien nach `backend/`
+verschoben) nutzte dafuer ein simples Shell-`mv`-Kommando. mc.py's
+`git_commit_run()` staged aber nur Pfade aus `TOUCHED` -- einer Liste, die
+AUSSCHLIESSLICH von `write_file`/`edit_file`-Aktionen befuellt wird.
+Dateioperationen ueber die `run`-Aktion (mv, cp, rm), die das Modell
+genauso legitim nutzen darf, tauchen dort nie auf. Ergebnis: von 19
+tatsaechlich veraenderten Dateien wurden nur 6 committet, der Rest blieb
+unversioniert liegen -- ein "erfolgreicher, sauberer Lauf" mit
+stillschweigend halb verlorener Arbeit. Fix: `git_commit_run()`/
+`git_rollback()` operieren jetzt auf dem GESAMTEN Arbeitsbaum (`git add
+-A` bzw. `git reset --hard` + `git clean -fd`) statt auf der kuratierten
+Liste -- sicher, weil `git_usable()` einen sauberen Baum beim Start jedes
+Laufs ohnehin erzwingt, jede Abweichung von HEAD also zwangslaeufig aus
+GENAU diesem Lauf stammt. Direkt gegen den realen, unvollstaendig
+committeten Zustand verifiziert: alle 19 fehlenden Aenderungen wurden
+beim erneuten Aufruf korrekt erfasst.
+
+Ein vierter, kleinerer Fund kam noch dazu, live beim ersten Aufruf im
+Browser: `/static/css/app.css` und `/static/js/app.js` lieferten 404
+durch die Vorschau, obwohl derselbe Pfad direkt am Backend (Port 5001)
+200 lieferte. Ursache: Flask registriert per Default automatisch eine
+EIGENE `/static/`-Route (auf ein Verzeichnis, das neben dem
+Vorschau-Skript gar nicht existiert) -- die fing die Anfrage ab, bevor
+sie den eigentlichen Proxy-Code je erreichte. `static_folder=None` bei
+der Flask-Instanziierung schaltet das ab.
+
+## 63. WordPress-Schreiber: Guthabenlimit, Modell-Wechsel, ein haengender Lauf -- und zwei echte mc.py-Verbesserungen daraus
+
+Der aufwendigste Einzelauftrag dieser Session: eine URL eingeben, einen
+Artikel per LLM deutlich kuerzer umschreiben lassen, das Ergebnis per
+SMTP an eine feste Adresse senden -- oder per Freitext iterativ
+ueberarbeiten. Alle Zugangsdaten (LLM-Endpoint, SMTP-Server, Passwort)
+ausschliesslich ueber Umgebungsvariablen, nichts hartkodiert, nichts in
+`.env.example` als echter Wert. Die Spezifikation von po.py war wieder
+bemerkenswert vollstaendig: SSRF-Schutz fuer den Artikelabruf, atomare
+Versand-Reservierung gegen Doppel-Klicks, Quellenangabe im Ergebnis statt
+reinem Kopieren.
+
+**Der Bau war eine Odyssee, nicht ein einzelner Lauf:**
+
+1. Der erste Versuch (OpenRouter, das teurere Modell dieser Session)
+   brach nach 34 Schritten mit HTTP 402 ab -- das Konto-/Schluessel-Limit
+   war erreicht, nicht das Guthaben insgesamt leer. Der bereits
+   geschriebene Code (Artikel-Service, LLM-Anbindung, E-Mail-Versand,
+   SQLite-Sitzungsspeicher) wurde als klar benannter Zwischenstand
+   gesichert, nicht verworfen.
+2. Ein Modellwechsel auf ein guenstigeres Modell scheiterte mit HTTP 401
+   ("User not found") -- dieses Modell war auf dem Konto/Schluessel
+   schlicht nicht verfuegbar.
+3. Fallback auf den lokalen Endpoint dieser Session, ausschliesslich per
+   Umgebungsvariablen (nie in vibelove's Einstellungsdatei geschrieben,
+   wie in den fruehen Kapiteln dieser Session festgelegt) -- direkter
+   `mc.py`-CLI-Aufruf statt ueber vibelove's `/build`, weil genau diese
+   Route den Endpoint als sichtbares CLI-Argument weitergereicht haette.
+   Dieser Lauf wurde fertig: 34 Anfragen, Live-Test per curl erfolgreich.
+
+**Aber "fertig" hielt einer echten Pruefung nicht stand.** Zwei Luecken,
+keine geraten:
+
+- **Ein echter Startfehler.** Die Backend-Dateien importierten sich
+  gegenseitig mit einem "backend."-Praefix (`from backend.config import
+  Settings`) -- aber das Manifest startet die App per `python3 app.py`
+  MIT `backend/` als Arbeitsverzeichnis, nicht dem Wurzelverzeichnis. Kein
+  Paket "backend" zu importieren, sofortiger Absturz. Reproduziert mit
+  genau dem Befehl aus dem Manifest, nicht nur per Syntaxpruefung.
+- **Deklarierte, aber nie geschriebene Tests.** `requirements.txt` listete
+  bereits `pytest`, aber es existierte keine einzige Testdatei -- die
+  urspruengliche Anforderung (SSRF-Tests, Konfigurationsfehler, gemockter
+  Erfolgsablauf, Reset, Fehlerfaelle) war schlicht nicht umgesetzt worden.
+
+**Der erste Reparaturversuch blieb haengen.** Das kleinere lokale Modell
+wiederholte beim Schreiben der Tests denselben, leicht fehlerhaften
+`old`-Text (eine fehlende schliessende Klammer) ueber zehn Schritte in
+Folge -- obwohl mc.py's `_closest_snippet()`-Mechanismus (aus einer
+FRUEHEREN Session bereits gegen genau dieses Problem gebaut) bei JEDEM
+Fehlschlag den korrekten Dateitext zum Kopieren mitschickte. Das blosse
+ANZEIGEN des richtigen Texts reichte nicht aus, um die Schleife zu
+durchbrechen -- der Lauf musste manuell abgebrochen werden.
+
+Daraus zwei echte, getestete Verbesserungen an mc.py selbst:
+
+1. **Eskalation statt endloser Wiederholung.** Ein neuer Zaehler
+   (`EDIT_FAIL_STREAK`) verfolgt aufeinanderfolgende "nicht gefunden"-
+   Fehlschlaege pro Datei. Ab dem dritten Fehlschlag IN FOLGE auf
+   derselben Datei bekommt die Fehlermeldung eine harte Zusatzanweisung:
+   nicht weiter raten, sondern per `write_file` die Datei komplett neu
+   schreiben. Die Serie wird zurueckgesetzt, sobald `old` fuer diese
+   Datei wieder gefunden wird.
+2. **Ein immer aktives Klartext-Protokoll.** Bisher gab es nur
+   `mc_verlauf.json` (JSON, nur bei `--resume` aktiv) -- ohne manuelles
+   Umleiten von stdout blieb nach einem Lauf keine lesbare Aufzeichnung
+   uebrig; genau das war noetig, um die Schleife oben ueberhaupt zu
+   diagnostizieren. Ein neuer `_Tee`-Mechanismus spiegelt stdout/stderr
+   jetzt IMMER (ANSI-Farbcodes entfernt) in `mc_run.log` im Projekt --
+   die `.log`-Endung bewusst gewaehlt, damit die in praktisch jedem
+   Projekt schon vorhandene `*.log`-Regel sie automatisch erfasst; fuer
+   den selteneren Fall eines Projekts ohne diese Regel ergaenzt ein
+   kleiner Helfer sie automatisch im `.gitignore`.
+
+Der zweite Reparaturversuch (mit beiden Verbesserungen aktiv) lief sauber
+durch: 25 Anfragen, Tests geschrieben UND ausgefuehrt (exit 0), Live-Start
+per curl verifiziert -- keine Eskalation noetig, aber die Absicherung war
+da. Der einzige verbleibende Stolperstein war meiner: der direkte
+CLI-Aufruf (fuer den lokalen Endpoint) hat, anders als vibelove's
+`/build`, keinen automatischen Sicherungs-Commit vor dem Start -- der
+Arbeitsbaum war durch den vorherigen abgebrochenen Versuch noch dreckig,
+`git_usable()` erkannte das korrekt und deaktivierte die Git-Absicherung
+fuer den GANZEN Lauf. Manuell nachgeholt, nachdem der Code selbst (8 echte
+Tests, unabhaengig in einer frischen virtuellen Umgebung nachgepruefft)
+verifiziert war.
+
+**Der echte Endtest:** ein Artikel-URL eingegeben, eine echte, sachlich
+korrekte Zusammenfassung mit Quellenangabe erhalten, bestaetigt -- und
+tatsaechlich per SMTP verschickt. Der erste Versuch schlug fehl (`535
+authentication failed`), aber nicht wegen eines App-Bugs: eine
+Bash-`source`-Anweisung interpretierte das `$` im SMTP-Passwort als
+(nicht existierende) Shell-Variable und schnitt es dadurch ab -- ein
+eigener Fehler beim manuellen Starten der App, nicht in ihrem Code. Nach
+korrektem, per Python statt Bash geladenem Environment lief der komplette
+Ablauf durch: "Die Zusammenfassung wurde erfolgreich per E-Mail
+versendet." Nebenbefund, noch offen: `requirements.txt` listet
+`python-dotenv`, aber `app.py` ruft `load_dotenv()` nie auf -- die App
+liest `.env` also nur, wenn irgendetwas ausserhalb sie explizit
+einspeist, nicht von selbst.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
