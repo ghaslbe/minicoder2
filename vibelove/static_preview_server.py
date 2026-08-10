@@ -23,7 +23,15 @@ PORT = int(sys.argv[2])
 BACKEND_PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 API_PREFIX = sys.argv[4] if len(sys.argv) > 4 else '/api/'
 
-app = Flask(__name__)
+# static_folder=None: Flask registriert sonst automatisch eine EIGENE
+# /static/<path:filename>-Route (auf ein 'static/'-Verzeichnis NEBEN diesem
+# Skript, das es hier gar nicht gibt) -- die faengt Anfragen wie
+# /static/css/app.css ab, BEVOR sie catch_all() je erreichen, und liefert
+# ihr eigenes 404 statt an das Projekt-static_dir oder das Backend
+# weiterzuleiten. Real beobachtet: ein Flask-Backend, dessen Assets (wie
+# ueblich) unter /static/ liegen, bekam dadurch 404 auf CSS/JS -- obwohl der
+# Proxy fuer jeden anderen Pfad korrekt funktionierte.
+app = Flask(__name__, static_folder=None)
 
 # Header, die bei der Weiterleitung NICHT 1:1 uebernommen werden duerfen --
 # Host/Content-Length muessen zum tatsaechlichen Ziel bzw. zur tatsaechlichen
