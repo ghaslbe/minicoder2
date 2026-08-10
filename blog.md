@@ -4920,6 +4920,184 @@ Noch nicht gebaut, aber jetzt mit einem Entwurf, der auf einer echten
 Messung beruht statt auf der Annahme, dass ein zweiter LLM-Durchlauf
 automatisch vertrauenswuerdiger ist als der erste.
 
+## 58. po.py baut jetzt Ketten -- und eine Luecke in der eigenen Git-Absicherung, zweimal gefunden
+
+Aus Kapitel 57 direkt weitergebaut: po.py kann jetzt statt eines
+einzelnen Auftrags auch einen mehrteiligen PLAN erzeugen. Jeder Schritt
+bekommt einen EIGENEN, frischen mc.py-Lauf statt eines gemeinsamen,
+wachsenden Kontexts ueber mehrere Schritte -- genau das Problem, das
+diese Session wiederholt zeigte: Details aus der Mitte einer langen
+Aufgabe gehen verloren. Der Plan wird als `mc_plan.md` abgelegt, im
+GLEICHEN Format wie mc.py's eigene interne Plan-Datei, damit auch ein
+einzelner, nicht ueber die Kette laufender mc.py-Aufruf einen offenen
+Plan ueber seine eigene Logik erkennt.
+
+Der Weg dahin ging durch drei echte, live gefundene Bugs, nicht durch
+Theorie:
+
+1. **Crash bei leerem Schritt-Block.** Ein `IndexError`, wenn ein
+   Schritt-Text leer war -- durch eine Validierung ersetzt, die einen
+   klaren, wiederholbaren Fehler statt eines Absturzes liefert.
+2. **Derselbe Schritt doppelt, einmal leer.** Manche Modelle emittieren
+   einen leeren `step-N`-Block und direkt danach denselben `step-N`
+   nochmal mit echtem Inhalt -- eine Selbstkorrektur mitten in der
+   Antwort. `findall()` behielt beide Treffer als separate Eintraege.
+   Fix: bei doppelter Nummer gewinnt der LETZTE nicht-leere Treffer.
+3. **Nicht-deterministisches Format-Versagen.** Derselbe Fehler trat bei
+   verschiedenen Zufalls-Generierungen unterschiedlich auf -- die
+   richtige Antwort war nicht, jedes moegliche Muster einzeln
+   abzufangen, sondern zu wiederholen (genau wie mc.py es fuer seine
+   eigenen Chat-Aufrufe laengst tut). Eine `retryable`-Markierung an
+   Protokollfehlern plus ein 3-Versuche-Wrapper loesten es.
+
+Der vierte Fund war der interessanteste: ein voller Testlauf (Tetris,
+zwei Schritte: Highscore-Speicher + Einstellungsdialog) lief fachlich
+einwandfrei durch, beide Punkte wurden in `mc_plan.md` korrekt
+abgehakt -- aber `git status` zeigte danach ALLES als unkommittet.
+Ursache: der Arbeitsbaum war schon zu Beginn der Kette dreckig (Rest
+aus einem frueheren Test), und mc.py's eigene Git-Absicherung verlangt
+einen SAUBEREN Baum bei JEDEM Lauf -- fand sie stattdessen offene
+Aenderungen, blieb sie fuer den GESAMTEN Lauf still deaktiviert, obwohl
+dieser selbst sauber durchlief. Exakt dasselbe Problem, das vibelove
+schon lange per `stelle_sauberen_arbeitsbaum_sicher()` loest -- diese
+Funktion wurde 1:1 nach po.py portiert, als `ensure_clean_worktree()`.
+
+Erster Fix: nur am Anfang der Kette aufgerufen. Beim naechsten Live-Test
+(diesmal Pause + Restart fuer Tetris, ein einzelner, nicht in Stufen
+zerlegter Auftrag) zeigte sich: po.py entschied sich fuer den
+Einzel-Auftrag-Pfad (`spec`), nicht fuer `plan` -- und dieser Pfad rief
+`ensure_clean_worktree()` nie auf. Der Fix deckte nur den selteneren
+Fall ab, nicht den haeufigeren. Die richtige Loesung: die Absicherung
+in `_run_mc()` selbst verlegen, den EINEN gemeinsamen Punkt, durch den
+sowohl der Einzel-Auftrag als auch jeder Kettenschritt laufen -- statt
+sie an jeder Aufrufstelle einzeln zu wiederholen.
+
+Verifiziert nicht durch Lesen, sondern durch einen echten Stresstest:
+fuenf aufeinanderfolgende Laeufe gegen ein echtes Projekt (kleine,
+harmlose Aenderungen an einer Testdatei), jeder gegen einen Endpoint
+ueber Umgebungsvariablen erreicht. Alle fuenf endeten mit "Git
+verfuegbar" statt der fruehen Fehlermeldung, alle fuenf committeten
+sauber. Erst danach als stabil betrachtet.
+
+## 59. Drei Spiele, ein Endpoint-Wechsel, drei echte Bugs: vibelove komplett durchgespielt
+
+Der bisher groesste Praxistest der ganzen Kette: du -> po.py -> mc.py,
+diesmal nicht per Kommandozeile, sondern durch vibelove selbst -- neues
+Projekt anlegen, `/refine` fuer den Produktdialog, `/build` fuer den
+eigentlichen Bau, alles gegen einen oeffentlichen Cloud-Endpoint
+(OpenRouter, Modell `openai/gpt-5.6-terra-pro`) statt der lokalen
+Modelle dieser Session. Basis-URL, Modellname und API-Key wanderten
+dabei NUR in `vibelove/mc_settings.json` -- eine Datei, die von Anfang
+an in `.gitignore` steht und nie in ein Repository gelangt.
+
+Drei Spiele in Folge, jedes ein eigenes Projekt:
+
+- **"Flatterflug"** (Flappy Bird): 17 Anfragen, $0.44. po.py lieferte
+  eine detaillierte, unaufgefordert durchdachte Spezifikation (Zustaende,
+  Kollisionslogik, Barrierefreiheit), mc.py baute sie in einem Rutsch
+  und verifizierte sich selbst per Node-VM-Sandbox mit simuliertem
+  DOM/Canvas (kein echter Browser installiert). Zwei Nachbesserungen
+  live nachgereicht -- Soundeffekte (13 Anfragen, $0.25) und ein zu
+  enger Rohrabstand (9 Anfragen, $0.15) --, jede als eigener, praezise
+  formulierter `/refine`-Durchlauf.
+- **"Wiesen-Sprung"** (Crossy-Road-Prinzip, bewusst umbenannt und ohne
+  Original-Grafiken/-Markenmaterial): 20 Anfragen, $0.70. Diesmal stand
+  tatsaechlich Playwright zur Verfuegung -- mc.py testete sich selbst
+  per echtem Headless-Chromium: Eingaben, Punktestand, Ton-Stummschaltung
+  samt `localStorage`-Persistenz nach Reload, Game-Over-Overlay,
+  Neustart. Kein simuliertes DOM diesmal, ein echter Browser.
+- **"Neon Breakout"**: Basisspiel 10 Anfragen, $0.40 -- aber OHNE
+  Commit (dazu gleich mehr). Die Nachbesserung um Spezialsteine
+  (Power-Ups fuer breiteres Paddle, Zeitlupe, Multiball) brauchte zwei
+  Anlaeufe: der erste haengte nach einer fehlgeschlagenen Pruefung
+  regungslos fest, bis vibelove's eigenes 900-Sekunden-Timeout den
+  Prozess hart beendete.
+
+Aus den drei Laeufen kamen drei echte, unabhaengig verifizierte mc.py-
+und vibelove-Bugs, keiner davon geraten:
+
+**1. Die Vorschau blieb fuer statische Spiele leer.** vibelove
+entscheidet "Vite starten oder Static-Server?" bisher allein an der
+BLOSSEN EXISTENZ eines `package.json` -- fand es eins, versuchte es
+blind `npm run dev`. Aber mc.py legt fuer reine Canvas-Spiele OHNE
+Build-Tool selbst ein `package.json` mit eigenen Skripten (`start`,
+`build`) an, ohne `dev`-Skript. Ergebnis: `npm run dev` schlug fehl,
+die Vorschau blieb leer, ohne jede Fehlermeldung. Fix: die Pruefung
+schaut jetzt tatsaechlich ins `scripts`-Feld statt nur auf die
+Dateiexistenz -- live an "Flatterflug" verifiziert (Vorschau lief
+danach sofort).
+
+**2. Ein sauberer Bau-Lauf, aber kein Commit.** Der Breakout-Basis-Lauf
+endete erfolgreich, alle Dateien korrekt auf der Platte -- aber
+`git status` zeigte sie als unversioniert, mc.py meldete "keine
+Aenderungen". Ursache: `git_commit_run()` warf den Rueckgabewert von
+`git add` einfach weg. Schlug `add` aus irgendeinem Grund fehl (die
+genaue Ursache blieb offen, vermutlich eine kurze Lock-Kontention),
+sah der folgende `git commit` nichts Gestagtes und meldete irrefuehrend
+"nichts zu committen" -- der eigentliche Fehler wurde nie sichtbar.
+Fix: der Rueckgabewert von `add` wird jetzt geprueft, ein Fehlschlag
+dort bricht mit der ECHTEN Fehlermeldung ab, statt sich hinter einem
+harmlos klingenden "keine Aenderungen" zu verstecken.
+
+**3. Ein 800-Sekunden-Stillstand ohne jede Meldung.** Der haengende
+Power-Up-Lauf war kein Zufall: manche Endpoints (OpenRouter gehoert
+dazu) schicken bei langen Anfragen periodische SSE-Keep-Alive-
+Kommentarzeilen, extra damit der Client NICHT wegen Inaktivitaet
+abbricht. Genau das setzte mc.py's Socket-Timeout (300s) bei JEDER
+Kommentarzeile zurueck -- auch wenn die eigentliche Generierung laengst
+haengt. Ohne vibelove's eigenen 900-Sekunden-Watchdog waere der Lauf
+schlicht ewig still stehen geblieben. Fix: ein eigener, unabhaengig
+von Keep-Alives gemessener Stillstands-Timeout (150s, nur echte
+SSE-Datenereignisse zaehlen als Fortschritt) -- nutzt danach dieselbe
+Retry-Logik, die fuer Netzwerkfehler laengst existiert.
+
+Alle drei Fixes liefen anschliessend gegen die bestehende Testsuite
+(185 Tests bleiben gruen) und wurden live nachgewiesen, nicht nur
+gelesen: die Vorschau tatsaechlich neu geladen, ein manueller Commit
+der verlorenen Breakout-Dateien, ein weiterer erfolgreicher Bau-Lauf
+nach dem Timeout-Fix.
+
+## 60. requirements.txt als Pflicht, dann der Container -- echt gebaut, echt gestartet
+
+Eine Nutzer-Idee direkt aus dem Spiele-Marathon: wenn vibelove schon
+ein ZIP generiert, koennte es nicht auch ein Container-Setup
+generieren? Zwei Teile, bewusst in dieser Reihenfolge umgesetzt.
+
+**Erstens die Grundlage.** mc.py las `requirements.txt` schon immer
+beim Start eines Laufs, um Abhaengigkeiten zu installieren -- aber der
+System-Prompt verlangte nirgends, dass die Datei bei einem neuen
+externen Python-Import auch tatsaechlich angelegt/aktualisiert wird.
+Neue Regel: bei jedem Import ausserhalb der Standardbibliothek wird
+`requirements.txt` gepflegt, die Version per `pip show` NACHGESCHAUT
+statt geraten. Ohne das waere jedes generierte Python-Backend
+ausserhalb von mc.py's eigenem, schon vorbereitetem Environment schlicht
+nicht lauffaehig gewesen.
+
+**Zweitens der Container selbst.** Ein neuer Knopf in vibelove
+(🐳) plus `POST /generate-container`: erkennt die Projekt-Form nach
+GENAU demselben Muster wie die Live-Vorschau selbst (dieselben
+Funktionen wie `start_vite_server()` nutzt) -- Container und lokale
+Vorschau sollen nie auseinanderlaufen. Drei Faelle: reines
+Static-Frontend -> ein `Dockerfile` mit nginx. Vite-Frontend -> ein
+Mehrstufen-Build (node baut, nginx liefert aus). Frontend UND Backend
+zusammen -> `docker-compose.yml` mit GETRENNTEN Containern statt
+einem gemeinsamen (ein Container fuer zwei Prozesse waere ohne eigenes
+Init-System fragil -- und `static_preview_server.py` macht die
+Trennung beim lokalen Testen laengst per Proxy genauso vor). Die
+generierte `nginx.conf` spiegelt exakt dessen `/api/`-Proxy-Konvention.
+
+Nicht nur gelesen, sondern echt gebaut und gestartet: Docker Desktop
+extra dafuer hochgefahren, dann `docker build` + `docker run` fuer den
+Static-Fall (das echte "Flatterflug"-Projekt, HTTP 200, `game.js`
+korrekt ausgeliefert), dann `docker compose up --build` fuer den
+kombinierten Fall gegen ein eigens angelegtes Test-Projekt mit
+echtem Flask-Backend. Der Frontend-Container erreichte den
+Backend-Container tatsaechlich ueber den nginx-Proxy per HTTP --
+`curl http://localhost:8080/api/hello` durch den Container hindurch
+lieferte die echte Flask-Antwort. Beide Test-Container und -Images
+danach wieder entfernt, nur das Ergebnis (die generierten Dateien in
+den echten Projekten) blieb.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
