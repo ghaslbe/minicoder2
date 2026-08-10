@@ -148,6 +148,9 @@ MAX_READ_FILES_BATCH = 5   # max. Dateien pro read_files-Schritt (Lesen ist
 EXPLORE_STEPS = 10         # Schrittlimit fuer isolierte Erkundungs-Laeufe
 MC_PLAN = "mc_plan.md"     # Aenderungsplan der Analyse-Phase (ueberlebt Abbrueche)
 MC_VERLAUF = "mc_verlauf.json"  # Sitzungs-Verlauf fuer --resume
+MC_LOG = "mc_run.log"      # IMMER geschriebenes Klartext-Protokoll (siehe _Tee) --
+                            # .log-Endung absichtlich: von der in praktisch jedem
+                            # Projekt schon vorhandenen '*.log'-.gitignore-Regel erfasst
 RESUME = False             # --resume: Verlauf sichern und fortsetzen
 MAX_FINISH_REJECTS = 2     # so oft wird ein verfruehtes finish zurueckgewiesen
 EXPECTED_FILES = []        # aus der Aufgabe extrahierte Dateipfade (Finish-Check)
@@ -302,6 +305,74 @@ def rl_prompt(s):
     importiert hat) und Redraws bei Zeilenumbruch, Paste oder History-
     Navigation (Pfeil hoch/runter) zeigen Reste der vorherigen Zeile."""
     return _ANSI_RE.sub(lambda m: "\001" + m.group(1) + "\002", s)
+
+
+class _Tee:
+    """Spiegelt alles, was auf einen Stream geschrieben wird, zusaetzlich
+    (ohne ANSI-Farbcodes) in eine Log-Datei IM PROJEKT -- damit nach einem
+    Lauf, egal ob erfolgreich, abgebrochen oder haengengeblieben, IMMER eine
+    vollstaendige, lesbare Aufzeichnung vorliegt, ohne dass stdout manuell
+    umgeleitet werden muss. Real noetig: genau diese manuelle Umleitung war
+    der einzige Grund, warum eine haengende Wiederholungsschleife (edit_file
+    auf derselben Datei ueber 10+ Schritte) ueberhaupt diagnostizierbar war."""
+
+    def __init__(self, stream, log_file):
+        self._stream = stream
+        self._log_file = log_file
+
+    def write(self, data):
+        self._stream.write(data)
+        try:
+            self._log_file.write(_ANSI_RE.sub("", data))
+        except (OSError, ValueError):
+            pass  # Log-Schreibfehler duerfen den eigentlichen Lauf nie stoppen
+        return len(data)
+
+    def flush(self):
+        self._stream.flush()
+        try:
+            self._log_file.flush()
+        except (OSError, ValueError):
+            pass
+
+    def isatty(self):
+        return self._stream.isatty()
+
+
+def _ensure_log_gitignored():
+    """Sorgt dafuer, dass MC_LOG nicht versehentlich committet wird, auch in
+    einem Projekt mit BEREITS bestehendem .gitignore ohne '*.log'-Regel --
+    DEFAULT_GITIGNORE (git_auto_init) deckt nur frisch von mc.py selbst
+    initialisierte Repos ab, nicht ein schon vorhandenes Git-Repo mit
+    eigenem, aelterem .gitignore. Kein eigenes .git-Verzeichnis -> nichts zu tun."""
+    if not os.path.isdir(".git"):
+        return
+    gi_path = ".gitignore"
+    try:
+        existing = open(gi_path, "r", encoding="utf-8").read() if os.path.isfile(gi_path) else ""
+        if "*.log" in existing.split() or MC_LOG in existing.split():
+            return
+        with open(gi_path, "a", encoding="utf-8") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write(f"{MC_LOG}\n")
+    except OSError:
+        pass  # best effort -- ein Fehlschlag hier darf den Lauf nicht stoppen
+
+
+def _start_run_log():
+    """Oeffnet MC_LOG im ANHAENGE-Modus (mehrere Laeufe/Versuche im selben
+    Projekt bleiben nachvollziehbar hintereinander) und spiegelt stdout UND
+    stderr hinein. Ein Fehlschlag hier (z.B. schreibgeschuetztes Verzeichnis)
+    darf den Lauf selbst nicht verhindern."""
+    _ensure_log_gitignored()
+    try:
+        log_file = open(MC_LOG, "a", encoding="utf-8")
+        log_file.write(f"\n{'=' * 70}\n{time.strftime('%Y-%m-%dT%H:%M:%S')}\n{'=' * 70}\n")
+        sys.stdout = _Tee(sys.stdout, log_file)
+        sys.stderr = _Tee(sys.stderr, log_file)
+    except OSError as e:
+        print(f"{C.DIM}(Hinweis: {MC_LOG} konnte nicht geschrieben werden: {e}){C.RESET}")
 
 
 if sys.platform == "win32" and sys.stdout.isatty():
@@ -3612,6 +3683,7 @@ __pycache__/
 dist/
 build/
 .DS_Store
+*.log
 """
 
 
@@ -4770,6 +4842,7 @@ def main():
             print(f"{C.DIM}({free} davon gratis){C.RESET}")
         return
 
+    _start_run_log()
     banner(f"mc · Mini Coding Tool  ({args.model} @ {BASE_URL})")
     if AUTO_YES:
         print(f"{C.RED}Achtung: --yes aktiv, Aktionen werden ohne Rueckfrage ausgefuehrt.{C.RESET}")
