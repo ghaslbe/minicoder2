@@ -3806,37 +3806,40 @@ def validate_written(paths):
 
 
 def git_rollback():
-    """Setzt die von mc geaenderten/angelegten Dateien auf den Stand vor dem Lauf
-    zurueck: getrackte -> auf HEAD, neu angelegte -> loeschen. Nur sicher, weil der
-    Baum beim Start sauber war (in main geprueft)."""
-    restored, removed = [], []
-    for p in sorted(set(TOUCHED)):
-        rc, _ = _git("cat-file", "-e", f"HEAD:{p}")
-        if rc == 0:
-            _git("restore", "--source=HEAD", "--staged", "--worktree", "--", p)
-            restored.append(p)
-        else:
-            try:
-                if os.path.isfile(p):
-                    os.remove(p)
-                removed.append(p)
-            except Exception:
-                pass
-    print(f"{C.GREEN}Rollback: {len(restored)} Datei(en) auf HEAD zurueckgesetzt, "
-          f"{len(removed)} neu angelegte geloescht.{C.RESET}")
+    """Setzt den GESAMTEN Arbeitsbaum auf den Stand vor dem Lauf zurueck --
+    nicht nur die per TOUCHED (write_file/edit_file) erfassten Pfade. Nur
+    sicher, weil der Baum beim Start sauber war (in main geprueft): jede
+    Abweichung von HEAD stammt zwangslaeufig aus DIESEM Lauf. Wichtig, weil
+    das Modell Dateien auch per Shell-'run' verschieben/umbenennen/loeschen
+    kann (z.B. 'mv alt.py backend/alt.py') -- TOUCHED sieht davon nichts, ein
+    rein TOUCHED-basierter Rollback wuerde solche Aenderungen unvollstaendig
+    rueckgaengig machen (halb verschobene Dateien: weder die alte Stelle
+    wiederhergestellt noch die neue entfernt)."""
+    status_before = _git("status", "--porcelain")[1]
+    n = len([line for line in status_before.splitlines() if line.strip()])
+    _git("reset", "--hard", "HEAD")
+    _git("clean", "-fd")
+    print(f"{C.GREEN}Rollback: Arbeitsbaum vollstaendig auf HEAD zurueckgesetzt "
+          f"({n} veraenderte(r) Pfad(e), inkl. per Shell verschobener/"
+          f"geloeschter Dateien).{C.RESET}")
 
 
 def git_commit_run(summary):
-    """Committet die von mc beruehrten Dateien als EINEN Sicherungspunkt — nur
-    nach einem SAUBEREN finish (nicht bei Schrittlimit/Prosa-Ende), damit die
-    Historie nicht mit Zwischenstaenden eines gescheiterten Laufs vollmuellt.
-    Das ist der Fall, der bei --yes bisher komplett ungesichert war: kein
-    Rollback-Angebot (interaktiv), aber auch kein Commit — Aenderungen waren
-    schlicht weder rueckholbar noch nachvollziehbar."""
-    paths = sorted(p for p in set(TOUCHED) if os.path.isfile(p))
-    if not paths:
+    """Committet ALLE Aenderungen dieses Laufs als EINEN Sicherungspunkt --
+    per 'git add -A' auf den GESAMTEN Arbeitsbaum, nicht nur auf die per
+    TOUCHED (write_file/edit_file) erfassten Pfade. Nur nach einem SAUBEREN
+    finish (nicht bei Schrittlimit/Prosa-Ende), damit die Historie nicht mit
+    Zwischenstaenden eines gescheiterten Laufs vollmuellt. Sicher, weil der
+    Baum beim Start sauber war: jede Abweichung von HEAD stammt zwangslaeufig
+    aus DIESEM Lauf. Wichtig, weil das Modell Dateien auch per Shell-'run'
+    verschieben/umbenennen kann (z.B. 'mv a.py backend/a.py') -- so ein Zug
+    taucht in TOUCHED nie auf. Real beobachtet: eine Backend-Migration per
+    'mv' liess mehr als die Haelfte der verschobenen Dateien unkommittet,
+    weil der alte, TOUCHED-basierte 'git add' sie schlicht nicht kannte."""
+    status_before = _git("status", "--porcelain")[1]
+    if not status_before.strip():
         return
-    add_rc, add_out = _git("add", "--", *paths)
+    add_rc, add_out = _git("add", "-A")
     if add_rc != 0:
         # Bisher stillschweigend ignoriert: schlug "git add" fehl (z.B.
         # Lock-Kontention), sah der folgende "git commit" nichts Gestagtes
@@ -3848,9 +3851,10 @@ def git_commit_run(summary):
         print(f"{C.RED}Git-Add fehlgeschlagen, kein Commit: "
               f"{add_out.strip()[:200]}{C.RESET}")
         return
+    n = len([line for line in status_before.splitlines() if line.strip()])
     rc, out = _git("commit", "-m", f"mc: {summary[:72]}")
     if rc == 0:
-        print(f"{C.GREEN}Git-Commit erstellt ({len(paths)} Datei(en)) — "
+        print(f"{C.GREEN}Git-Commit erstellt ({n} Datei(en)) — "
               f"Sicherungspunkt fuer diesen Lauf.{C.RESET}")
     else:
         print(f"{C.DIM}Kein Git-Commit (evtl. keine Aenderungen): {out.strip()[:100]}{C.RESET}")
