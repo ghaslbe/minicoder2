@@ -293,6 +293,12 @@ def test_system_prompt_lehrt_dateien_aufteilen():
     assert "Python/backend" in sp
 
 
+def test_system_prompt_lehrt_requirements_txt():
+    sp = mc.system_prompt(True)
+    assert "requirements.txt" in sp
+    assert "pip show" in sp
+
+
 def test_plan_phase_verlangt_datei_aufteilung(monkeypatch):
     monkeypatch.setattr(mc, "chat_stream", lambda messages, model: "1. Plan")
     monkeypatch.setattr("builtins.input", lambda *a: "")

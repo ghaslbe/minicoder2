@@ -3126,6 +3126,14 @@ Rules:
   (e.g. a GET endpoint) and to DELETE one (e.g. a DELETE endpoint or a
   delete control in the UI) — not a write-only store nobody can look at or
   clean up again.
+- If Python code imports a package OUTSIDE the standard library (e.g. Flask,
+  requests), create/update requirements.txt with that package, pinned to the
+  actually installed version (look it up for real via 'pip show <package>',
+  don't guess). This applies to EXISTING projects too: add a line the moment
+  a new such import appears, don't let the file go stale. You (mc.py itself)
+  already read requirements.txt at the start of every run to install
+  dependencies — an incomplete or missing file makes the project silently
+  unrunnable anywhere else.
 - Finished code runs WITHOUT debug mode (e.g. Flask: app.run without
   debug=True — the debugger allows code execution in the browser and has no
   place in a finished app).
