@@ -31,6 +31,7 @@ def _clean_state(tmp_path, monkeypatch):
     mc.TOUCHED.clear()
     mc.PLAN_POINTS.clear()
     mc.LOSS_WARNED_NAMES.clear()
+    mc.EDIT_FAIL_STREAK.clear()
     mc.EXPLORED = False
     mc.HAS_CODE = None
     yield
@@ -215,6 +216,42 @@ def test_edit_fehltreffer_liefert_aehnlichste_stelle():
     assert not ok
     assert "AEHNLICHSTE Stelle" in msg
     assert "summe + 1" in msg  # der ECHTE Dateitext zum Kopieren
+
+
+def test_edit_wiederholte_fehlschlaege_eskalieren_zu_write_file():
+    # Real beobachtet: ein Modell wiederholte denselben (leicht falschen)
+    # 'old'-Text ueber 10+ Schritte, obwohl _closest_snippet() den echten
+    # Text schon zeigte -- reines Anzeigen reichte nicht, es brauchte eine
+    # harte Anweisung zum Strategiewechsel.
+    with open("a.py", "w") as f:
+        f.write("def rechne():\n    return summe + 1\n")
+    for i in range(mc.EDIT_FAIL_ESCALATE - 1):
+        ok, msg = mc.do_edit_file({"path": "a.py",
+                                   "old": "def rechne():\n    return sume + 1",
+                                   "new": "x"})
+        assert not ok
+        assert "FOLGE-FEHLSCHLAG" not in msg, f"Eskaliert zu frueh (Versuch {i + 1})"
+    ok, msg = mc.do_edit_file({"path": "a.py",
+                               "old": "def rechne():\n    return sume + 1",
+                               "new": "x"})
+    assert not ok
+    assert "FOLGE-FEHLSCHLAG" in msg
+    assert "write_file" in msg
+
+
+def test_edit_erfolg_setzt_fehlschlagserie_zurueck():
+    with open("a.py", "w") as f:
+        f.write("def rechne():\n    return summe + 1\n")
+    for _ in range(mc.EDIT_FAIL_ESCALATE):
+        mc.do_edit_file({"path": "a.py",
+                         "old": "def rechne():\n    return sume + 1",
+                         "new": "x"})
+    assert mc.EDIT_FAIL_STREAK.get("a.py", 0) >= mc.EDIT_FAIL_ESCALATE
+    ok, msg = mc.do_edit_file({"path": "a.py",
+                               "old": "def rechne():\n    return summe + 1",
+                               "new": "def rechne():\n    return summe + 2"})
+    assert ok, msg
+    assert "a.py" not in mc.EDIT_FAIL_STREAK
 
 
 def test_edit_replace_all_fuer_umbenennung():

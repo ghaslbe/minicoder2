@@ -133,6 +133,8 @@ CLEAN_FINISH = False       # True nur bei explizitem finish (nicht Schrittlimit/
 WRITE_HISTORY = {}         # Pfad -> (letzter Inhalt, Anzahl fast identischer Wiederholungen)
 LOSS_WARNED_NAMES = set()  # (Pfad, Name) -- vom Verlust-Waechter in DIESEM Lauf schon gemeldet
 MAX_FIX_ATTEMPTS = 3       # so oft darf das Modell eine ungueltige Datei nachbessern
+EDIT_FAIL_STREAK = {}      # Pfad -> Anzahl aufeinanderfolgender edit_file-"nicht gefunden"
+EDIT_FAIL_ESCALATE = 3     # ab so vielen Fehlschlagen IN FOLGE auf derselben Datei: write_file erzwingen
 
 # Robustheit (aus dem GPU-Benchmark gelernt):
 # - Grosse write_files-Bloecke sind das Haupt-Truncation-Risiko -> Limit wird
@@ -2410,6 +2412,31 @@ def _fuzzy_edit_match(content, old, new):
     return None, None, ""
 
 
+def _edit_not_found_error(path, content, old):
+    """Baut die 'old nicht gefunden'-Fehlermeldung UND eskaliert nach
+    mehreren FOLGE-Fehlschlaegen auf DERSELBEN Datei zu einer harten
+    Anweisung, auf write_file umzusteigen. Real beobachtet: ein kleines
+    Modell wiederholte denselben (leicht fehlerhaften) 'old'-Text mit nur
+    kosmetischen Aenderungen ueber 10+ Schritte in Folge, obwohl der
+    Hinweis (die AEHNLICHSTE Stelle, siehe _closest_snippet) den korrekten
+    Text bereits zeigte -- das blosse ANZEIGEN des richtigen Texts reichte
+    nicht aus, es brauchte eine explizite Anweisung zum Strategiewechsel."""
+    EDIT_FAIL_STREAK[path] = EDIT_FAIL_STREAK.get(path, 0) + 1
+    streak = EDIT_FAIL_STREAK[path]
+    base = (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
+            f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
+            f"(Whitespace zaehlt)." + _closest_snippet(content, old))
+    if streak >= EDIT_FAIL_ESCALATE:
+        base += (f"\n\nDAS IST BEREITS DER {streak}. FOLGE-FEHLSCHLAG mit "
+                 f"edit_file auf {path} IN FOLGE. Versuche NICHT weiter, "
+                 f"'old' zu erraten oder nur leicht anzupassen — das hat "
+                 f"schon {streak - 1}x nicht funktioniert. Nutze STATTDESSEN "
+                 f"jetzt write_file, um {path} KOMPLETT neu zu schreiben "
+                 f"(den vollstaendigen, korrigierten Dateiinhalt selbst "
+                 f"erzeugen statt einen Ausschnitt zu ersetzen).")
+    return base
+
+
 def do_edit_file(args):
     """Ersetzt in einer bestehenden Datei einen exakten Textausschnitt durch einen
     neuen — es wandert nur die Aenderung ueber die Leitung, nicht die ganze Datei.
@@ -2462,13 +2489,9 @@ def do_edit_file(args):
             elif note:
                 return False, note  # eindeutige Diagnose (mehrdeutig/zu gross)
             else:
-                return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
-                               f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
-                               f"(Whitespace zaehlt)." + _closest_snippet(content, old))
+                return False, _edit_not_found_error(path, content, old)
         else:
-            return False, (f"FEHLER: der zu ersetzende Text wurde in {path} nicht "
-                           f"gefunden. Gib 'old' exakt wie im Datei-Inhalt an "
-                           f"(Whitespace zaehlt)." + _closest_snippet(content, old))
+            return False, _edit_not_found_error(path, content, old)
     if count > 1 and not replace_all:
         return False, (f"FEHLER: 'old' kommt {count}x in {path} vor — nicht eindeutig. "
                        f"Entweder den Ausschnitt groesser/eindeutiger machen, ODER — "
@@ -2477,6 +2500,7 @@ def do_edit_file(args):
                        f"NUR dem kurzen Namen als 'old' wiederholen (ein Schritt pro "
                        f"Datei statt vieler Einzel-Edits).")
 
+    EDIT_FAIL_STREAK.pop(path, None)  # 'old' wurde gefunden -- Fehlschlagserie fuer diesen Pfad vorbei
     print(f"{C.YELLOW}» edit_file{C.RESET} {C.BOLD}{path}{C.RESET} "
           f"({count}x ersetzen)" if replace_all else
           f"{C.YELLOW}» edit_file{C.RESET} {C.BOLD}{path}{C.RESET}")
@@ -3938,6 +3962,7 @@ def run_task(messages, model):
     WRITE_HISTORY.clear()
     SHELL_READS.clear()
     LOSS_WARNED_NAMES.clear()
+    EDIT_FAIL_STREAK.clear()
     RAN_SINCE_WRITE = False
     finish_rejects = 0
     parse_error_streak = 0
