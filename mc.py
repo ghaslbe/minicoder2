@@ -706,6 +706,17 @@ def _chat_once(messages, model):
         ctx = _parse_ctx_overflow(body)
         if ctx is not None:
             raise CtxOverflowError(ctx, body[:200])
+        if e.code in (401, 403):
+            # 401/403 sind bei OpenAI-kompatiblen Endpoints so gut wie immer
+            # ein Schluessel-Problem (fehlend, falsch, abgelaufen, gesperrt)
+            # -- real beobachtet: der rohe Fehlertext allein ("User not
+            # found.") liess das im ersten Moment wie ein Modell-/Konto-
+            # Zugriffsproblem aussehen, war aber schlicht ein abgelaufener
+            # API-Key. Ein expliziter Hinweis spart genau diese Fehlsuche.
+            raise SystemExit(
+                f"\n{C.RED}HTTP {e.code} vom Endpoint (vermutlich API-Key-Problem: "
+                f"fehlend, falsch, abgelaufen oder gesperrt -- pruefen/erneuern):"
+                f"{C.RESET} {body[:300]}")
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}")
     except NET_ERRORS as e:
         if parts:

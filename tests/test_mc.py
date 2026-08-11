@@ -4,10 +4,12 @@
 # Python-Code, der unabhaengig vom Modell funktionieren muss.
 
 import importlib.util
+import io
 import json
 import os
 import shutil
 import sys
+import urllib.error
 
 import pytest
 
@@ -1295,6 +1297,22 @@ _SSE_NUR_CONTENT = [
     b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
     b"data: [DONE]",
 ]
+
+
+def test_chat_once_401_nennt_api_key_als_vermutliche_ursache(monkeypatch):
+    # Real beobachtet: ein abgelaufener OpenRouter-Key lieferte 401 "User
+    # not found." -- ohne Hinweis liest sich das wie ein Konto-/Modell-
+    # Zugriffsproblem, nicht wie ein simples Key-Problem.
+    class _RaisingOpener:
+        def open(self, req, timeout=300):
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "Unauthorized", {},
+                io.BytesIO(b'{"error":{"message":"User not found.","code":401}}'),
+            )
+
+    monkeypatch.setattr(mc, "build_opener", lambda: _RaisingOpener())
+    with pytest.raises(SystemExit, match="API-Key-Problem"):
+        mc._chat_once([{"role": "user", "content": "hi"}], "m")
 
 
 def test_chat_once_erkennt_reasoning_content(monkeypatch):
