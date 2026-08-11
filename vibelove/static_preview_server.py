@@ -36,8 +36,28 @@ app = Flask(__name__, static_folder=None)
 # Header, die bei der Weiterleitung NICHT 1:1 uebernommen werden duerfen --
 # Host/Content-Length muessen zum tatsaechlichen Ziel bzw. zur tatsaechlichen
 # (evtl. veraenderten) Body-Laenge passen, sonst lehnt der Backend-Server
-# die Anfrage ab oder haengt beim Lesen.
-_HOP_BY_HOP = {'host', 'content-length', 'connection'}
+# die Anfrage ab oder haengt beim Lesen. Server/Date werden vom WSGI-Server
+# dieses Proxys selbst schon gesetzt -- 1:1 durchgereicht gaeben sie doppelt.
+_HOP_BY_HOP = {'host', 'content-length', 'connection', 'server', 'date'}
+
+
+class _NoAutoRedirect(urllib.request.HTTPRedirectHandler):
+    """Verhindert, dass urllib eine 301/302/303/307-Weiterleitung STILL
+    SELBST verfolgt. Ein klassisches Flask-Muster (POST -> redirect(...) ->
+    GET) braucht die Weiterleitung UNVERAENDERT beim eigentlichen Client
+    (Browser/curl) -- folgt der Proxy ihr stattdessen selbst, bekommt der
+    Client die FINALE Seite statt der Weiterleitung zurueck, OHNE dass
+    sein eigener Cookie-Jar je die neue Session-Cookie aus der
+    Zwischenantwort sieht. Real beobachtet: nach einem POST /generate kam
+    ueber den Proxy eine leere Startseite statt der erwarteten
+    Weiterleitung + Zusammenfassung -- der Flash-Hinweis und der neue
+    Session-Cookie gingen dabei verloren."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None  # None -> urllib wirft HTTPError mit der ORIGINAL-Antwort
+
+
+_OPENER = urllib.request.build_opener(_NoAutoRedirect)
 
 
 def _proxy(path):
@@ -51,7 +71,7 @@ def _proxy(path):
         headers=headers, method=request.method,
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _OPENER.open(req, timeout=30) as resp:
             body = resp.read()
             status = resp.status
             resp_headers = [(k, v) for k, v in resp.getheaders()
