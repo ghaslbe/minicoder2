@@ -5321,16 +5321,18 @@ Instruktionstext -- und ein Nebenbefund, der wichtiger wurde als das
 Spiel selbst: **ein sauberer Commit-Abschluss ist kein Beweis dafuer, dass
 etwas gebaut wurde.**
 
-| # | Modell | Endpoint | Ergebnis |
-|---|---|---|---|
-| 1 | `qwen/qwen3.8-max` | OpenRouter | Erste Antwort: eine einzige, sinnlose Textkaskade endend in wiederholtem "Stop Stop Stop Stop…" -- der bestehende Prosa-Waechter griff korrekt und forderte eine Aktion ein. Nach der Erholung dann ein Haenger auf Schritt 2: keine weitere Ausgabe, bis der 900-Sekunden-Timeout griff. Nichts gebaut. |
-| 2 | `qwen/qwen3.7-flash` | OpenRouter | HTTP 429 "temporarily rate-limited upstream" (Alibaba als Anbieter hinter OpenRouter) bereits nach zwei Schritten. |
-| 3 | `qwen3.7-flash` | Alibaba MaaS direkt, eigener Schluessel des Nutzers | HTTP 403 `AccessDenied.Unpurchased` -- das Modell stand zwar in der `/models`-Liste dieses Kontos, war darauf aber nicht freigeschaltet. Auflisten heisst nicht automatisch Zugriff. |
-| 4 | `qwen3.8-max` | Alibaba MaaS direkt, gleicher Schluessel | Derselbe Fehler: `AccessDenied.Unpurchased`. |
-| 5 | `qwen/qwen3.7-flash` | OpenRouter, zweiter Versuch | Nach dem Ruecksprung von Alibaba-direkt lief der Auftrag wieder an -- wurde aber auf Nutzerwunsch abgebrochen und das Projekt geloescht, bevor ein Ergebnis vorlag. |
-| 6 | `deepseek/deepseek-v4-flash-0731` | OpenRouter | Voellig zusammenhangsloser Text, keine einzige gueltige Code-Zeile: *"Bitte VomEditorWennDuDieLineZerbibstNichtKorruptionWeiterlaufB..SF watssorb!! (...) Suspect hinted sollte extra air Steinchen Codeparamente in Abhängi"*. Manuell abgebrochen. |
-| 7 | `qwen/qwen3-coder-30b-a3b-instruct` | OpenRouter | **Der gefaehrlichste Fall.** Lief sauber durch, committete mit der Meldung "Die Aufgabe ist vollstaendig umgesetzt", legte sogar eine Notizdatei mit einer plausibel klingenden Komponentenliste an (`BreakoutGame.jsx`, `GameCanvas.jsx`, `LevelManager.jsx`, …). Tatsaechlich existierte keine dieser Dateien -- `App.jsx` war das komplett unveraenderte `npm create vite`-Geruest samt "Get started"-Zaehlknopf, keine einzige Spiel-Zeile irgendwo im Projekt. Dazu ein Backend-Manifest, das ein `python3 app.py` startet, das nie geschrieben wurde. |
-| 8 | `minimax/minimax-m2.5` | OpenRouter | Erster echter Erfolg: ein tatsaechlich funktionierendes Paddle/Ball/Steine-Breakout mit Menu-, Game-Over- und Sieg-Bildschirmen sowie einem passenden Express-Backend. Ueber `npm run build` (exit 0) unabhaengig nachgeprueft, bevor es committet wurde. Der Lauf selbst kam allerdings nicht bis zum eigenen `finish` -- er brach kurz vor Schluss (beim Testen des Backend-Servers) am 900-Sekunden-Timeout ab; der Commit wurde deshalb von Hand nachgeholt, nicht von mc.py selbst. |
+| # | Modell | Endpoint | Kosten | Ergebnis |
+|---|---|---|---|---|
+| 1 | `qwen/qwen3.8-max` | OpenRouter | -- (kein Abschluss) | Erste Antwort: eine einzige, sinnlose Textkaskade endend in wiederholtem "Stop Stop Stop Stop…" -- der bestehende Prosa-Waechter griff korrekt und forderte eine Aktion ein. Nach der Erholung dann ein Haenger auf Schritt 2: keine weitere Ausgabe, bis der 900-Sekunden-Timeout griff. Nichts gebaut. |
+| 2 | `qwen/qwen3.7-flash` | OpenRouter | -- (429 sofort) | HTTP 429 "temporarily rate-limited upstream" (Alibaba als Anbieter hinter OpenRouter) bereits nach zwei Schritten. |
+| 3 | `qwen3.7-flash` | Alibaba MaaS direkt, eigener Schluessel des Nutzers | -- (403, kein Modell-Aufruf) | HTTP 403 `AccessDenied.Unpurchased` -- das Modell stand zwar in der `/models`-Liste dieses Kontos, war darauf aber nicht freigeschaltet. Auflisten heisst nicht automatisch Zugriff. |
+| 4 | `qwen3.8-max` | Alibaba MaaS direkt, gleicher Schluessel | -- | Derselbe Fehler: `AccessDenied.Unpurchased`. |
+| 5 | `qwen/qwen3.7-flash` | OpenRouter, zweiter Versuch | $0,0074 (20 Anfragen) | Nach dem Ruecksprung von Alibaba-direkt lief der Auftrag wieder an -- wurde aber auf Nutzerwunsch abgebrochen und das Projekt geloescht, bevor ein Ergebnis vorlag. |
+| 6 | `deepseek/deepseek-v4-flash-0731` | OpenRouter | -- (kein Abschluss) | Voellig zusammenhangsloser Text, keine einzige gueltige Code-Zeile: *"Bitte VomEditorWennDuDieLineZerbibstNichtKorruptionWeiterlaufB..SF watssorb!! (...) Suspect hinted sollte extra air Steinchen Codeparamente in Abhängi"*. Manuell abgebrochen. |
+| 7 | `qwen/qwen3-coder-30b-a3b-instruct` | OpenRouter | $0,0799 (16 Anfragen) | **Der gefaehrlichste Fall.** Lief sauber durch, committete mit der Meldung "Die Aufgabe ist vollstaendig umgesetzt", legte sogar eine Notizdatei mit einer plausibel klingenden Komponentenliste an (`BreakoutGame.jsx`, `GameCanvas.jsx`, `LevelManager.jsx`, …). Tatsaechlich existierte keine dieser Dateien -- `App.jsx` war das komplett unveraenderte `npm create vite`-Geruest samt "Get started"-Zaehlknopf, keine einzige Spiel-Zeile irgendwo im Projekt. Dazu ein Backend-Manifest, das ein `python3 app.py` startet, das nie geschrieben wurde. Teuerster Lauf dieser Tabelle -- fuer ein komplett falsches Ergebnis. |
+| 8 | `minimax/minimax-m2.5` | OpenRouter | -- (Timeout vor Abschluss) | Erster echter Erfolg: ein tatsaechlich funktionierendes Paddle/Ball/Steine-Breakout mit Menu-, Game-Over- und Sieg-Bildschirmen sowie einem passenden Express-Backend. Ueber `npm run build` (exit 0) unabhaengig nachgeprueft, bevor es committet wurde. Der Lauf selbst kam allerdings nicht bis zum eigenen `finish` -- er brach kurz vor Schluss (beim Testen des Backend-Servers) am 900-Sekunden-Timeout ab; der Commit wurde deshalb von Hand nachgeholt, nicht von mc.py selbst. |
+| 9 | `minimax/minimax-m2.5`, zweiter Lauf | OpenRouter | $0,0758 (32 Anfragen) | Gezielte Erweiterung AUF dem committeten Stand (Power-ups mit 4 Typen, 3 Level, Partikeleffekte) statt Neubau -- lief diesmal sauber bis `finish`, `npm run build` exit 0. Trotzdem NICHT fehlerfrei, siehe unten. |
+| 10 | `poolside/laguna-xs-2.1` | OpenRouter | $0,0349 (79 Anfragen) | Gebeten, einen echten Laufzeit-Bug zu finden und zu beheben (siehe unten) -- kam trotz der mit Abstand meisten Anfragen dieser Tabelle nicht bis zum `finish`, aenderte nur oberflaechlich eine `useEffect`-Abhaengigkeitsliste, ohne die Ursache zu beruehren. Mehr Anfragen fuehrten hier zu keinem besseren Ergebnis. |
 
 **Warum Fall 7 der eigentliche Fund dieses Kapitels ist:** mc.py's
 Finish-Check prueft, ob die in der Aufgabe genannten Dateien existieren
@@ -5355,13 +5357,91 @@ ein raetselhafter, kommentarloser Absturz aussah. Mit `--max-time 950`
 zuverlaessig auf -- kein mc.py-Bug, nur eine Race Condition in der
 eigenen Diagnose.
 
-Stand am Ende dieses Kapitels: `minimax/minimax-m2.5` liefert als
-einziges der sieben getesteten Modelle ein verifiziert echtes Ergebnis;
-ein zweiter Lauf desselben Modells, diesmal als gezielte Erweiterung
-(Power-ups, mehrere Level, Partikeleffekte) AUF dem bereits committeten
-Stand statt eines Neubaus, war zum Zeitpunkt dieses Eintrags noch aktiv.
-`z-ai/glm-5` stand als naechster Kandidat bereit, falls auch dieser
-Versuch nicht durchlief.
+**Aber auch der eine echte Erfolg (Fall 9) hatte einen echten Bug --
+unsichtbar fuer jede automatisierte Pruefung.** `npm run build` lief
+fehlerfrei durch, der Commit war sauber. Erst beim tatsaechlichen Spielen
+im Chrome-Tab (Klick auf "Start Game", Steuerung testen) zeigte die
+Konsole `ReferenceError: g is not defined` in der `draw()`-Funktion --
+das Spiel stuerzte beim allerersten gerenderten Frame ab. Die Ursache:
+`draw()` nutzte `g.paddle`/`g.balls`/... , ohne `g` in der eigenen
+Funktion zu deklarieren; nur die benachbarte `update()`-Funktion hatte
+ein lokales `const g = gameRef.current`. Ein Tippfehler-Muster, das
+weder Vite's Build noch ein Linter fangen, weil `g` im Modul-Scope
+technisch existiert (aus einer anderen Funktion) und JavaScript das erst
+zur LAUFZEIT ueber den closure-scope aufloest.
+
+Direkt selbst behoben (eine Zeile: `const g=gameRef.current;` an den
+Anfang von `draw()`), live in Chrome verifiziert, committet. Danach ein
+ZWEITER, gravierenderer Bug beim Spieltest: das Paddle reagierte
+praktisch gar nicht auf die Pfeiltasten, und Steine/Ball wirkten, als
+wuerden sie sich staendig zuruecksetzen. Ursache diesmal: `initGame(0)`
+wurde nicht in einem `useEffect`, sondern UNBEDINGT im Funktionskoerper
+der Komponente aufgerufen -- bei JEDEM Re-Render (also bei jedem
+Steintreffer, da `setScore` einen Re-Render ausloest) setzte das Paddle,
+Ball und Steine komplett zurueck. Jede Tastatureingabe wurde vom
+naechsten Treffer sofort wieder ueberschrieben.
+
+Fuer DIESEN Bug wurde bewusst nochmal ein Modell gefragt (`poolside/laguna-xs-2.1`,
+Fall 10 oben) -- mit einer Symptombeschreibung, nicht der fertigen
+Diagnose, um zu sehen, ob ein kleines Modell die Ursache selbst findet.
+Ergebnis: nein. 79 Anfragen (mit Abstand die meisten dieser Tabelle)
+ohne die eigentliche Zeile je anzuruehren. Danach direkt selbst
+behoben: ein `initializedRef`-Flag sorgt dafuer, dass `initGame(0)` nur
+beim allerersten Render laeuft. Live verifiziert (Taste gedrueckt
+gehalten, Paddle bewegt sich, Steine bleiben zerstoert, Score/Leben
+zaehlen korrekt fort) und committet -- inklusive eines kurzen Hinweises
+im Commit selbst, dass das kleine Modell zuvor daran gescheitert war.
+
+**Stand am Ende dieses Kapitels:** von zehn Modell-Versuchen lieferte
+GENAU EINER (`minimax/minimax-m2.5`, Fall 9) ein Ergebnis, das nach
+echtem Spieltest ueberhaupt lauffaehig war -- und selbst der enthielt
+einen Laufzeitfehler, den weder Build noch Commit-Erfolg zeigten. Beide
+Nachbesserungen (der Absturz-Bug, der Steuerungs-Bug) sowie eine
+anschliessende Nutzeranfrage nach mehr Ballgeschwindigkeit wurden direkt
+und ohne weiteren Modell-Lauf erledigt, jeweils live im Browser
+verifiziert vor dem Commit. `z-ai/glm-5` blieb als ungenutzter
+Kandidat uebrig.
+
+## 65. Welches Spiel mit welchem Modell -- und was hat es gekostet?
+
+Eine direkte Nutzerfrage nach dieser Session: welches Modell hat welches
+der ueber `vibelove` gebauten Spiele erzeugt, und was hat das gekostet?
+Die ehrliche Antwort verlangt eine Unterscheidung, die es vorher nicht
+gab -- **belegt** (aus Git-Commit-Trailer oder mitgeschriebenem Lauf-Log)
+gegen **erinnert** (aus dem Gespraechsverlauf, aber durch keine Datei im
+jeweiligen Projekt nachpruefbar). Der `Modell:`-Trailer aus Kapitel 64
+existiert erst seit HEUTE -- eine Pruefung `git log --all --grep="Modell:"`
+in jedem Projektverzeichnis zeigte: ausser den beiden neuesten
+Breakout-2-Commits traegt KEIN einziger Commit in KEINEM anderen Projekt
+diese Markierung. Und Kosten stehen nur dort zur Verfuegung, wo
+`mc_run.log` mitlief -- ein Feature, das erst waehrend des
+WordPress-Schreiber-Kapitels (63) entstand. Fuer die fruehen Spiele
+(Flappy Bird, Wiesen-Sprung, das erste Breakout, Neon Invaders, SEO
+Insight) existiert schlicht keine Log-Datei, aus der sich Kosten
+rekonstruieren liessen.
+
+| Projekt | Modell | Beleg | Kosten |
+|---|---|---|---|
+| Flappy Bird | vermutlich `openai/gpt-5.6-terra-pro` (OpenRouter) | **erinnert**, nicht verifiziert -- kein Log, kein Commit-Trailer | unbekannt |
+| Wiesen-Sprung (Crossy-Road-Stil) | vermutlich `openai/gpt-5.6-terra-pro` (OpenRouter) | **erinnert**, nicht verifiziert | unbekannt |
+| Neon Breakout (das ERSTE Breakout, nicht Breakout 2) | vermutlich `openai/gpt-5.6-terra-pro` (OpenRouter) | **erinnert**, nicht verifiziert | unbekannt |
+| Neon Invaders (Space-Invaders-Stil) | vermutlich `openai/gpt-5.6-terra-pro` oder `-luna` (OpenRouter) | **erinnert**, nicht verifiziert -- am unsichersten von allen, da genau in dieser Phase mehrfach das Modell gewechselt wurde | unbekannt |
+| SEO Insight (seo2) | vermutlich `openai/gpt-5.6-luna` (OpenRouter) | **erinnert**, nicht verifiziert | unbekannt |
+| WordPress-Schreiber | `gemma-4-26b-a4b-it@mxfp4` ueber den lokalen LM-Studio-Endpoint dieser Session | **belegt** durch `mc_run.log` (Modell-Banner in jeder Lauf-Kopfzeile) | kein Dollarwert (lokale Inferenz) -- Token-Summen: 236905 + 336578 Tokens ueber die zwei protokollierten Laeufe |
+| Breakout 2 (finale, spielbare Version) | `minimax/minimax-m2.5` (OpenRouter) | **belegt** durch Git-Commit-Trailer UND `mc_run.log` | $0,0758 fuer den erfolgreichen Erweiterungslauf (siehe Kapitel 64); zwei Laufzeit-Bugs danach von Hand behoben, kein weiterer Modell-Kostenpunkt |
+
+**Warum die fruehen Spiele nicht einfach "wahrscheinlich Modell X"
+behaupten:** genau das waere derselbe Fehler wie Fall 7 in Kapitel 64 --
+eine plausible Behauptung ohne Beleg als Tatsache hinstellen. Die
+Erinnerung an "terra-pro fuer die ersten drei, dann luna, dann wechselnde
+Modelle" ist wahrscheinlich ueberwiegend richtig, aber es gibt keine
+Datei in `flappybird/`, `crossyroad/`, `breakout/`, `spaceinvaders2/`
+oder `seo2/`, die das bestaetigt -- ein Blick in deren `git log` zeigt
+ausschliesslich inhaltliche Commit-Nachrichten ("Canvas-Browserspiel
+vollstaendig umgesetzt" etc.), nie das verwendete Modell. Der neue
+`Modell:`-Trailer aus diesem Kapitel behebt das fuer alle KUENFTIGEN
+Laeufe -- fuer die Vergangenheit bleibt nur die Erinnerung, klar als
+solche gekennzeichnet.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
