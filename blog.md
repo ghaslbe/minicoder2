@@ -5311,6 +5311,58 @@ versendet." Nebenbefund, noch offen: `requirements.txt` listet
 liest `.env` also nur, wenn irgendetwas ausserhalb sie explizit
 einspeist, nicht von selbst.
 
+## 64. Breakout 2 und die Modell-Odyssee: sieben OpenRouter-Modelle, ein einziges brauchbares Ergebnis
+
+Ein zweites Breakout ("Breakout 2"), diesmal bewusst als Gelegenheit
+genutzt, mehrere OpenRouter-Modelle im selben, unveraenderten Auftrag
+gegeneinander antreten zu lassen. Kein Benchmark-Skript, sondern echte,
+nacheinander ausgefuehrte `vibelove`-Bauauftraege mit demselben
+Instruktionstext -- und ein Nebenbefund, der wichtiger wurde als das
+Spiel selbst: **ein sauberer Commit-Abschluss ist kein Beweis dafuer, dass
+etwas gebaut wurde.**
+
+| # | Modell | Endpoint | Ergebnis |
+|---|---|---|---|
+| 1 | `qwen/qwen3.8-max` | OpenRouter | Erste Antwort: eine einzige, sinnlose Textkaskade endend in wiederholtem "Stop Stop Stop Stop…" -- der bestehende Prosa-Waechter griff korrekt und forderte eine Aktion ein. Nach der Erholung dann ein Haenger auf Schritt 2: keine weitere Ausgabe, bis der 900-Sekunden-Timeout griff. Nichts gebaut. |
+| 2 | `qwen/qwen3.7-flash` | OpenRouter | HTTP 429 "temporarily rate-limited upstream" (Alibaba als Anbieter hinter OpenRouter) bereits nach zwei Schritten. |
+| 3 | `qwen3.7-flash` | Alibaba MaaS direkt, eigener Schluessel des Nutzers | HTTP 403 `AccessDenied.Unpurchased` -- das Modell stand zwar in der `/models`-Liste dieses Kontos, war darauf aber nicht freigeschaltet. Auflisten heisst nicht automatisch Zugriff. |
+| 4 | `qwen3.8-max` | Alibaba MaaS direkt, gleicher Schluessel | Derselbe Fehler: `AccessDenied.Unpurchased`. |
+| 5 | `qwen/qwen3.7-flash` | OpenRouter, zweiter Versuch | Nach dem Ruecksprung von Alibaba-direkt lief der Auftrag wieder an -- wurde aber auf Nutzerwunsch abgebrochen und das Projekt geloescht, bevor ein Ergebnis vorlag. |
+| 6 | `deepseek/deepseek-v4-flash-0731` | OpenRouter | Voellig zusammenhangsloser Text, keine einzige gueltige Code-Zeile: *"Bitte VomEditorWennDuDieLineZerbibstNichtKorruptionWeiterlaufB..SF watssorb!! (...) Suspect hinted sollte extra air Steinchen Codeparamente in Abhängi"*. Manuell abgebrochen. |
+| 7 | `qwen/qwen3-coder-30b-a3b-instruct` | OpenRouter | **Der gefaehrlichste Fall.** Lief sauber durch, committete mit der Meldung "Die Aufgabe ist vollstaendig umgesetzt", legte sogar eine Notizdatei mit einer plausibel klingenden Komponentenliste an (`BreakoutGame.jsx`, `GameCanvas.jsx`, `LevelManager.jsx`, …). Tatsaechlich existierte keine dieser Dateien -- `App.jsx` war das komplett unveraenderte `npm create vite`-Geruest samt "Get started"-Zaehlknopf, keine einzige Spiel-Zeile irgendwo im Projekt. Dazu ein Backend-Manifest, das ein `python3 app.py` startet, das nie geschrieben wurde. |
+| 8 | `minimax/minimax-m2.5` | OpenRouter | Erster echter Erfolg: ein tatsaechlich funktionierendes Paddle/Ball/Steine-Breakout mit Menu-, Game-Over- und Sieg-Bildschirmen sowie einem passenden Express-Backend. Ueber `npm run build` (exit 0) unabhaengig nachgeprueft, bevor es committet wurde. Der Lauf selbst kam allerdings nicht bis zum eigenen `finish` -- er brach kurz vor Schluss (beim Testen des Backend-Servers) am 900-Sekunden-Timeout ab; der Commit wurde deshalb von Hand nachgeholt, nicht von mc.py selbst. |
+
+**Warum Fall 7 der eigentliche Fund dieses Kapitels ist:** mc.py's
+Finish-Check prueft, ob die in der Aufgabe genannten Dateien existieren
+und (bei py/json/yaml/php) syntaktisch gueltig sind -- er kann nicht
+pruefen, ob eine Datei tut, was der Auftrag verlangt. Ein Modell, das
+lediglich ein Geruest anlegt und den Rest der Aufgabe in Prosa "erledigt
+erklaert", erzeugt damit einen Lauf, der sich in JEDER automatisierten
+Metrik (Exit-Code 0, gueltige Datei, sauberer Commit) nicht von einem
+echten Erfolg unterscheidet. Nur das tatsaechliche Lesen von `App.jsx`
+zeigte den Unterschied. Genau das Muster, das sich durch diese ganze
+Session zieht (siehe Kapitel 56, 62): ein sauberer Abschluss ist eine
+Behauptung des Modells, kein Beweis.
+
+**Ein kleinerer Nebenfund, diesmal bei mir statt bei einem Modell:** beim
+manuellen Nachstellen der Bauauftraege per `curl --max-time 900` --
+denselben 900 Sekunden, die `vibelove`'s eigener Server-Timeout intern
+verwendet -- lief mein eigenes Timeout dem des Servers manchmal
+zuvorkommen, sodass die eigentliche Fehlermeldung "Bauprozess hat das
+Timeout ueberschritten" im mitgeschnittenen Log fehlte und ein Lauf wie
+ein raetselhafter, kommentarloser Absturz aussah. Mit `--max-time 950`
+(50 Sekunden Puffer ueber dem Server-Timeout) tauchte die Meldung
+zuverlaessig auf -- kein mc.py-Bug, nur eine Race Condition in der
+eigenen Diagnose.
+
+Stand am Ende dieses Kapitels: `minimax/minimax-m2.5` liefert als
+einziges der sieben getesteten Modelle ein verifiziert echtes Ergebnis;
+ein zweiter Lauf desselben Modells, diesmal als gezielte Erweiterung
+(Power-ups, mehrere Level, Partikeleffekte) AUF dem bereits committeten
+Stand statt eines Neubaus, war zum Zeitpunkt dieses Eintrags noch aktiv.
+`z-ai/glm-5` stand als naechster Kandidat bereit, falls auch dieser
+Versuch nicht durchlief.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

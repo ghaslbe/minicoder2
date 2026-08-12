@@ -999,8 +999,12 @@ def project_git_log():
         return jsonify({'commits': []})
     project_path = projekt_dir(CURRENT_PROJECT)
     try:
+        # %x1e (Record Separator) trennt Commits, %x1f (Unit Separator) die
+        # Felder INNERHALB eines Commits -- der Body (%b) kann selbst
+        # Zeilenumbrueche enthalten, ein simples splitlines() auf %s allein
+        # wuerde also reichen, aber %b braucht einen eindeutigen Endpunkt.
         result = subprocess.run(
-            ['git', 'log', '--reverse', '--pretty=format:%H%x1f%P%x1f%ci%x1f%s',
+            ['git', 'log', '--reverse', '--pretty=format:%H%x1f%P%x1f%ci%x1f%s%x1f%b%x1e',
              '-n', '100'],
             cwd=project_path, capture_output=True, text=True, timeout=15
         )
@@ -1009,16 +1013,25 @@ def project_git_log():
     if result.returncode != 0:
         return jsonify({'commits': []})
     commits = []
-    for line in result.stdout.splitlines():
-        teile = line.split('\x1f')
-        if len(teile) != 4:
+    for block in result.stdout.split('\x1e'):
+        block = block.strip('\n')
+        if not block:
             continue
-        commit_hash, eltern, datum, nachricht = teile
+        teile = block.split('\x1f')
+        if len(teile) != 5:
+            continue
+        commit_hash, eltern, datum, nachricht, body = teile
+        # Modell-Trailer, den mc.pys git_commit_run() bei Bedarf an den
+        # Commit-Body anhaengt ("Modell: <name>") -- Chat-Nachrichten koennen
+        # so nachtraeglich zeigen, mit welchem Modell dieser Lauf entstand,
+        # ohne eine zweite, parallele Chat-Historie im Server zu pflegen.
+        modell_match = re.search(r'^Modell:\s*(.+)$', body, re.MULTILINE)
         commits.append({
             'hash': commit_hash,
             'parent': eltern.split(' ')[0] if eltern else None,
             'date': datum,
             'message': nachricht,
+            'model': modell_match.group(1).strip() if modell_match else None,
         })
     return jsonify({'commits': commits})
 

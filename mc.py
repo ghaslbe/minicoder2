@@ -3931,7 +3931,7 @@ def git_rollback():
           f"geloeschter Dateien).{C.RESET}")
 
 
-def git_commit_run(summary):
+def git_commit_run(summary, model=None):
     """Committet ALLE Aenderungen dieses Laufs als EINEN Sicherungspunkt --
     per 'git add -A' auf den GESAMTEN Arbeitsbaum, nicht nur auf die per
     TOUCHED (write_file/edit_file) erfassten Pfade. Nur nach einem SAUBEREN
@@ -3959,7 +3959,15 @@ def git_commit_run(summary):
               f"{add_out.strip()[:200]}{C.RESET}")
         return
     n = len([line for line in status_before.splitlines() if line.strip()])
-    rc, out = _git("commit", "-m", f"mc: {summary[:72]}")
+    message = f"mc: {summary[:72]}"
+    if model:
+        # Modell als Trailer im Commit-BODY (nicht im Subject) -- so bleibt
+        # die Subject-Zeile (via 'git log --pretty=%s') unveraendert lesbar,
+        # waehrend Aufrufer, die den Body mitlesen (z.B. vibelove's Chat-
+        # Rekonstruktion), nachtraeglich zuordnen koennen, mit welchem
+        # Modell dieser Lauf erzeugt wurde.
+        message += f"\n\nModell: {model}"
+    rc, out = _git("commit", "-m", message)
     if rc == 0:
         print(f"{C.GREEN}Git-Commit erstellt ({n} Datei(en)) — "
               f"Sicherungspunkt fuer diesen Lauf.{C.RESET}")
@@ -4951,9 +4959,9 @@ def main():
                   f"ungueltig:{C.RESET} " + ", ".join(still_bad))
         if GIT_ROLLBACK and CLEAN_FINISH and not still_bad:
             if AUTO_YES:
-                git_commit_run(summary or "Fertig.")
+                git_commit_run(summary or "Fertig.", model=args.model)
             elif confirm("Sauberer Abschluss — Aenderungen per Git committen?"):
-                git_commit_run(summary or "Fertig.")
+                git_commit_run(summary or "Fertig.", model=args.model)
         elif GIT_ROLLBACK and not AUTO_YES:
             frage = ("Es sind ungueltige Dateien uebrig. Alle Aenderungen dieses Laufs "
                      "per Git verwerfen?" if still_bad

@@ -103,6 +103,14 @@
                 </button>
                 <button
                     type="button"
+                    onclick="openPreviewInNewWindow()"
+                    class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
+                    title="Oeffnet die Live-Vorschau in einem eigenen Browser-Tab/-Fenster"
+                >
+                    In neuem Fenster öffnen
+                </button>
+                <button
+                    type="button"
                     id="restartViteBtn"
                     onclick="restartVite()"
                     class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
@@ -271,7 +279,7 @@
             return btn;
         }
 
-        function appendAssistantBubble({ headline, rollbackTo, pending }) {
+        function appendAssistantBubble({ headline, rollbackTo, pending, model }) {
             const wrap = document.createElement('div');
             wrap.className = 'flex justify-start';
             const bubble = document.createElement('div');
@@ -283,6 +291,17 @@
                 : 'text-gray-800 whitespace-pre-wrap';
             headlineEl.textContent = headline;
             bubble.appendChild(headlineEl);
+
+            // Welches Modell diesen Lauf erzeugt hat (aus dem 'Modell:'-
+            // Trailer im Commit-Body, siehe mc.pys git_commit_run()) -- nur
+            // bei aelteren Commits VOR dieser Funktion fehlt es (dann kein
+            // Badge statt eines irrefuehrenden 'unbekannt').
+            if (model) {
+                const modelEl = document.createElement('div');
+                modelEl.className = 'text-xs text-gray-400 mt-0.5';
+                modelEl.textContent = '🤖 ' + model;
+                bubble.appendChild(modelEl);
+            }
 
             if (rollbackTo) {
                 bubble.appendChild(machRollbackButton(rollbackTo, wrap));
@@ -417,7 +436,7 @@
                     return;
                 }
                 const msg = c.message.replace(/^mc:\s*/, '');
-                appendAssistantBubble({ headline: msg, rollbackTo: c.parent, pending: false });
+                appendAssistantBubble({ headline: msg, rollbackTo: c.parent, pending: false, model: c.model });
             });
         }
 
@@ -522,6 +541,18 @@
                 assistant.headlineEl.className = summary
                     ? 'text-gray-800 whitespace-pre-wrap'
                     : 'text-red-600 whitespace-pre-wrap';
+
+                // Badge sofort zeigen (nicht erst nach dem naechsten Reload):
+                // welches Modell diesen GERADE gelaufenen Bauauftrag erzeugt
+                // hat, aus dem Einstellungsfeld ausgelesen (der Server hat
+                // exakt diesen Wert fuer den /build-Aufruf verwendet).
+                const laufendesModel = document.getElementById('settingModel')?.value;
+                if (laufendesModel) {
+                    const modelEl = document.createElement('div');
+                    modelEl.className = 'text-xs text-gray-400 mt-0.5';
+                    modelEl.textContent = '🤖 ' + laufendesModel;
+                    assistant.bubble.appendChild(modelEl);
+                }
                 // Terminal-Details bleiben bewusst aufgeklappt, auch nach
                 // Abschluss -- Nutzerwunsch: das Terminalfenster soll
                 // sichtbar bleiben, nicht automatisch verschwinden.
@@ -709,6 +740,16 @@
         const frame = document.getElementById('previewFrame');
         if (frame) {
             frame.src = frame.src;
+        }
+    }
+
+    // Oeffnet dieselbe Vorschau-URL wie das iframe in einem eigenen Tab --
+    // nuetzlich fuer Spiele/Apps, die Tastatur-Fokus, volle Fenstergroesse
+    // oder DevTools ohne den umgebenden Chat/Toolbar-Rahmen brauchen.
+    function openPreviewInNewWindow() {
+        const frame = document.getElementById('previewFrame');
+        if (frame && frame.src) {
+            window.open(frame.src, '_blank');
         }
     }
 

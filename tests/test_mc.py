@@ -918,6 +918,33 @@ def test_git_diff_summary_zeigt_aenderungen():
     assert "datei.py" in out and "Diff:" in out
 
 
+def test_git_commit_run_haengt_modell_als_trailer_an():
+    import subprocess
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                    "commit", "-qm", "start", "--allow-empty"], check=True)
+    with open("datei.py", "w") as f:
+        f.write("x = 1\n")
+    mc.git_commit_run("Feature X", model="qwen/qwen3.7-flash")
+    out = subprocess.run(["git", "log", "-1", "--pretty=%B"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "mc: Feature X" in out
+    assert "Modell: qwen/qwen3.7-flash" in out
+
+
+def test_git_commit_run_ohne_modell_kein_trailer():
+    import subprocess
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                    "commit", "-qm", "start", "--allow-empty"], check=True)
+    with open("datei.py", "w") as f:
+        f.write("x = 1\n")
+    mc.git_commit_run("Feature X")
+    out = subprocess.run(["git", "log", "-1", "--pretty=%B"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "Modell:" not in out
+
+
 def test_transcript_roundtrip_ohne_system(monkeypatch):
     monkeypatch.setattr(mc, "RESUME", True)
     msgs = [{"role": "system", "content": "S"},
