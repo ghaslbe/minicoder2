@@ -5429,6 +5429,7 @@ rekonstruieren liessen.
 | SEO Insight (seo2) | vermutlich `openai/gpt-5.6-luna` (OpenRouter) | **erinnert**, nicht verifiziert | unbekannt |
 | WordPress-Schreiber | `gemma-4-26b-a4b-it@mxfp4` ueber den lokalen LM-Studio-Endpoint dieser Session | **belegt** durch `mc_run.log` (Modell-Banner in jeder Lauf-Kopfzeile) | kein Dollarwert (lokale Inferenz) -- Token-Summen: 236905 + 336578 Tokens ueber die zwei protokollierten Laeufe |
 | Breakout 2 (finale, spielbare Version) | `minimax/minimax-m2.5` (OpenRouter) | **belegt** durch Git-Commit-Trailer UND `mc_run.log` | $0,0758 fuer den erfolgreichen Erweiterungslauf (siehe Kapitel 64); zwei Laufzeit-Bugs danach von Hand behoben, kein weiterer Modell-Kostenpunkt |
+| Breakout 3 (mit prozeduralen WebAudio-Sounds) | `openai/gpt-5.6-luna-pro` (OpenRouter) | **belegt** durch Git-Commit-Trailer UND `mc_run.log` | $0,0641 (22 Anfragen, 761769 Tokens) fuer einen sauberen Lauf in EINEM Durchgang -- inklusive einer selbst gefundenen und selbst behobenen Spielfluss-Regression ("Next Level" setzte faelschlich den erreichten Level zurueck), noch VOR dem eigenen `finish`. Live in Chrome verifiziert: Paddle reagiert sofort, keine Konsole-Fehler, echte WebAudio-Sounds (`sounds.paddle()`, `.wall()`, `.brick()`, `.win()`, `.lose()`) tatsaechlich in die Spiellogik verdrahtet, nicht nur ein UI-Schalter ohne Funktion. Bislang der sauberste Lauf dieser gesamten Modell-Reihe. |
 
 **Warum die fruehen Spiele nicht einfach "wahrscheinlich Modell X"
 behaupten:** genau das waere derselbe Fehler wie Fall 7 in Kapitel 64 --
