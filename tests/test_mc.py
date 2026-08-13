@@ -1342,6 +1342,44 @@ def test_chat_once_401_nennt_api_key_als_vermutliche_ursache(monkeypatch):
         mc._chat_once([{"role": "user", "content": "hi"}], "m")
 
 
+class _AbbruchStreamResp:
+    """Simuliert einen echten Verbindungsabbruch MITTEN im SSE-Stream (nicht
+    nur eine leere Antwort) -- ein Teil kam bereits an, dann bricht die
+    Iteration mit einem Netzwerkfehler ab."""
+
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        yield b'data: {"choices":[{"delta":{"content":"Teil"}}]}'
+        raise TimeoutError("Verbindung weg")
+
+
+class _AbbruchOpener:
+    def open(self, req, timeout=300):
+        return _AbbruchStreamResp()
+
+
+def test_chat_once_meldet_netzwerkabbruch_mitten_im_stream(monkeypatch, capsys):
+    # Regression: ein Verbindungsabbruch MITTEN im Stream (Teil-Antwort schon
+    # da) wurde bisher komplett still behandelt -- von aussen (Prozessliste,
+    # Log) ununterscheidbar von einem echten, unerklaerten Haenger. Real
+    # beobachtet: mehrere Bau-Laeufe schienen minutenlang tatenlos zu haengen,
+    # bis der aeussere 900s-Timeout griff, ohne dass je eine Netzwerkursache
+    # sichtbar wurde.
+    monkeypatch.setattr(mc, "build_opener", lambda: _AbbruchOpener())
+    text, fr = mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert text == "Teil"
+    assert fr == "net_abort"
+    out = capsys.readouterr().out
+    assert "Verbindung mitten im Antwort-Stream unterbrochen" in out
+
+
 def test_chat_once_erkennt_reasoning_content(monkeypatch):
     lines = [
         b'data: {"choices":[{"delta":{"reasoning_content":"Denk"}}]}',
@@ -1637,6 +1675,64 @@ def test_payload_messages_ohne_system_prompt_unveraendert(monkeypatch):
 
 
 # ------------ Abbruch bei leerer Antwort raeumt den Verlauf auf -------------
+
+def test_run_task_warnt_bei_mehreren_action_bloecken_pro_antwort(monkeypatch):
+    # Regression: mehrere Modelle (unabhaengig voneinander) buendelten
+    # mehrere read_file-Aufrufe in EINER Antwort als mehrere ```action
+    # Bloecke -- extract_action() fuehrt nur den ERSTEN aus, der Rest wurde
+    # bisher LAUTLOS verworfen. Ohne Rueckmeldung wiederholte das Modell
+    # denselben Bloecke-Stapel Schritt fuer Schritt, ohne je Fortschritt zu
+    # machen (real beobachtet, mehrfach).
+    with open("a.py", "w") as f:
+        f.write("A = 1\n")
+    with open("b.py", "w") as f:
+        f.write("B = 2\n")
+    erste_antwort = ('```action\n{"action":"read_file","path":"a.py"}\n```\n'
+                      '```action\n{"action":"read_file","path":"b.py"}\n```')
+    zaehler = {"n": 0}
+
+    def stream(messages, model):
+        zaehler["n"] += 1
+        if zaehler["n"] == 1:
+            return erste_antwort
+        return '```action\n{"action":"finish","summary":"fertig"}\n```'
+
+    monkeypatch.setattr(mc, "chat_stream", stream)
+    monkeypatch.setattr(mc, "LAST_REASONING_CHARS", 0)
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "aufgabe"}]
+    mc.run_task(messages, "m")
+    ergebnis_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    treffer = [c for c in ergebnis_msgs if "[Ergebnis von read_file]" in c]
+    assert treffer, "Ergebnis-Nachricht fuer read_file fehlt"
+    obs = treffer[0]
+    assert "A = 1" in obs  # nur der ERSTE Block wurde ausgefuehrt
+    assert "B = 2" not in obs  # der zweite Block wurde NICHT ausgefuehrt
+    assert "ERSATZLOS VERWORFEN" in obs
+    assert "GENAU EINEN action-Block" in obs
+
+
+def test_run_task_kein_hinweis_bei_genau_einem_action_block(monkeypatch):
+    with open("a.py", "w") as f:
+        f.write("A = 1\n")
+    erste_antwort = '```action\n{"action":"read_file","path":"a.py"}\n```'
+    zaehler = {"n": 0}
+
+    def stream(messages, model):
+        zaehler["n"] += 1
+        if zaehler["n"] == 1:
+            return erste_antwort
+        return '```action\n{"action":"finish","summary":"fertig"}\n```'
+
+    monkeypatch.setattr(mc, "chat_stream", stream)
+    monkeypatch.setattr(mc, "LAST_REASONING_CHARS", 0)
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "aufgabe"}]
+    mc.run_task(messages, "m")
+    ergebnis_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    treffer = [c for c in ergebnis_msgs if "[Ergebnis von read_file]" in c]
+    assert treffer and "ERSATZLOS VERWORFEN" not in treffer[0]
+
 
 def test_run_task_entfernt_unbeantwortete_nachricht_nach_abbruch(monkeypatch):
     # Regression: nach 3x leerer Antwort blieb die unbeantwortete

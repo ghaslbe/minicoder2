@@ -723,7 +723,16 @@ def _chat_once(messages, model):
             # Mitten im Stream abgerissen: das Vorhandene zurueckgeben —
             # die Truncation-Logik in chat_stream fordert die Fortsetzung an
             # (das eigene finish_reason stellt sicher, dass auch abgerissene
-            # Prosa OHNE offenen Fence als unvollstaendig gilt).
+            # Prosa OHNE offenen Fence als unvollstaendig gilt). Vorher
+            # STILL, ohne jede Meldung — ein echter Verbindungsabbruch mitten
+            # im Stream sah dadurch von aussen (Prozessliste/Log) ununter-
+            # scheidbar aus von einem stillen Haenger, obwohl die Ursache
+            # (Netzwerk) hier schon bekannt ist. Jetzt sichtbar wie beim
+            # NetRetryError-Zweig unten.
+            print(f"\n{C.YELLOW}⚠ Verbindung mitten im Antwort-Stream "
+                  f"unterbrochen ({net_error(getattr(e, 'reason', e))}) — "
+                  f"vorhandener Teil wird als abgeschnitten behandelt und "
+                  f"eine Fortsetzung angefordert.{C.RESET}")
             return "".join(parts), "net_abort"
         raise NetRetryError(net_error(getattr(e, "reason", e)))
     finally:
@@ -4193,6 +4202,17 @@ def run_task(messages, model):
             reply = reply[: -len(TRUNC_MARKER)]
         messages.append({"role": "assistant", "content": reply})
 
+        # Reale Beobachtung (mehrere Modelle unabhaengig voneinander, z.B.
+        # beim Versuch, mehrere read_file-Aufrufe zu buendeln): der System-
+        # Prompt verlangt GENAU EINEN Block, extract_action() fuehrt aber nur
+        # den ERSTEN aus und ignoriert weitere Bloecke KOMPLETT LAUTLOS. Ohne
+        # Rueckmeldung haelt das Modell die uebrigen Bloecke faelschlich fuer
+        # noch offen und wiederholt denselben Bloecke-Stapel Schritt fuer
+        # Schritt erneut -- ein Fortschritt von nur einer Aktion pro Schritt
+        # bei mehrfachem Kontext-Overhead, das Schrittlimit ist so schnell
+        # erreicht, ohne dass das Modell je merkt, was schiefgeht.
+        ueberzaehlige_bloecke = max(0, len(ACTION_RE.findall(reply)) - 1)
+
         action, raw = extract_action(reply)
         if action is None:
             if reply.endswith(DEGEN_MARKER):
@@ -4588,6 +4608,17 @@ def run_task(messages, model):
         ok, result = handler(action)
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
         print(f"{marker}{C.RESET} {C.DIM}{result.splitlines()[0][:100]}{C.RESET}")
+        if ueberzaehlige_bloecke:
+            result += (f"\n[HINWEIS VOM TOOL] Deine Antwort enthielt "
+                       f"{ueberzaehlige_bloecke + 1} ```action Bloecke -- nur "
+                       f"der ERSTE wurde ausgefuehrt (s.o.), die uebrigen "
+                       f"{ueberzaehlige_bloecke} wurden ERSATZLOS VERWORFEN. "
+                       f"Sende ab jetzt GENAU EINEN action-Block pro Antwort "
+                       f"(read_files buendelt bis zu 5 Lesevorgaenge in EINEM "
+                       f"Block, falls du mehrere Dateien auf einmal brauchst).")
+            print(f"{C.YELLOW}⚠ {ueberzaehlige_bloecke} zusaetzliche(r) "
+                  f"action-Block/Bloecke verworfen — Hinweis angehaengt."
+                  f"{C.RESET}")
         # Prosa-Waechter wieder scharf schalten: die Rueckfrage war bisher
         # EINMALIG pro Lauf — real beobachtet, dass ein Modell sie frueh
         # verbraucht und der Lauf viel spaeter (nach Dutzenden echten
