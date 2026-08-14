@@ -11,6 +11,8 @@ import signal
 import socket
 import select
 import zipfile
+import urllib.request
+import urllib.error
 from collections import deque
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -707,6 +709,39 @@ def refine_reset():
     return jsonify({'ok': True})
 
 
+def _preflight_key_modell_fehler(base_url, model, api_key, timeout=10):
+    """Billiger 1-Token-Testaufruf VOR dem eigentlichen (ggf. minutenlangen)
+    Bauprozess -- faengt einen falschen/fehlenden/nicht freigeschalteten
+    Schluessel fuer dieses Modell sofort ab, statt erst nach Schritt 1 eines
+    vollen mc.py-Laufs. Real beobachtet: mehrere volle Bauversuche scheiterten
+    ausschliesslich daran, jedes Mal erst nach dem Start bemerkt. Liefert nur
+    bei einem EINDEUTIGEN Auth-Fehler (401/403) eine Meldung -- alle anderen
+    Faelle (429, 5xx, Timeout, Netzwerkfehler beim Preflight selbst) geben
+    None zurueck, damit ein voruebergehendes Preflight-Problem nicht einen
+    an sich funktionierenden Bauversuch blockiert; der echte Lauf entscheidet."""
+    url = base_url.rstrip('/') + '/chat/completions'
+    body = json.dumps({"model": model, "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 1}).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                  headers={"Content-Type": "application/json"})
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+        return None
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            body_txt = e.read().decode('utf-8', 'replace')[:300]
+            return (f"Vorab-Pruefung fehlgeschlagen: HTTP {e.code} vom Endpoint fuer "
+                    f"Modell '{model}' -- vermutlich Schluessel-/Zugriffsproblem "
+                    f"(fehlend, falsch, abgelaufen oder Modell auf diesem Konto/"
+                    f"Schluessel nicht freigeschaltet): {body_txt}")
+        return None
+    except Exception:
+        return None
+
+
 @app.route('/build', methods=['POST'])
 def build():
     instruction = request.form.get('instruction', '')
@@ -715,12 +750,21 @@ def build():
     global PO_HISTORY
     PO_HISTORY = []  # der Produktdialog fuer DIESE Aufgabe ist mit dem Bauauftrag abgeschlossen
 
-    # Kontext-Text zusammenbauen aus BUILD_HISTORY (letzte 5 Einträge)
+    # Kontext-Text zusammenbauen aus BUILD_HISTORY (letzte 5 Einträge). Die
+    # Anweisung wird gekuerzt (nicht die volle, ggf. sehr lange po.py-
+    # generierte Spezifikation wiederholt) -- real beobachtet: nach mehreren
+    # gescheiterten Versuchen wuchs allein diese Wiederholung auf ueber
+    # 200000 Prompt-Token an, ohne dass der eigentliche NEUE Auftrag laenger
+    # geworden waere. Fuer Kontinuitaet reicht ein kurzer Hinweis, WAS
+    # verlangt war -- das Ergebnis (Erfolg/Fehler) bleibt vollstaendig.
     context_parts = []
     if BUILD_HISTORY:
         context_parts.append("Bisherige Bauschritte in dieser Sitzung (chronologisch, ggf. darauf aufbauen):")
         for i, entry in enumerate(BUILD_HISTORY[-5:]):
-            context_parts.append(f"{i+1}. Anweisung: {entry['instruction']}")
+            instr = entry['instruction']
+            if len(instr) > 300:
+                instr = instr[:300] + f"…[gekuerzt, ursprünglich {len(instr)} Zeichen]"
+            context_parts.append(f"{i+1}. Anweisung: {instr}")
             context_parts.append(f"   Ergebnis: {entry['result_summary']}")
     
     if context_parts:
@@ -751,6 +795,10 @@ def build():
     # Laufzeit-Einstellungen verwenden (aus MC-Settings-Dict)
     base_url = MC_SETTINGS['base_url']
     model = MC_SETTINGS['model']
+
+    preflight_fehler = _preflight_key_modell_fehler(base_url, model, MC_SETTINGS.get('api_key', ''))
+    if preflight_fehler:
+        return preflight_fehler
 
     # Bauziel: das aktive Projekt (Verzeichnis sicherstellen)
     aktives_projekt_dir = projekt_dir(CURRENT_PROJECT)
@@ -825,6 +873,12 @@ def build():
                 if proc.poll() is None:
                     proc.terminate()
                 BUILD_STATUS['laeuft'] = False
+                # Dieselbe Absicherung wie vor dem NAECHSTEN Bauauftrag, aber
+                # sofort statt erst verzoegert -- ein liegen gebliebener,
+                # nie committeter Stand (abgebrochener/gescheiterter Lauf)
+                # sass sonst unbegrenzt lange als offene Aenderung im
+                # Arbeitsbaum, falls kein weiterer Bauauftrag folgte.
+                stelle_sauberen_arbeitsbaum_sicher(aktives_projekt_dir)
                 ensure_backend_running()
                 ensure_vite_running()
                 full_output = "".join(output_lines)

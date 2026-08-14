@@ -4123,6 +4123,11 @@ def run_task(messages, model):
             messages[-1]["content"] += _ledger_block()
         _save_transcript(messages)    # --resume: Stand nach jedem Schritt sichern
         print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
+        # Kontextgroesse JEDES Schritts sichtbar machen (nicht nur bei
+        # Diagnosemeldungen) -- damit sich Verlauf und Kostentreiber einer
+        # ganzen Sitzung im mc_run.log nachvollziehen lassen, ohne raten zu
+        # muessen, ab welchem Schritt der Kontext gewachsen ist.
+        print(f"{C.DIM}{_send_size_info(messages, model)}{C.RESET}")
         try:
             reply = chat_stream(messages, model)
         except CtxOverflowError as e:
