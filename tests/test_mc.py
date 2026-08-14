@@ -1342,6 +1342,48 @@ def test_chat_once_401_nennt_api_key_als_vermutliche_ursache(monkeypatch):
         mc._chat_once([{"role": "user", "content": "hi"}], "m")
 
 
+def test_chat_once_429_ist_retryable_nicht_fatal(monkeypatch):
+    # Anders als 401/403 ist ein Rate-Limit per Definition voruebergehend --
+    # bisher trotzdem sofort fataler SystemExit statt der bestehenden
+    # NetRetryError-Wiederholung. Real gebraucht fuer strikt gedrosselte
+    # Endpoints (z.B. 10 Anfragen/Minute), wo eine knapp getaktete Anfrage
+    # sonst den GANZEN Lauf sofort beendet haette.
+    class _RaisingOpener:
+        def open(self, req, timeout=300):
+            raise urllib.error.HTTPError(
+                req.full_url, 429, "Too Many Requests", {"Retry-After": "6"},
+                io.BytesIO(b'{"error":{"message":"rate limited"}}'),
+            )
+
+    monkeypatch.setattr(mc, "build_opener", lambda: _RaisingOpener())
+    with pytest.raises(mc.NetRetryError, match="429"):
+        mc._chat_once([{"role": "user", "content": "hi"}], "m")
+
+
+def test_chat_once_retry_erholt_sich_von_429(monkeypatch):
+    # End-zu-Ende: _chat_once_retry() muss nach einem 429 tatsaechlich
+    # weiterkommen (nicht nur NetRetryError werfen) -- die zweite Anfrage
+    # gelingt, das Ergebnis wird ganz normal zurueckgegeben.
+    calls = {"n": 0}
+
+    class _FlakyOpener:
+        def open(self, req, timeout=300):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "Too Many Requests", {},
+                    io.BytesIO(b'{"error":{"message":"rate limited"}}'),
+                )
+            return _FakeStreamResp(_SSE_NUR_CONTENT)
+
+    monkeypatch.setattr(mc, "build_opener", lambda: _FlakyOpener())
+    monkeypatch.setattr(mc.time, "sleep", lambda *_a, **_k: None)
+    text, fr = mc._chat_once_retry([{"role": "user", "content": "hi"}], "m")
+    assert text == "OK"
+    assert fr == "stop"
+    assert calls["n"] == 2
+
+
 class _AbbruchStreamResp:
     """Simuliert einen echten Verbindungsabbruch MITTEN im SSE-Stream (nicht
     nur eine leere Antwort) -- ein Teil kam bereits an, dann bricht die

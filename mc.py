@@ -717,6 +717,17 @@ def _chat_once(messages, model):
                 f"\n{C.RED}HTTP {e.code} vom Endpoint (vermutlich API-Key-Problem: "
                 f"fehlend, falsch, abgelaufen oder gesperrt -- pruefen/erneuern):"
                 f"{C.RESET} {body[:300]}")
+        if e.code == 429:
+            # Rate-Limit ist per Definition VORUEBERGEHEND (im Gegensatz zu
+            # 401/403) -- bisher trotzdem sofort fataler Abbruch (SystemExit),
+            # obwohl die bestehende NetRetryError-Maschinerie (Wartezeit +
+            # Wiederholung) genau dafuer gedacht ist. Real gebraucht fuer
+            # strikt gedrosselte Endpoints (z.B. 10 Anfragen/Minute) -- dort
+            # wuerde die erste knapp getaktete Anfrage sonst den GANZEN Lauf
+            # sofort beenden, statt einfach kurz zu warten.
+            retry_after = e.headers.get("Retry-After") if e.headers else None
+            hinweis = f" (Retry-After: {retry_after}s)" if retry_after else ""
+            raise NetRetryError(f"HTTP 429 Rate-Limit erreicht{hinweis}: {body[:200]}")
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}")
     except NET_ERRORS as e:
         if parts:
