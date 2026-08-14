@@ -679,7 +679,12 @@ def _chat_once(messages, model):
                     if choices[0].get("finish_reason"):
                         finish_reason = choices[0]["finish_reason"]
                     delta = choices[0].get("delta", {})
-                    reasoning_token = delta.get("reasoning_content")
+                    # Feldname variiert je Endpoint -- "reasoning_content" ist
+                    # verbreitet (z.B. vMLX/gemma4), manche liefern stattdessen
+                    # nur "reasoning" (real beobachtet: Hetzner AI Inference
+                    # API mit GLM-5.2-NVFP4). Ohne beide Namen wuerde eine
+                    # laufende Denkphase wie eine leere Antwort aussehen.
+                    reasoning_token = delta.get("reasoning_content") or delta.get("reasoning")
                     if reasoning_token and first:
                         # Noch kein sichtbarer content -- Modell "denkt" (z.B.
                         # gemma4 ueber vMLX). Nicht Teil der Antwort, aber als

@@ -1438,6 +1438,26 @@ def test_chat_once_erkennt_reasoning_content(monkeypatch):
     assert mc.LAST_REASONING_CHARS == len("Denk") + len("en...")
 
 
+def test_chat_once_erkennt_reasoning_ohne_content_suffix(monkeypatch):
+    # Manche Endpoints (real beobachtet: Hetzner AI Inference API mit
+    # GLM-5.2-NVFP4) senden das Reasoning-Feld als "reasoning" statt
+    # "reasoning_content" -- ohne beide Namen wuerde eine laufende
+    # Denkphase wie eine leere Antwort aussehen.
+    lines = [
+        b'data: {"choices":[{"delta":{"reasoning":"1"}}]}',
+        b'data: {"choices":[{"delta":{"reasoning":".  **An"}}]}',
+        b'data: {"choices":[{"delta":{"content":"Hallo"}}]}',
+        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        b"data: [DONE]",
+    ]
+    monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(lines))
+    monkeypatch.setattr(mc, "THINK", True)
+    text, fr = mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert text == "Hallo"
+    assert fr == "stop"
+    assert mc.LAST_REASONING_CHARS == len("1") + len(".  **An")
+
+
 def test_chat_once_ohne_reasoning_zaehlt_null(monkeypatch):
     monkeypatch.setattr(mc, "build_opener", lambda: _FakeStreamOpener(_SSE_NUR_CONTENT))
     monkeypatch.setattr(mc, "THINK", True)
