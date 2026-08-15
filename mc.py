@@ -4144,6 +4144,8 @@ def run_task(messages, model):
         # ganzen Sitzung im mc_run.log nachvollziehen lassen, ohne raten zu
         # muessen, ab welchem Schritt der Kontext gewachsen ist.
         print(f"{C.DIM}{_send_size_info(messages, model)}{C.RESET}")
+        _usage_vor_schritt = USAGE["completion"]
+        _schritt_start = time.time()
         try:
             reply = chat_stream(messages, model)
         except CtxOverflowError as e:
@@ -4168,6 +4170,18 @@ def run_task(messages, model):
                   f"({_send_size_info(messages, model)}){C.RESET}")
             prune_messages(messages, keep=1)
             continue
+
+        # Generierungs-Tempo pro Schritt (nicht nur kumulativ am Lauf-Ende) --
+        # ohne das laesst sich z.B. bei einem lokalen Modell-Vergleich (LM
+        # Studio, verschiedene Quantisierungen) nicht unterscheiden, ob eine
+        # lange Laufzeit an vielen Schritten oder an langsamer Generierung
+        # pro Schritt lag.
+        _schritt_dauer = time.time() - _schritt_start
+        _neue_tokens = USAGE["completion"] - _usage_vor_schritt
+        if _neue_tokens > 0 and _schritt_dauer > 0.05:
+            print(f"{C.DIM}{_neue_tokens} Tokens generiert in "
+                  f"{_schritt_dauer:.1f}s (~{_neue_tokens / _schritt_dauer:.1f} "
+                  f"Tok/s){C.RESET}")
 
         if not reply.strip():
             # LEERE Antwort hat ZWEI moegliche Ursachen, die sich nicht
