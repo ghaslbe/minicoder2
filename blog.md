@@ -5549,6 +5549,150 @@ Varianten), nicht ein taggefrisches, dicht besetztes, drittanbieter-
 quantisiertes 27B-Modell mit aggressivem Standard-Reasoning gegen ein
 etabliertes, offizielles, MoE-basiertes Referenzmodell.
 
+## 67. MTPLX: spekulative Dekodierung fuer Qwen3.8-27B -- schneller, aber mit zwei neuen Fallstricken
+
+Nach Kapitel 66 blieb eine offene Frage: die getesteten Qwen3.8-27B-
+Varianten waren durchweg zu langsam (< 25 Tok/s), aber das Modell war
+erst wenige Stunden alt -- vielleicht lag es nicht an der Architektur
+allein, sondern daran, dass noch niemand die Zeit hatte, es sauber zu
+optimieren. Ein Hugging-Face-Blick auf die frisch eintreffenden
+Uploads zeigte tatsaechlich einen Kandidaten: `Youssofal/Qwen3.8-27B-
+MTPLX-Optimized-Speed`, veroeffentlicht von einem Projekt namens
+[MTPLX](https://github.com/youssofal/MTPLX) mit dem Versprechen "2 to
+3x speedup" durch native Nutzung des eingebauten Multi-Token-
+Prediction-Kopfs (MTP): das Modell entwirft mehrere Tokens im Voraus
+und verifiziert sie in einem gebuendelten Forward-Pass -- spekulative
+Dekodierung ohne zweites Drafter-Modell.
+
+**Schritt 1: einfach in LM Studio laden.** Das Modell laesst sich wie
+jedes andere MLX-Modell in LM Studio laden (nach einigem Hin und Her
+mit dem bekannten "insufficient system resources"-Guardrail, das
+diesmal sogar den manuellen UI-Load ablehnte -- echte Speichergrenze,
+kein API-vs-UI-Unterschied wie sonst: die Datei ist mit 20.4 GB
+spuerbar groesser als die reinen 4bit-Varianten, vermutlich weil der
+MTP-Kopf zusaetzliche Gewichte mitbringt). Ergebnis: **~8.4 Tok/s** --
+kein Unterschied zu den anderen dichten Varianten. Erwartbar: LM
+Studios normale MLX-Runtime kennt keine spekulative Dekodierung, der
+MTP-Kopf liegt einfach ungenutzt mit im Speicher.
+
+**Schritt 2: MTPLX' eigene Runtime.** `pip install mtplx` und `mtplx
+serve` starten einen eigenen OpenAI/Anthropic-kompatiblen Server auf
+`127.0.0.1:8000`, der die spekulative Dekodierung tatsaechlich nutzt.
+Vor der Installation gab es eine bewusste Bremse: ein `pip install` +
+lokaler Server von einem unbekannten Drittanbieter wird nicht einfach
+automatisch ausgefuehrt, sondern der Nutzer hat das selbst installiert
+und gestartet. Ergebnis mit MTPLX' Runtime: **~17-19 Tok/s live** laut
+Tool-eigener Anzeige -- ein echter, aber kein beworbener Sprung (das
+README nennt 58.7 Tok/s, gemessen auf einem M5 Max; auf M1/M2 waehlt
+die App automatisch einen schwaecheren FP16-Build, keinen 4bit-
+Dynamic-Quant, und die 58.7 Tok/s skaliert mit "M5 ist etwa doppelt so
+schnell wie M1" auf einen realistischeren Erwartungswert von ~29
+Tok/s -- die gemessenen 17-19 Tok/s liegen also unter dem fairen
+Erwartungswert, aber deutlich ueber der reinen LM-Studio-Ladung).
+
+**Der neue Fallstrick: Degenerations-Loop trotz Speedup.** Nach langer
+Generierungszeit kippte das Modell wiederholt in eine Wiederholungs-
+schleife -- Tausende Tokens desselben Satzfragments
+("...done finished complete terminated concluded ended stopped halted
+ceased desisted... Beyond All Doubt Period Full Stop...") in Serie,
+teils mit dem Modell, das im eigenen Reasoning-Trace *erkannte*, dass
+es in einer Schleife steckt ("I need to break out of this loop NOW"),
+und trotzdem in exakt derselben Schleife weiterlief. Der naheliegende
+Fix -- `reasoning_effort` in den MTPLX-Settings von "medium" auf "low"
+stellen -- verschlimmerte es eher: Tok/s fiel in einem Schritt auf
+4.6, und der Prozess starb irgendwann von selbst (kein Nutzer-Abbruch,
+bestaetigt -- vermutlich ein Absturz/Ressourcenproblem, ungeklaert).
+
+**Der Grund, warum "low" nicht half:** ein scharfer Hinweis brachte
+den entscheidenden Unterschied auf den Punkt: `reasoning_effort` ist
+eine *hoefliche Bitte* an das Modell, kein harter Deckel. Ein Blick in
+MTPLX' eigene Dokumentation (GitHub-Repo, `docs/`-Ordner) bestaetigte
+das: `enable_thinking`/`reasoning_effort` sind serverseitige, aber
+weiche Live-Einstellungen (`dashboard.md`: "mutable defaults ...
+enable_thinking, reasoning_parser"), keine harte Begrenzung. Es gibt
+aber einen echten harten Hebel: der Anthropic-kompatible
+`/v1/messages`-Endpoint akzeptiert ein `thinking`-Feld im Anthropic-
+Stil (`{"type": "enabled", "budget_tokens": N}`) -- ein **echtes
+Token-Limit fuers Nachdenken**, dokumentiert in `docs/api.md`.
+
+**Verifikation vor dem Umbau.** Statt mc.py direkt auf die Anthropic-
+API umzustellen (ein groesserer Eingriff -- Anthropic Messages hat ein
+anderes Request-/Streaming-Format als OpenAI Chat Completions, auf dem
+mc.py komplett aufbaut), zuerst zwei gezielte curl-Tests:
+
+1. `/v1/messages` mit `budget_tokens: 500` auf einen einfachen Prompt:
+   sauber, Thinking blieb bei 748 Zeichen, kein Loop.
+2. Derselbe Test mit dem **echten CRUD-Basis-Prompt** (alle sechs
+   Dateien in einer Antwort, kein Agenten-Loop): 145s, `stop_reason:
+   end_turn` (regulaer beendet), 3948 Tokens, **~27.2 Tok/s** -- ueber
+   der 25-Tok/s-Schwelle, sauberer Code, kein Loop.
+
+Die entscheidende Nachfrage kam dann von der anderen Seite: braucht
+man dafuer wirklich einen parallelen Anthropic-Client in mc.py, oder
+geht das auch ueber die bestehende OpenAI-Anbindung? Ein dritter Test
+zeigte: **`thinking.budget_tokens` funktioniert auch direkt auf
+`/v1/chat/completions`** (OpenAI-Stil) -- MTPLX' OpenAI-Bruecke nimmt
+das Feld als zusaetzliches, undokumentiertes Passthrough-Feld an,
+obwohl die API-Doku es nur unter `/v1/messages` auffuehrt. Kein Fork
+noetig.
+
+**Die mc.py-Aenderung.** Eine neue Einstellung `MC_THINKING_BUDGET`
+(Env-Var, nach demselben Muster wie `MC_CONTEXT_LENGTH`): wenn > 0,
+haengt `_chat_once()` dem Request `"thinking": {"type": "enabled",
+"budget_tokens": N}` an. Endpunkte, die das Feld nicht kennen,
+ignorieren es folgenlos -- dasselbe Prinzip wie beim bestehenden
+`--no-think`. Alle 183 Tests bleiben gruen. Eine Randnotiz aus dem
+Gespraech dabei: `--no-think`/`reasoning_effort=none` und
+`MC_THINKING_BUDGET` sollten nicht kombiniert werden -- sie loesen
+dasselbe Problem auf unterschiedliche Weise, und `MC_THINKING_BUDGET`
+ist der zuverlaessigere der beiden Hebel.
+
+**Der volle Agenten-Testlauf mit `MC_THINKING_BUDGET=1000`:** kein
+Wiederholungs-Loop mehr -- aber ein drittes, neues Fehlerbild. Der
+Lauf brach nach Schritt 20 von 30 mit mc.py's eigener "Antwort ohne
+Aktion"-Rueckfrage ab. Endstand: Σ 27 Requests, 260928 Tokens (242291
+prompt + 18637 completion), 2809s (~47 Minuten) -- und
+**`backend/app.py` blieb ungueltig**. Der Grund, im Code sichtbar: das
+Modell geriet mehrfach in "Antwort abgeschnitten → Fortsetzung
+anfordern"-Zyklen (der Content wurde laenger, als in einer Antwort
+passte), versuchte das per `edit_file` zu reparieren -- und an einer
+Stelle rutschte die **eigene Meta-Kommentierung des Modells als
+Dateiinhalt in `app.py`**: mitten in der `list_kunden()`-Funktion
+steht woertlich *"The previous response was cut off in the middle of
+writing backend/app.py. I need to continue exactly where it was cut
+off..."* statt Code. Die Funktion bricht dort ab, keine
+POST/PUT/DELETE-Routen mehr vorhanden. Bemerkenswert: das Modell hatte
+das Grundproblem sogar korrekt diagnostiziert ("my output is being
+TRUNCATED by length limit... I MUST keep each file's content SHORT"),
+aber die Reparatur nie sauber abgeschlossen. Die uebrigen fuenf
+Dateien waren laut Finish-Check in Ordnung.
+
+**Fazit fuer heute:** drei Iterationen, drei unterschiedliche
+Fehlerbilder -- kein einziger sauberer End-to-End-Erfolg mit diesem
+Modell, aber jede Iteration hat etwas Konkretes und Uebertragbares
+zutage gefoerdert:
+
+- Spekulative Dekodierung (MTP) bringt real etwas (~2x gegenueber
+  reiner LM-Studio-Ladung), aber lange nicht das beworbene Maximum
+  auf schwaecherer Hardware/mit dem automatisch gewaehlten FP16-Build.
+- `reasoning_effort`/`enable_thinking` sind weiche Hinweise, kein
+  Deckel -- ein Modell kann trotzdem unbegrenzt weiterdenken, sogar
+  waehrend es im eigenen Trace beschreibt, dass es das nicht sollte.
+- `thinking.budget_tokens` ist ein echter harter Deckel und
+  funktioniert bei MTPLX auch ueber die bestehende OpenAI-Bruecke --
+  jetzt als `MC_THINKING_BUDGET` fest in mc.py.
+- Der harte Deckel loest das Degenerations-Problem, verschiebt es aber
+  in eine neue Bruchstelle: mc.py's Abschneiden-dann-Fortsetzen-Logik
+  ist nicht robust genug gegen ein Modell, das mitten in einer langen
+  Datei knapp am Budget vorbeischrammt -- das ist ein moeglicher
+  naechster mc.py-Fix, aber ein eigenes Projekt fuer sich, kein
+  Modelltest mehr.
+
+Wir wechseln bewusst **nicht** vorschnell zu einem anderen Modell
+(etwa dem naheliegenden `qwen3-coder-30b-a3b-instruct`), um diesen
+Stand nicht mit einem halbfertigen Eindruck zu verwaesseren --
+Fortsetzung, wenn es weitergeht.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

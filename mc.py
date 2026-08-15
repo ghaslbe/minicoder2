@@ -251,6 +251,15 @@ FENCE = _truthy(_setting("MC_FENCE", "fence", True))
 # gegen ein Nicht-Reasoning-Modell via OpenRouter: keine Fehler).
 THINK = _truthy(_setting("MC_THINK", "think", True))
 
+# reasoning_effort/enable_thinking sind nur Hinweise, die manche Modelle
+# ignorieren (real beobachtet: Modell erkennt im eigenen Reasoning-Trace,
+# dass es in einer Wiederholungsschleife haengt, und haengt trotzdem weiter
+# fest). Manche Endpunkte (u.a. Anthropic-Messages-kompatible Bridges) kennen
+# stattdessen ein hartes Token-Limit fuers Nachdenken -- MC_THINKING_BUDGET>0
+# haengt es als thinking:{type:enabled,budget_tokens:N} an. Endpunkte, die
+# das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
+THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
+
 # Modus im interaktiven Terminal: 'dev' (Standard) haengt den vollen
 # Werkzeug-/Aktions-Prompt samt Projekt-Steckbrief an, 'chat' schaltet auf
 # reine Unterhaltung OHNE Dev-Prompt um (/mode dev|chat, ohne Argument zeigt
@@ -626,6 +635,8 @@ def _chat_once(messages, model):
         payload["reasoning_effort"] = "none"
         payload["enable_thinking"] = False
         payload["chat_template_kwargs"] = {"enable_thinking": False}
+    if THINKING_BUDGET > 0:
+        payload["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
