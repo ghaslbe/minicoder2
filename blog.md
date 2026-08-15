@@ -5444,6 +5444,111 @@ vollstaendig umgesetzt" etc.), nie das verwendete Modell. Der neue
 Laeufe -- fuer die Vergangenheit bleibt nur die Erinnerung, klar als
 solche gekennzeichnet.
 
+## 66. Qwen3.8-27B lokal ueber LM Studio: sieben Varianten, eine funktionierende -- und warum
+
+Ein neuer Benchmark-Durchgang, diesmal ganz ohne vibelove: direkt per
+`mc.py`-CLI gegen zwei LM-Studio-Server im lokalen Netz, mit derselben
+Methodik wie der alte CRUD-Personenverwaltung-Benchmark (Kapitel 17-28),
+aber fuer "Kundendaten" -- und mit dem Anlass, am selben Tag frisch
+veroeffentlichte Qwen3.8-27B-Varianten zu testen, sobald sie in LM
+Studio auftauchten.
+
+**Testaufbau:**
+
+```bash
+MC_BASE_URL="<endpoint>/v1" [MC_CONTEXT_LENGTH="<n>"] [--no-think] python3 -u mc.py \
+  --dir <projekt> --model "<modell>" --yes --max-steps 30 "<PROMPT>"
+```
+
+Basis-Aufgabe: CRUD-Webanwendung "Kundenverwaltung" (Flask+SQLite-Backend,
+React-Frontend), textgleich zum alten Personenverwaltung-Benchmark, nur
+umbenannt. Eine zweite Iteration (Tab-Navigation + Hilfeseite, die
+zusaetzlich einen NEUEN Backend-Endpoint braucht, um die aktuelle
+Kundenzahl anzuzeigen) sollte pruefen, ob ein Modell erkennt, dass ein
+reiner Frontend-Change hier nicht reicht.
+
+### Ergebnis: `qwen3.8-27b-mlx` (4bit) als einzig durchgaengig erfolgreiches Modell
+
+Basis-Lauf: 14 Requests, 139906 Tokens, 1712s, sauber committet --
+**live nachgeprueft**: Backend gestartet, alle CRUD-Endpunkte inklusive
+Fehlerfaellen (404/400) per curl durchgetestet, Frontend per `npm start`
+tatsaechlich im Browser geoeffnet und bedient. Iteration 1 (Tabs +
+Hilfeseite mit Kundenzahl): 28 Requests, 414112 Tokens, 7452s -- ebenfalls
+live verifiziert (neuer Backend-Endpoint per curl getestet, Tab-Wechsel
+im Browser tatsaechlich angeklickt, korrekte Singular-/Pluralform "1
+Kunde" vs. "N Kunden" bestaetigt).
+
+**Aber -- wichtiger Fund, weil er den Verdacht "das Modell schreibt bei
+jedem Schritt die ganze Datei neu" widerlegt:** einzelne Schritte
+brauchten bis zu 19484 bzw. 16602 Tokens (mehrere zehn Minuten). Ein
+Blick in die tatsaechlichen Aktionen zeigte: die eigentliche Code-Aenderung
+war jedes Mal ein winziger, korrekter `edit_file`-Diff (z.B. ein neuer
+Endpoint in `backend/app.py`, sauber eingefuegt). Der riesige Token-
+Verbrauch kam von einem gewaltigen Prosa-Monolog VOR der Aktion --
+das Modell erklaerte minutenlang, was es vorhatte, bevor es die (kleine,
+richtige) Aktion sendete. Kein Regenerations-Problem, sondern ein reines
+Effizienzproblem im agentischen Werkzeuggebrauch.
+
+### Alle anderen Varianten: gescheitert, aus verschiedenen echten Gruenden
+
+| Variante | Ergebnis |
+|---|---|
+| `qwen3.8-27b@mxfp4` | Laedt, ~10 Tok/s, wegen Langsamkeit abgebrochen (nicht bis zum finish) |
+| `qwen3.8-27b-mlx-textonly` (2bit) | Laedt, produzierte aber NIE sichtbaren Text -- verbrauchte trotz `--no-think` bei JEDEM Versuch das komplette Antwort-Budget beim internen "Nachdenken" (bis zu 26534 Zeichen Reasoning gesehen, 0 Zeichen Antwort). 3x in Folge, dann Abbruch durch mc.py's Leere-Antwort-Schutz. |
+| `qwen3.8-27b-oq2` (2bit) | Dieselbe Reasoning-Verschlingung, zusaetzlich wild schwankende Geschwindigkeit (0.1 bis 14.4 Tok/s je Schritt) |
+| `qwen/qwen3.8-27b`, `-holodeck-mlx`, `brooooooklyn/...`, `@6bit`, `@4bit`, `-mlx@5bit`, `-mlx@4bit` | Laden schlaegt fehl: "insufficient system resources" (bei einer Variante explizit: ~19.5-45 GB benoetigt) |
+| `qwen3.8-27b-nvfp4-mtp` | Laden schlaegt generisch fehl ("Failed to load model", ohne Ressourcen-Detail) |
+| Alle Obigen auf einer zweiten Maschine (192.168.178.191) | Dieselben Ladefehler bis auf `-oq2`, das dort ebenfalls laedt |
+
+**Zwei echte, uebertragbare Funde aus den Ladefehlern:**
+
+1. **API-getriggertes Auto-Load ist konservativer als manuelles Laden ueber die LM-Studio-Oberflaeche.** mc.py hat bereits einen dedizierten Lade-Endpunkt (`reset_model()` fuer LM Studio: entlaedt zuerst alle geladenen Modelle, laedt dann explizit neu) -- der wurde anfangs nicht genutzt, stattdessen loeste jede Chat-Anfrage an ein noch nicht geladenes Modell LM Studios eigenes, deutlich vorsichtigeres Auto-Load aus. Der explizite `POST /api/v1/models/load`-Aufruf lud dieselben Modelle teils erfolgreich, wo das implizite Auto-Load zuvor an "insufficient system resources" gescheitert war.
+2. **Vergessenes Entladen kostet den naechsten Versuch.** Ein Modell, das nach einem Testlauf im Speicher blieb (LM Studio entlaedt nicht automatisch), blockierte alle nachfolgenden Ladeversuche -- inklusive des Modells, das zuvor erfolgreich lief. Erst ein expliziter `POST /api/v1/models/unload` schuf wieder Platz. Sogar danach scheiterte ein erneutes Laden manchmal weiterhin ueber die API, gelang aber sofort ueber die LM-Studio-Oberflaeche -- ein nicht vollstaendig erklaerter Unterschied im Ressourcen-Check zwischen den beiden Lade-Pfaden.
+
+### Warum ist das lokale Referenzmodell (`gemma-4-26b-a4b-it@mxfp4`) so viel schneller und zuverlaessiger?
+
+Eine direkte Nutzerfrage, mit einer mehrteiligen, konkret begruendeten
+Antwort:
+
+1. **MoE statt dicht -- vermutlich der groesste Faktor.** `gemma-4-26b-a4b`
+   ist ein Mixture-of-Experts-Modell: "a4b" bedeutet nur ~4 Mrd. AKTIVE
+   Parameter pro Token, obwohl 26 Mrd. insgesamt geladen sind. Keine der
+   getesteten Qwen3.8-27B-Varianten traegt eine solche "aX"-Kennzeichnung
+   -- es sind dichte Modelle, bei denen ALLE 27 Mrd. Parameter fuer JEDES
+   Token berechnet werden. Das allein erklaert leicht einen 5-10x
+   Geschwindigkeitsunterschied bei aehnlicher Gesamtgroesse.
+2. **Standardmaessiges "Nachdenken".** Das Hugging-Face-Modellkaertchen
+   von Qwen3.8-27B bestaetigt `reasoning_effort=xhigh` als Standard --
+   das Modell denkt per Voreinstellung viel nach. Real beobachtet: das
+   komplette Antwort-Budget wird manchmal ausschliesslich fuers
+   Nachdenken verbraucht, bevor je sichtbarer Text entsteht -- und
+   `--no-think` wurde vom lokalen MLX-Serving-Stack nicht zuverlaessig
+   respektiert. Gemma-4 hat dieses aggressive Standard-Nachdenken nicht.
+3. **Reife der Quantisierung.** `gemma-4-26b-a4b-it@mxfp4` ist Googles
+   EIGENE, offizielle Quantisierung. Jede getestete Qwen3.8-27B-Variante
+   war eine Drittanbieter-Konvertierung einzelner, kleiner Publisher
+   ("Vontra", "lukaskremla", "brooooooklyn") eines am selben Tag frisch
+   veroeffentlichten Modells -- also bestenfalls Stunden alt. Ein
+   Hugging-Face-Katalogabgleich (`models?other=base_model:quantized:
+   Qwen/Qwen3.8-27B`) zeigt: es gibt eine offizielle `Qwen/Qwen3.8-27B-FP8`,
+   aber FP8 ist ein CUDA/NVIDIA-orientiertes Format, das Apples MLX-
+   Runtime (auf der LM Studio hier laeuft) vermutlich gar nicht laden
+   kann. Der naechstbeste, tatsaechlich MLX-taugliche Kandidat waere
+   `mlx-community/Qwen3.8-27B-4bit` -- ebenfalls Drittanbieter, aber von
+   der etablierten, eng an Apples eigenes `mlx-lm`-Tooling angelehnten
+   Sammelorganisation statt einzelner Hobby-Publisher.
+4. **Passt das Modell tatsaechlich in den Speicher?** Weil MoE pro Token
+   weniger aktives Rechnen braucht, passt Gemma-4 komfortabel dort hinein,
+   wo die meisten dichten Qwen3.8-27B-Varianten schon beim Laden an
+   "insufficient system resources" scheiterten.
+
+**Fazit:** kein Beleg dafuer, dass Qwen als Modellfamilie schlecht waere
+-- sondern ein fairer Vergleich haette ein gleichwertig reifes,
+idealerweise MoE-basiertes Qwen-Modell gebraucht (etwa eine der "a3b"-
+Varianten), nicht ein taggefrisches, dicht besetztes, drittanbieter-
+quantisiertes 27B-Modell mit aggressivem Standard-Reasoning gegen ein
+etabliertes, offizielles, MoE-basiertes Referenzmodell.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
