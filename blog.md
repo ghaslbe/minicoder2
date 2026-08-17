@@ -5693,6 +5693,88 @@ Wir wechseln bewusst **nicht** vorschnell zu einem anderen Modell
 Stand nicht mit einem halbfertigen Eindruck zu verwaesseren --
 Fortsetzung, wenn es weitergeht.
 
+## 68. Der Architektur-Verdacht bestaetigt sich: qwen3.6-35b-moe ist tatsaechlich schnell
+
+Kapitel 66 endete mit einer Vermutung statt einem Beleg: der
+Geschwindigkeitsunterschied zu Gemma-4 liege vermutlich an der
+Architektur (dicht vs. MoE), aber ein direkter, echter MoE-Vergleich
+innerhalb der Qwen-Familie fehlte noch. Ein zufaelliger Fund im
+lokalen LM-Studio-Katalog lieferte ihn nach: `qwen3.6-35b-moe` --
+namentlich zwar Version 3.6 statt 3.8 (nach der eigenen Regel aus
+Kapitel 66 eigentlich "kein echtes 3.8", aber als reiner
+Architektur-Vergleichspunkt trotzdem aufschlussreich) und mit dem
+entscheidenden Unterschied: ein echtes `-moe`-Suffix im Namen, 35B
+Gesamtparameter, von denen nur ein Bruchteil pro Token aktiv ist.
+
+**Erster Versuch:** stabile 35-53 Tok/s ueber 23 Schritte hinweg --
+mit Abstand das schnellste bisher getestete Modell dieser
+Groessenordnung. Dann, bei Schritt 24, dasselbe Reasoning-Budget-Muster
+wie bei den dichten Varianten: leere Antwort trotz 6274 Zeichen
+Reasoning. Der Prozess haengte sich an genau dieser Stelle fest (kein
+Nutzer-Abbruch -- der Lauf wurde bewusst gestoppt, um am naechsten Tag
+erneut anzusetzen, das Notebook diesmal am Netzteil statt im
+Akkubetrieb).
+
+**Zweiter Versuch, gleicher Prompt, gleiches Modell, Notebook am
+Netzteil:** diesmal lief der komplette Basis-Auftrag glatt durch. Σ 29
+Requests, 308493 Tokens (289130 prompt + 19363 completion), 557
+Sekunden (~9,3 Minuten) bis zum sauberen `finish` samt Git-Commit.
+Tok/s durchweg im Bereich 25-53, meist 35-50 -- der erste Lauf im
+gesamten Qwen3.x-Vergleich, bei dem die Geschwindigkeit *durchgehend*
+ueber der eigenen 25-Tok/s-Schwelle blieb, nicht nur in einzelnen
+Schritten. Ob das am Netzteil lag (kein Throttling) oder schlicht
+Lauf-zu-Lauf-Varianz war, laesst sich aus einem einzelnen Wiederholungs-
+lauf nicht sicher trennen -- aber das Netzteil hat der reinen
+Geschwindigkeit jedenfalls nicht geschadet.
+
+**Unterwegs zwei Formatfehler, die mc.py selbst abgefangen hat:**
+einmal wurden mehr Dateien in einem `write_files`-Block angekuendigt,
+als Content-Bloecke folgten, einmal versuchte das Modell sechs Dateien
+in einem einzigen Block zu schreiben (mc.py erlaubt maximal drei, als
+Schutz vor abgeschnittenen Antworten) -- beide Male hat das Modell die
+Fehlermeldung korrekt verstanden und im naechsten Schritt sauber
+korrigiert, ohne in einen Loop zu geraten.
+
+**Die Qualitaetspruefung, wie in der Methodik festgelegt: nicht dem
+Selbstbericht glauben, sondern nachsehen.** Der `finish`-Text des
+Modells behauptete "Backend ... Laeuft auf Port 5010" und "Frontend ...
+Laeuft auf Port 301" -- zwei Formulierungen, die beim Lesen sofort
+auffielen, weil der Prompt explizit Port 5000 verlangt hatte. Ein
+Blick in den echten Code bestaetigte den Verdacht und praezisierte
+ihn:
+
+- **Backend laeuft tatsaechlich auf Port 5010**, nicht auf den
+  geforderten 5000. Das Frontend spricht das ueber einen
+  Vite-Dev-Server-Proxy (`/api` → `http://localhost:5010`) relativ
+  an, nicht -- wie im Prompt verlangt -- absolut per
+  `http://localhost:5000`. Funktioniert in sich konsistent, ist aber
+  eine echte Abweichung vom Auftrag.
+- **Frontend laeuft auf Port 3001**, nicht "301" -- selbst die
+  Kurzfassung im eigenen Abschlussbericht war ungenau.
+- **Der Prompt verlangte explizit "KEINE npm- oder pip-
+  Installation"** ("Lege nur Dateien an"). Trotzdem lag ein
+  vollstaendiger `frontend/node_modules/`-Ordner (42 MB) im Projekt --
+  das Modell hat waehrend seiner eigenen Verifikation offenbar
+  `npm install` ausgefuehrt, entgegen der Anweisung.
+
+Live-Test aller vier CRUD-Operationen (GET/POST/PUT/DELETE) direkt
+gegen das Backend bestaetigte: funktional korrekt, keine kaputten
+Endpunkte. Eine kleine Randbeobachtung dabei: die PUT-Antwort gibt nur
+`id` und `name` zurueck, nicht die unveraendert gebliebenen Felder
+(`adresse`, `telefon`, `email`) -- moeglicherweise harmlos (die
+Datenbank selbst bleibt korrekt), aber nicht weiter verfolgt.
+
+**Fazit:** der Architektur-Verdacht aus Kapitel 66 ist bestaetigt --
+ein echtes MoE-Modell aus derselben Modellfamilie ist tatsaechlich
+durchgehend schnell genug, wo saemtliche dichten Qwen3.8-27B-Varianten
+scheiterten. Aber "schnell" ist nicht gleich "folgt der Aufgabe
+exakt": zwei konkrete, durch Code-Lektuere statt Selbstbericht
+gefundene Abweichungen (falscher Port, verbotene Installation) zeigen,
+dass Geschwindigkeit allein kein Qualitaetsbeleg ist -- die in Kapitel
+17 festgelegte Regel ("DU guckst dir die Qualitaet an", nicht das
+Modell selbst) bleibt der entscheidende Schritt, gerade wenn ein Lauf
+auf den ersten Blick glatt durchlief.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
