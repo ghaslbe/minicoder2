@@ -6027,6 +6027,82 @@ des M1 Max; die 4090 -- trotz kleineren Kontextfensters (32.768 statt
 262.144 Token) -- sogar beim rund Siebenfachen. Und das bei einer
 Gesamtdauer von drei bis vier Minuten statt knapp einer halben Stunde.
 
+## 71. Praxistest in vibelove: Breakout gegen die gemietete RTX 5090 gebaut -- und erweitert
+
+Nach dem reinen mc.py-Benchmark der letzte Praxis-Check: taugt die
+gemietete RTX 5090 auch fuer echte vibelove-Sitzungen, mit
+Iterationen, Fehlerbehebung und Erweiterungen -- nicht nur fuer einen
+einzelnen sauberen Basis-Lauf? vibelove lief bereits lokal (Port
+5050), Settings per API umgestellt (`base_url` auf die 5090, Modell
+`qwen3.8:27b`, kein API-Key noetig), neues Projekt
+`breakout5090qwen38` angelegt, Auftrag: ein klassisches Breakout-Spiel
+per Canvas/JS.
+
+### Drei Bauphasen, mit echten Uhrzeiten aus den Git-Commits
+
+vibelove committet nach jedem Bauversuch automatisch einen
+"Zwischenstand" -- daraus lassen sich die tatsaechlichen Wanduhrzeiten
+je Phase rekonstruieren, nicht nur die von mc.py selbst gemeldeten
+Tok/s:
+
+| Phase | Dauer | Requests / Tokens | Ø Tok/s (Completion) | Ergebnis |
+|---|---:|---:|---:|---|
+| 1. Erstbau | **15,0 Min** (Timeout) | -- | -- | ❌ vibeloves 900-Sekunden-Limit erreicht, mitten im Debuggen (Schritt 50) |
+| 2. Fortsetzung/Bugfix | **3,0 Min** | 18 / 123.764 | **37,3** | ✅ `finish`, Build `exit 0` |
+| 3. Erweiterung (Sound, Balltypen, Level) | **18,9 Min** | 79 / 1.018.383 | **41,3** | ✅ `finish`, Build `exit 0` |
+| **Gesamt** | **37,5 Min** | 97 / 1.142.147 | -- | 3 Phasen, 2 Wiederaufnahmen |
+
+**Phase 1 -- der erste echte Timeout in dieser Session.** Nach 900
+Sekunden (vibeloves fest codiertes Limit, nicht verhandelbar) brach
+der Bau mitten in einem Debugging-Schritt ab -- das Modell suchte
+gerade nach dem Grund, warum `engine.bricks` nicht existierte. Kein
+Haenger, schlicht zu viele Lese-/Korrektur-Zyklen fuer ein einzelnes
+900-Sekunden-Fenster. Die einfache Anweisung "Setze den Bau fort,
+behebe den verbleibenden Fehler" reichte, weil vibelove den bisherigen
+Zwischenstand (Dateien + Git-Historie) automatisch mitgibt -- der
+naechste mc.py-Lauf erkannte "Ist-Zustand (bestehendes Projekt)" und
+fixierte den Bug in gut 3 Minuten.
+
+**Ein selbstgemachter Fehlalarm, zweimal.** Beide Fortsetzungs-Laeufe
+endeten mit "Achtung: finish trotz offener Probleme akzeptiert
+(fehlend: 1)". Beim Nachpruefen: keine echte fehlende Datei -- die
+eigene Fortsetzungs-Anweisung hatte "constants.js/engine.js" als
+Kurzform fuer "beide Dateien" formuliert, und mc.pys
+Dateinamen-Erkennung las den Schraegstrich als Teil EINES
+Dateipfads. Interessanter Nebenbefund: dieser Formulierungs-Fehler
+tauchte auch im DRITTEN Bauversuch (Erweiterung) wieder auf, obwohl
+die neue Anweisung den Ausdruck gar nicht mehr enthielt -- vibelove
+haengt vergangene Anweisungen (gekuerzt) als Kontext an, und mc.pys
+Erwartete-Dateien-Erkennung scannt offenbar auch diesen historischen
+Kontext-Text mit, nicht nur den aktuellen Auftrag. Praktisch folgenlos
+(nur eine Warnung, kein Blocker), aber ein echter, reproduzierbarer
+Fund fuer spaetere mc.py-Haertung.
+
+**Phase 3 -- die eigentliche Feuerprobe:** Sound-Effekte per Web Audio
+API (synthetische Toene, keine Audiodateien), drei Balltypen
+(normal/schnell/Feuerball mit Nachbar-Ziegel-Splash) und vier
+Level mit wachsendem Schwierigkeitsgrad plus Level-Anzeige im HUD --
+alles auf einmal beauftragt. 79 Requests, ueber eine Million Tokens,
+knapp 19 Minuten. Unterwegs ein weiterer echter Selbstfang: das Modell
+bemerkte, versehentlich Eintraege aus `MC-NOTIZEN.md` geloescht zu
+haben, und stellte sie im selben Lauf wieder her, bevor es `finish`
+aufrief.
+
+### Live-Verifikation
+
+`npm run build` beide Male `exit 0`. Im Browser gestartet: Level-
+Anzeige im HUD ("Level: 1"), Ziegelreihen farblich abgestuft, Ball
+bewegt sich, Schlaeger folgt der Maus, Punktestand und Lebensanzahl
+aktualisieren sich korrekt bei echtem Spielverlauf (Punkte: 10, Leben:
+2 nach kurzer Testrunde) -- keine Fehler in der Browser-Konsole.
+
+**Fazit:** die gemietete RTX 5090 traegt nicht nur einen sauberen
+Einzel-Benchmark, sondern eine ganze, mehrstufige vibelove-Sitzung mit
+Fehlerbehebung und substantieller Erweiterung -- in weniger als 40
+Minuten Gesamtzeit inklusive eines fehlgeschlagenen ersten Versuchs.
+Bei $0,3626/h Mietkosten liegt der komplette Praxistest bei einem
+winzigen Bruchteil eines Dollars.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
