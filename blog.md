@@ -5976,7 +5976,7 @@ verfuegbaren VRAM an: 24,6 GB bei der 4090 gegen 32,6 GB bei der
 | Requests / Tokens | 21 / 121.902 (107.539 prompt + 14.363 completion) |
 | Dauer | **223 Sekunden** gesamt |
 | Tok/s je Schritt | 39,4 -- 95,1 |
-| Live-Verifikation | ✅ alle 6 Dateien korrekt, kein `node_modules`, Port 5000 (mit sinnvollem `PORT`-Env-Override) wie gefordert, GET/POST/PUT/DELETE per curl bestaetigt |
+| Live-Verifikation | ✅ alle 6 Dateien korrekt, kein `node_modules`, Port 5000 (mit sinnvollem `PORT`-Env-Override) wie gefordert, GET/POST/PUT/DELETE per curl UND live im Browser bestaetigt |
 | Kosten | $0,2778/h -- fuer diesen Lauf ca. 1,7 Cent |
 
 Etwas mehr Schritte als die 5090 (21 statt 13, u.a. ein zusaetzlicher
