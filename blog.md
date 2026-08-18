@@ -5879,6 +5879,133 @@ korrekten Code geliefert. Der einzige durchgehend sauberere Erfolg
 und korrekt -- ein nuetzlicher Kontrast zu den schnelleren, aber
 unentdeckt fehlerhaften Laeufen.
 
+## 70. Zurueck zu gemieteten GPUs: qwen3.8:27b auf RTX 5090 und 4090 -- endlich der Beweis
+
+Nach neun Kapiteln reiner Mac-Tests (Kapitel 62-69) eine Rueckbesinnung
+auf die Methode aus Kapitel 9: echte Grafikkarten mieten, statt sich
+mit speicherbegrenzter Consumer-Hardware zu begnuegen. Anlass: die
+Erinnerung an die alte vast.ai-Session, dazu ein frischer Fund --
+Ollama fuehrt inzwischen ein offizielles `qwen3.8:27b`-Tag (Q4_K_M,
+18 GB, erst wenige Tage alt).
+
+### Setup
+
+Zwei Instanzen gleichzeitig gemietet, per vast.ai-API (`PUT /api/v0/
+asks/{id}/`), Docker-Image `ollama/ollama`, `onstart`-Skript startet
+`ollama serve` und zieht `qwen3.8:27b`. mc.py spricht Ollamas OpenAI-
+kompatible Bruecke direkt an (`MC_BASE_URL=http://<host>:<port>/v1`),
+kein Sonderfall noetig.
+
+### Die Instanz-Lotterie schlaegt wieder zu -- zweimal
+
+Genau die Lektion aus Kapitel 9.1 wiederholte sich, nur mit einer neuen
+Variante:
+
+- **Erste RTX 5090 (Suedkorea):** blieb nach der Miete **sechseinhalb
+  Minuten** ohne jede `status_msg` bei `actual_status: null` haengen --
+  bei guten Kennzahlen (Reliability 0.9969, 733 Mbit/s Bandbreite).
+  Kein Fortschritt, kein Fehler, einfach nichts. Instanz gekillt,
+  Angebot in Australien erneut gemietet (Reliability 0.9972, 777
+  Mbit/s) -- lief binnen zwei Minuten sauber durch bis `running`.
+- **Erste RTX 4090 (Ukraine):** startete zwar korrekt
+  (`status_msg: "success, running ollama/ollama/ssh"`), aber
+  `ollama ps` zeigte **`size_vram: 0`** -- das Modell lief komplett auf
+  der CPU, nicht auf der GPU. `gpu_util: 0.0` bestaetigte es: **kaputte
+  GPU-Durchreichung**, exakt das `failed to inject CDI devices`-Muster
+  aus Kapitel 9.1, nur diesmal ohne die explizite Fehlermeldung -- der
+  Container startete "erfolgreich", nutzte die Karte aber nie. Ein
+  direkter `curl` an Ollamas `/api/generate` haengte sich prompt fuer
+  60 Sekunden auf, ohne jede Antwort. Instanz gekillt, ein Angebot in
+  Quebec (Kanada) gemietet -- diesmal zeigte `ollama ps` sofort
+  `size_vram` fast identisch zur Modellgroesse: sauber durchgereicht.
+
+**Lektion, praezisiert gegenueber Kapitel 9.1:** die Instanz-Lotterie
+zeigt sich nicht nur als Totalausfall (kaputtes SSH, Host offline),
+sondern auch als **stiller Teilausfall** -- ein Host, der "laeuft",
+aber die gemietete Ressource gar nicht benutzt. `ollama ps` (Feld
+`size_vram`) und vast.ais eigenes `gpu_util`-Feld sind die zwei
+schnellsten Belege dafuer, bevor man Zeit in einen Benchmark-Lauf
+steckt, der ohnehin nur auf der CPU vor sich hin kriecht.
+
+### Ergebnis RTX 5090 (Australien)
+
+| | |
+|---|---|
+| Ergebnis | ✅ sauberer `finish` + Git-Commit |
+| Requests / Tokens | 13 / 68.134 (61.400 prompt + 6.734 completion) |
+| Dauer | **178 Sekunden** gesamt |
+| Tok/s je Schritt | 11,5 -- 116,2 (meist 40-116) |
+| Live-Verifikation | ✅ alle 6 Dateien korrekt, kein `node_modules`, Port 5000 wie gefordert, GET/POST/PUT/DELETE live im Browser + per curl bestaetigt |
+| Kosten | $0,3626/h -- fuer diesen Lauf deutlich unter 10 Cent |
+
+Mit Abstand der schnellste UND gleichzeitig sauberste Lauf im gesamten
+Qwen3.8-27B-Vergleich seit Kapitel 66 -- kein Reasoning-Loop, kein
+Format-Fehler, keine unentdeckten Bugs.
+
+**Hardware, falls man das nachkaufen wollte:** die gemietete Maschine
+ist kein anonymer Server, sondern ein erkennbarer Fertig-PC -- die
+Mainboard-Teilenummer `02JGX1` gehoert zu einem **Dell Alienware
+Area-51 (2025er Modell)**.
+
+| Komponente | Modell | Ca.-Preis (2026) |
+|---|---|---:|
+| GPU | NVIDIA GeForce RTX 5090, 32 GB GDDR7, 21.760 CUDA-Cores, 575 W TGP | $2000 MSRP, real $3000-4500 |
+| CPU | Intel Core Ultra 7 265, 20 Kerne (8P+12E), bis 5,3 GHz | ~$280 |
+| Mainboard | Dell/Alienware `02JGX1`, ATX, LGA1851, DDR5 | nur als Fertig-PC |
+| RAM | 63,7 GB (~64 GB DDR5) | im Systempreis |
+| Treiber/CUDA | 595.84 / CUDA 13.2, Compute Cap. 12.0 | -- |
+| Speicherbandbreite | 1450 GB/s gemessen | -- |
+
+Als **Komplettsystem** (Alienware Area-51, dieselbe GPU/CPU-Kombi)
+liegt der Marktpreis je nach RAM/SSD zwischen $3630 und $6330 --
+mieten statt kaufen ist fuer einen Testlauf offensichtlich die
+rationalere Wahl.
+
+### Ergebnis RTX 4090 (Quebec, Kanada)
+
+Nach dem GPU-Passthrough-Fehlschlag auf der ersten 4090 lief der
+zweite Versuch sauber: `size_vram` fast deckungsgleich mit der
+Modellgroesse, Kontextfenster **32.768 Token** (kleiner als bei der
+5090 -- Ollama passt den Kontext offenbar automatisch an den
+verfuegbaren VRAM an: 24,6 GB bei der 4090 gegen 32,6 GB bei der
+5090).
+
+| | |
+|---|---|
+| Ergebnis | ✅ sauberer `finish` + Git-Commit |
+| Requests / Tokens | 21 / 121.902 (107.539 prompt + 14.363 completion) |
+| Dauer | **223 Sekunden** gesamt |
+| Tok/s je Schritt | 39,4 -- 95,1 |
+| Live-Verifikation | ✅ alle 6 Dateien korrekt, kein `node_modules`, Port 5000 (mit sinnvollem `PORT`-Env-Override) wie gefordert, GET/POST/PUT/DELETE per curl bestaetigt |
+| Kosten | $0,2778/h -- fuer diesen Lauf ca. 1,7 Cent |
+
+Etwas mehr Schritte als die 5090 (21 statt 13, u.a. ein zusaetzlicher
+Smoke-Test-Durchlauf des Modells selbst), aber genauso sauber:
+kein Reasoning-Loop, kein Format-Fehler, alle sechs Dateien beim
+unabhaengigen Nachlesen korrekt.
+
+**Hardware:** wieder ein erkennbarer Enthusiasten-PC, keine
+Server-Hardware -- AMD Ryzen 9 5900X (12 Kerne/24 Threads) auf einem
+ASRock B550 Phantom Gaming 4 (AM4, DDR4-Consumer-Board).
+
+| Komponente | Modell | Ca.-Preis (2026) |
+|---|---|---:|
+| GPU | NVIDIA GeForce RTX 4090, 24 GB GDDR6X, 450 W TDP | MSRP $1599, real $2268-3765+ |
+| CPU | AMD Ryzen 9 5900X, 12 Kerne/24 Threads | -- |
+| Mainboard | ASRock B550 Phantom Gaming 4 (AC), AM4, DDR4, 128 GB max | ~$75-92 |
+| RAM | 64,2 GB DDR4 | -- |
+| Treiber/CUDA | 560.35.03 / CUDA 12.6 | -- |
+| Speicherbandbreite | 898 GB/s gemessen | -- |
+| Kosten | $0,2778/h | -- |
+
+**Fazit:** nach neun Kapiteln, in denen keine lokale Mac-Konfiguration
+die eigene 25-Tok/s-Schwelle *und* fehlerfreien Code gleichzeitig
+lieferte, reicht eine einzige gemietete RTX 5090 oder 4090 fuer beides
+-- fuer Cent-Betraege pro Lauf. Der eigentliche Engpass ist nicht mehr
+das Modell, sondern die immer gleiche Miet-Lotterie: bei zwei von vier
+gemieteten Instanzen musste nachgebessert werden, bevor ueberhaupt ein
+Benchmark starten konnte.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
