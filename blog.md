@@ -5775,6 +5775,110 @@ dass Geschwindigkeit allein kein Qualitaetsbeleg ist -- die in Kapitel
 Modell selbst) bleibt der entscheidende Schritt, gerade wenn ein Lauf
 auf den ersten Blick glatt durchlief.
 
+## 69. MTPLX-Update, ein sauberer MLX-Erfolg -- und LM Studios eigenes natives MTP
+
+Ein MTPLX-Update brachte eine neue Modellauswahl mit sich und damit
+eine Serie kurzer, aber lehrreicher Nachtests, bevor sich der
+Schwerpunkt noch einmal verschob: weg von MTPLX, hin zu LM Studios
+eigener, bis dahin unbekannter nativer MTP-Unterstuetzung.
+
+**MTPLX Bare Speed: die Doku-Warnung bestaetigt sich.** Nach dem
+Update war zunaechst `Qwen3.8-27B-MTPLX-Bare-Speed-FP16` geladen --
+laut MTPLX' eigener README explizit NICHT fuer laengere Coding-Aufgaben
+empfohlen ("quickest burst chat speeds, lower quality and slower on
+long coding tasks"). Ein Testlauf (mit `MC_THINKING_BUDGET=1000`, der
+zuvor bei Optimized Speed den Wiederholungs-Loop verhindert hatte)
+bestaetigte die Warnung eins zu eins: mehrfach `VALIDIERUNG
+FEHLGESCHLAGEN`, Tok/s wild schwankend zwischen 2 und 30, ein
+einzelner Schritt brauchte 1136 Sekunden fuer nur 3706 Tokens (~3,3
+Tok/s) -- und schliesslich eine Zeichen-Wiederholungsschleife mitten
+im JavaScript-Code (dutzendfach dasselbe chinesische Schriftzeichen
+hintereinander). Selbst das harte Denk-Budget verhinderte diese Art
+Degeneration nicht -- sie tritt im eigentlichen Output auf, nicht beim
+Nachdenken. Abgebrochen.
+
+**Die Budget-Groessen-Frage, unbeantwortet gelassen.** Ein berechtigter
+Einwand: koennte das Abschneiden-Problem aus Kapitel 67 (Modell-
+Meta-Kommentar leckt in `app.py`) schlicht an einem zu knapp bemessenen
+`MC_THINKING_BUDGET=1000` liegen? Ein Blick in mc.py's eigenen Code
+zeigte: das fragliche `finish_reason=stop` trat waehrend der
+eigentlichen Datei-Ausgabe auf, nicht waehrend des Denkens -- das
+Budget war zu dem Zeitpunkt vermutlich laengst aufgebraucht. Der
+empirische Test mit `MC_THINKING_BUDGET=4000` auf dem aktualisierten
+Optimized-Speed-Modell wurde vor Abschluss gestoppt ("das taugt einfach
+nix") -- keine Daten, aber auch kein Widerspruch zur bisherigen Serie.
+
+**Ein Abstecher, der sich lohnte: `qwen3.8-27b-mlx` auf einem dritten
+Host.** Auf `192.168.178.191` (ein M4 Pro mit nur 24 GB RAM -- das
+erklaert rueckblickend die durchgehend kleinen Kontextfenster dieses
+Hosts, 8448 bis 17920 Token, schlicht Speichergrenze statt bewusster
+Wahl) lief derselbe CRUD-Basis-Auftrag ueber den vollen mc.py-Agenten-
+Loop: 29 Requests, 211425 Tokens, 3254 Sekunden (~54 Minuten) bis zum
+sauberen `finish` samt Git-Commit. Tempo mit 4,7 bis 14,3 Tok/s klar
+unter der 25-Tok/s-Schwelle, aber diesmal ohne Wiederholungsschleife
+und ohne Reasoning-Budget-Loch.
+
+Bemerkenswert: das Modell fing waehrend seiner eigenen Verifikation
+**zwei echte Probleme selbststaendig ab** -- einen PUT-Bug (Connection
+wurde vor dem SELECT fuer die Antwort geschlossen) und eine Vite/CRA-
+Layoutinkompatibilitaet (die Aufgabe verlangt `public/index.html` nach
+CRA-Konvention, das urspruenglich gewaehlte Vite-Setup haette das nicht
+korrekt verarbeitet) -- und wechselte eigenstaendig zu `react-scripts`.
+Die unabhaengige Pruefung bestaetigte diesmal den Selbstbericht: Port
+5000 wie gefordert, kein `node_modules`-Ordner (keine verbotene
+npm-Installation), alle sechs Dateien vorhanden. Live im Browser
+getestet -- Kunde anlegen, bearbeiten, loeschen, alles funktionierte;
+ein vermeintlicher Edit-Bug beim ersten Versuch entpuppte sich bei
+genauerem Hinsehen als eigener Fehlklick, nicht als App-Fehler, und
+wurde nach Korrektur sauber verifiziert. Der bisher ehrlichste, sauberste
+Lauf der gesamten Qwen3.8-27B-Reihe -- langsam, aber korrekt.
+
+**Themenwechsel: LM Studio hat inzwischen eigenes, natives MTP.**
+Unabhaengig von der ganzen MTPLX-Odyssee stellte sich heraus, dass LM
+Studio selbst seit Version 0.4.14 (llama.cpp-Engine 2.15.0+) einen
+eigenen MTP-Toggle mitbringt -- kein externes Tool mehr noetig, um den
+eingebauten Multi-Token-Prediction-Kopf zu nutzen. Die entscheidende
+Einschraenkung: **nur GGUF-Modelle ueber die llama.cpp-Engine**, nicht
+MLX. Das erklaert rueckwirkend, warum das reine LM-Studio-Laden des
+`Optimized-Speed`-MLX-Modells in Kapitel 66 keinerlei Speedup zeigte --
+die MLX-Runtime von LM Studio nutzt den MTP-Kopf schlicht nicht, egal
+wie er heisst oder wie gross er ist. Der Parameter heisst "Maximum
+number of MTP draft tokens" (Default je nach Modellfamilie
+unterschiedlich, laut mehreren -- sich in der genauen Zahl leicht
+widersprechenden -- Quellen z.B. 3 fuer Qwen vs. 4 fuer Gemma 4),
+dazu "Minimum MTP draft length to verify" (Default 0).
+
+**Zwei Nachtests, zwei unterschiedliche Ausfaelle:**
+
+- `qwen3.8-27b-mtp` (GGUF, natives LM-Studio-MTP mit
+  `speculative_draft_mtp: true` aktiv laut `/api/v1/models`) stuerzte
+  bereits beim zweiten Schritt mit `HTTP 400: "Engine protocol startup
+  was aborted"` ab -- ein Absturz der llama.cpp-Engine selbst, kein
+  mc.py- oder Modellproblem.
+- `qwen3.8-27b-mtp-mlx` (derselbe MTP-Modellname, aber als MLX-Build --
+  fuer den native LM-Studio-MTP laut obiger Recherche gar nicht greift)
+  lief zwar durch (13 Requests, 81718 Tokens, 3725s, sauberer `finish`
+  + Git-Commit), aber mit 3 bis 14 Tok/s genauso langsam wie die
+  anderen MLX-Varianten -- ein einzelner Schritt brauchte 2983 Sekunden
+  (fast 50 Minuten) fuer 9095 Tokens. Die unabhaengige Pruefung deckte
+  zudem einen echten, nicht selbst erkannten Bug auf: `frontend/src/
+  index.js` enthaelt JSX-Syntax, hat aber die Endung `.js` statt
+  `.jsx` -- Vite scannt die Datei zwar, bricht aber mit "The JSX syntax
+  extension is not currently enabled" hart ab. Der Selbstbericht
+  ("Finaler Check: keine Debug-Reste, alle Dateien neu, nichts
+  vergessen") war in diesem Fall schlicht falsch -- die App startet
+  nicht.
+
+**Fazit:** der insgesamt ehrlichste Befund dieser Session-Reihe bleibt
+bestehen -- kein Quantisierungs- oder Runtime-Trick (MTPLX, natives
+LM-Studio-MTP, verschiedenste Bit-Tiefen) hat die dichte
+Qwen3.8-27B-Architektur auf dieser Hardware durchgehend ueber die
+eigene 25-Tok/s-Schwelle gehoben UND gleichzeitig zuverlaessig
+korrekten Code geliefert. Der einzige durchgehend sauberere Erfolg
+(host `.191`, plain MLX ohne MTP) war langsam, aber wenigstens ehrlich
+und korrekt -- ein nuetzlicher Kontrast zu den schnelleren, aber
+unentdeckt fehlerhaften Laeufen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
