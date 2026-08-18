@@ -6139,6 +6139,43 @@ Minuten Gesamtzeit inklusive eines fehlgeschlagenen ersten Versuchs.
 Bei $0,3626/h Mietkosten liegt der komplette Praxistest bei einem
 winzigen Bruchteil eines Dollars.
 
+### Nachtrag: derselbe vibelove-Test mit `gpt-5.6-luna`
+
+Zum direkten Vergleich derselbe Breakout-Auftrag, unveraendert, per
+vibelove gegen die direkte OpenAI-API mit `gpt-5.6-luna` (Kapitel 70
+hat den zugehoerigen CRUD-Vergleich samt der zwei dafuer noetigen
+mc.py-Fixes). Einziger Unterschied zur RTX-5090-Sitzung: kein
+Timeout, kein Fortsetzungs-Schritt noetig -- ein einziger
+durchgehender Bau-Lauf.
+
+| | |
+|---|---|
+| Requests / Tokens | 31 / 194.311 (184.996 prompt + 9.315 completion) |
+| Dauer | **156 Sekunden** (2,6 Min) |
+| Ø Tok/s (Completion/Dauer) | **59,7** |
+| Kosten | **$0,0482** |
+| Ergebnis | ✅ sauberer `finish` + Git-Commit, kein Timeout, keine Fortsetzung noetig |
+
+Live verifiziert: `npm run build` sauber, Spiel startet automatisch
+(kein Klick noetig), Ball bewegt sich, Schlaeger folgt der Maus,
+Punktestand und Lebensanzeige aktualisieren korrekt im echten
+Spielverlauf. Optisch das mit Abstand aufwendigste Ergebnis aller
+Breakout-Varianten dieser Session -- eigenes Branding
+("BREAKOUTLUNA"), durchgaengiges Neon-Design mit Glow-Effekten,
+Level-/Themen-Beschriftung ("LEVEL 01 / NEON DUSK"), Herz-Symbole
+statt reiner Zahl fuer die Leben.
+
+**Einordnung:** die 156 Sekunden bei `gpt-5.6-luna` gegen die
+knapp 40 Minuten (inklusive Timeout) bei der gemieteten RTX 5090 sind
+kein fairer Eins-zu-eins-Vergleich -- die 5090-Sitzung umfasste zwei
+zusaetzliche Erweiterungsrunden (Bugfix, dann Sound/Balltypen/Level),
+waehrend hier nur der reine Erstbau lief. Der direkte Basis-Vergleich
+(Kapitel 70, CRUD-Aufgabe) bleibt der fairere Massstab: dort war
+`gpt-5.6-luna` mit 85 Sekunden bereits klar vor beiden gemieteten
+GPUs. Fuer die Optik/Ausgestaltung des Spiels selbst zeigt sich aber
+unabhaengig davon ein deutlicher qualitativer Unterschied zugunsten
+des OpenAI-Modells.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
