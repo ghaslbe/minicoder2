@@ -260,6 +260,14 @@ THINK = _truthy(_setting("MC_THINK", "think", True))
 # das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
 THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
 
+# Manche neueren Reasoning-Modelle (u.a. OpenAIs eigene "gpt-5.x"-Serie
+# direkt ueber api.openai.com, nicht ueber OpenRouter) lehnen klassische
+# Sampling-Parameter wie frequency_penalty mit HTTP 400 rundweg ab, statt
+# sie wie die meisten anderen Endpunkte einfach zu ignorieren. Wird beim
+# ersten Auftreten dieses spezifischen Fehlers automatisch erkannt und
+# abgeschaltet (siehe _chat_once) -- kein manuelles Flag noetig.
+SUPPORTS_FREQUENCY_PENALTY = True
+
 # Modus im interaktiven Terminal: 'dev' (Standard) haengt den vollen
 # Werkzeug-/Aktions-Prompt samt Projekt-Steckbrief an, 'chat' schaltet auf
 # reine Unterhaltung OHNE Dev-Prompt um (/mode dev|chat, ohne Argument zeigt
@@ -616,21 +624,29 @@ class Spinner:
 def _chat_once(messages, model):
     """Ein einzelner /chat/completions-Streaming-Aufruf. Gibt (text, finish_reason)
     zurueck und streamt live mit."""
+    global LAST_REASONING_CHARS, SUPPORTS_FREQUENCY_PENALTY
     url = f"{BASE_URL}/chat/completions"
     payload = {"model": model, "messages": _payload_messages(messages), "stream": True,
-               # Token-/Kostenabrechnung anfordern (OpenAI-Standard + OpenRouter).
-               # Endpoints, die das nicht kennen (z.B. Ollama), ignorieren es.
-               "stream_options": {"include_usage": True},
-               "usage": {"include": True},
-               # Milde Anti-Wiederholungs-Bremse: beobachtet wurde, dass lokale
-               # Modelle mitten in EINER Antwort in eine Token-Wiederholung
-               # geraten koennen (z.B. ein JSON-Feld dutzendfach identisch
-               # wiederholt), bevor ueberhaupt ein parsebarer Action-Block
-               # entsteht — das faengt _check_repetition() nicht ab, die greift
-               # erst NACH einem erfolgreich geparsten write. frequency_penalty
-               # ist Standard-OpenAI-Feld, wird von inkompatiblen Endpoints
-               # (z.B. reines Ollama) einfach ignoriert.
-               "frequency_penalty": 0.3}
+               # Token-/Kostenabrechnung anfordern (OpenAI-Standard-Feld, auch
+               # von OpenRouter/Ollama/den meisten kompatiblen Endpoints
+               # unterstuetzt). Ein zusaetzliches, nicht-standardisiertes
+               # Top-Level-Feld "usage":{"include":true} wurde hier frueher
+               # unbedingt mitgeschickt (OpenRouter-Erweiterung) -- das echte
+               # OpenAI lehnt unbekannte Parameter mit HTTP 400 ab, waehrend
+               # tolerantere Endpunkte es nur ignorierten. Entfernt.
+               "stream_options": {"include_usage": True}}
+    if SUPPORTS_FREQUENCY_PENALTY:
+        # Milde Anti-Wiederholungs-Bremse: beobachtet wurde, dass lokale
+        # Modelle mitten in EINER Antwort in eine Token-Wiederholung
+        # geraten koennen (z.B. ein JSON-Feld dutzendfach identisch
+        # wiederholt), bevor ueberhaupt ein parsebarer Action-Block
+        # entsteht — das faengt _check_repetition() nicht ab, die greift
+        # erst NACH einem erfolgreich geparsten write. frequency_penalty
+        # ist Standard-OpenAI-Feld, wird von inkompatiblen Endpoints
+        # (z.B. reines Ollama) einfach ignoriert -- manche neueren
+        # Reasoning-Modelle lehnen es dagegen mit HTTP 400 ab (siehe
+        # SUPPORTS_FREQUENCY_PENALTY oben).
+        payload["frequency_penalty"] = 0.3
     if not THINK:
         payload["reasoning_effort"] = "none"
         payload["enable_thinking"] = False
@@ -643,7 +659,6 @@ def _chat_once(messages, model):
         headers["Authorization"] = f"Bearer {API_KEY}"
     headers.update(extra_headers())
 
-    global LAST_REASONING_CHARS
     LAST_REASONING_CHARS = 0
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
@@ -722,6 +737,18 @@ def _chat_once(messages, model):
         ctx = _parse_ctx_overflow(body)
         if ctx is not None:
             raise CtxOverflowError(ctx, body[:200])
+        if (e.code == 400 and SUPPORTS_FREQUENCY_PENALTY
+                and "unsupported_parameter" in body and "frequency_penalty" in body):
+            # Manche Reasoning-Modelle (real beobachtet: OpenAIs eigene
+            # gpt-5.x-Serie direkt ueber api.openai.com) lehnen den
+            # klassischen Sampling-Parameter komplett ab, statt ihn wie die
+            # meisten Endpunkte einfach zu ignorieren. Einmalig erkennen,
+            # global abschalten, derselbe Request wird sofort ohne das Feld
+            # wiederholt (kein Warten noetig -- kein Netzwerk-/Rate-Problem).
+            SUPPORTS_FREQUENCY_PENALTY = False
+            print(f"{C.DIM}(frequency_penalty vom Endpoint abgelehnt -- "
+                  f"wird fuer den Rest des Laufs weggelassen){C.RESET}")
+            return _chat_once(messages, model)
         if e.code in (401, 403):
             # 401/403 sind bei OpenAI-kompatiblen Endpoints so gut wie immer
             # ein Schluessel-Problem (fehlend, falsch, abgelaufen, gesperrt)

@@ -6015,17 +6015,53 @@ gab es nur die Gesamtzahlen. Fuer einen fairen Vergleich daher ueberall
 der Schnitt aus Gesamt-Completion-Tokens/Gesamtdauer, dazu (wo bekannt)
 die Spanne der einzelnen Schritte:
 
-| System | Ø Tok/s (Completion/Dauer) | Spanne je Schritt | Dauer gesamt | Kosten |
+| System | Ø Tok/s (Completion/Dauer) | Spanne je Schritt | Dauer gesamt | Kosten (dieser Lauf) |
 |---|---:|---:|---:|---:|
-| RTX 5090 (vast.ai, Australien) | **37,8 Tok/s** | 11,5 -- 116,2 | 178 s | $0,3626/h |
-| RTX 4090 (vast.ai, Quebec) | **64,4 Tok/s** | 39,4 -- 95,1 | 223 s | $0,2778/h |
+| RTX 5090 (vast.ai, Australien) | **37,8 Tok/s** | 11,5 -- 116,2 | 178 s | $0,0179 ($0,3626/h) |
+| RTX 4090 (vast.ai, Quebec) | **64,4 Tok/s** | 39,4 -- 95,1 | 223 s | $0,0172 ($0,2778/h) |
 | MacBook M1 Max, 32 GB (lokal, Kapitel 66) | **9,3 Tok/s** | nicht geloggt (vor Tok/s-Instrumentierung) | 1712 s | Stromkosten |
+| `gpt-5.6-luna` (OpenAI, direkte API) | **108,1 Tok/s** | 34,5 -- 164,3 | 85 s | $0,0305 |
 
 Selbst die 5090 mit ihrem breiteren Ausschlag nach unten (11,5 Tok/s in
 einem einzelnen kurzen Schritt) liegt im Schnitt beim rund Vierfachen
 des M1 Max; die 4090 -- trotz kleineren Kontextfensters (32.768 statt
 262.144 Token) -- sogar beim rund Siebenfachen. Und das bei einer
 Gesamtdauer von drei bis vier Minuten statt knapp einer halben Stunde.
+
+**Nachtrag: die direkte OpenAI-API (nicht OpenRouter) mit `gpt-5.6-luna`
+schlaegt beide gemieteten GPUs nochmal deutlich** -- 85 Sekunden
+gesamt, Spitzenwerte bis 164,3 Tok/s, fuer $0,0305 (etwas teurer als
+die GPU-Miete pro Lauf, aber ohne jede Warte-/Ladezeit und ohne
+Instanz-Lotterie). Erwartbar, da hier OpenAIs eigene Server-Infra-
+struktur statt einzelner Consumer-GPUs dahintersteht -- trotzdem der
+bisher klarste Beleg, wie gross der Abstand zwischen "lokal/gemietet"
+und "direkt beim Anbieter" ausfallen kann.
+
+Zwei echte mc.py-Kompatibilitaetsluecken mussten dafuer erst behoben
+werden, beide erst beim direkten OpenAI-Zugriff sichtbar (OpenRouter
+und lokale Endpunkte hatten sie stillschweigend toleriert):
+
+- Ein unbedingt mitgeschicktes, nicht-standardisiertes Top-Level-Feld
+  `"usage":{"include":true}` (eine OpenRouter-Erweiterung) liess
+  OpenAIs echte API mit `HTTP 400: Unknown parameter: 'usage'`
+  abbrechen -- entfernt, das ohnehin schon vorhandene
+  `stream_options.include_usage` reicht.
+- `gpt-5.6-luna` -- ein Reasoning-Modell -- lehnt den klassischen
+  Sampling-Parameter `frequency_penalty` komplett ab (`HTTP 400:
+  Unsupported parameter`), statt ihn wie die meisten anderen Endpunkte
+  einfach zu ignorieren. mc.py erkennt das jetzt beim ersten
+  Auftreten automatisch, schaltet den Parameter fuer den Rest des
+  Laufs ab und wiederholt denselben Request sofort ohne Wartezeit.
+
+Ein dritter, harmloser Fund unterwegs: die "leere" Datenbank beim
+ersten Live-Test zeigte ploetzlich echte, alte Kundendaten aus einem
+frueheren, unabhaengigen Test -- keine Datenpanne des Modells, sondern
+ein eigener Testfehler (die kopierte `app.py` lief aus `/tmp` und
+fand dort eine bereits vorhandene `kunden.db` wieder). Nach Korrektur
+(Test direkt im Projektverzeichnis, frische Datenbank) lief die
+Verifikation sauber durch: alle sechs Dateien korrekt, kein
+`node_modules`, Port 5000 wie gefordert, GET/POST/PUT/DELETE live
+bestaetigt.
 
 ## 71. Praxistest in vibelove: Breakout gegen die gemietete RTX 5090 gebaut -- und erweitert
 
