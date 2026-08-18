@@ -6006,6 +6006,27 @@ das Modell, sondern die immer gleiche Miet-Lotterie: bei zwei von vier
 gemieteten Instanzen musste nachgebessert werden, bevor ueberhaupt ein
 Benchmark starten konnte.
 
+### Direkter Vergleich: gemietete GPUs gegen den ersten lokalen Erfolg
+
+Der einzige lokale Mac-Lauf, der ueberhaupt bis zum sauberen `finish`
+kam (Kapitel 66, `qwen3.8-27b-mlx`, MacBook M1 Max 32 GB) wurde noch
+VOR der Einfuehrung des Tok/s-Loggings je Schritt gefahren -- fuer den
+gab es nur die Gesamtzahlen. Fuer einen fairen Vergleich daher ueberall
+der Schnitt aus Gesamt-Completion-Tokens/Gesamtdauer, dazu (wo bekannt)
+die Spanne der einzelnen Schritte:
+
+| System | Ø Tok/s (Completion/Dauer) | Spanne je Schritt | Dauer gesamt | Kosten |
+|---|---:|---:|---:|---:|
+| RTX 5090 (vast.ai, Australien) | **37,8 Tok/s** | 11,5 -- 116,2 | 178 s | $0,3626/h |
+| RTX 4090 (vast.ai, Quebec) | **64,4 Tok/s** | 39,4 -- 95,1 | 223 s | $0,2778/h |
+| MacBook M1 Max, 32 GB (lokal, Kapitel 66) | **9,3 Tok/s** | nicht geloggt (vor Tok/s-Instrumentierung) | 1712 s | Stromkosten |
+
+Selbst die 5090 mit ihrem breiteren Ausschlag nach unten (11,5 Tok/s in
+einem einzelnen kurzen Schritt) liegt im Schnitt beim rund Vierfachen
+des M1 Max; die 4090 -- trotz kleineren Kontextfensters (32.768 statt
+262.144 Token) -- sogar beim rund Siebenfachen. Und das bei einer
+Gesamtdauer von drei bis vier Minuten statt knapp einer halben Stunde.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
