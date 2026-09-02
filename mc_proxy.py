@@ -22,9 +22,12 @@ import http.server
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+
+_LOG_LOCK = threading.Lock()
 
 UPSTREAM = os.environ.get("MC_PROXY_UPSTREAM", "").rstrip("/")
 LOG_PATH = os.environ.get("MC_PROXY_LOG", "mc_proxy_log.jsonl")
@@ -66,7 +69,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         t0 = time.perf_counter()
         usage = None
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=900) as resp:
                 self.send_response(resp.status)
                 for k, v in resp.getheaders():
                     if k.lower() not in _SKIP_RESPONSE_HEADERS:
@@ -115,11 +118,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "kosten": (usage.get("cost") or (usage.get("cost_details") or {}).get("upstream_inference_cost"))
                       if usage else None,
         }
-        with open(LOG_PATH, "a") as f:
-            f.write(json.dumps(eintrag, ensure_ascii=False) + "\n")
-        print(f"[mc_proxy] {model} · {dauer:.1f}s · "
-              f"{eintrag['completion_tokens']} Tok · {eintrag['tok_s']} Tok/s"
-              + (f" · ${eintrag['kosten']}" if eintrag['kosten'] else ""))
+        with _LOG_LOCK:
+            with open(LOG_PATH, "a") as f:
+                f.write(json.dumps(eintrag, ensure_ascii=False) + "\n")
+            print(f"[mc_proxy] {model} · {dauer:.1f}s · "
+                  f"{eintrag['completion_tokens']} Tok · {eintrag['tok_s']} Tok/s"
+                  + (f" · ${eintrag['kosten']}" if eintrag['kosten'] else ""))
 
     def log_message(self, format, *args):
         pass  # eigenes Logging oben statt Standard-stderr-Zeilen pro Request
@@ -138,7 +142,12 @@ def main():
               "(z.B. https://openrouter.ai/api/v1).", file=sys.stderr)
         sys.exit(1)
     print(f"mc_proxy: leite 127.0.0.1:{args.port} -> {UPSTREAM} weiter, Log: {LOG_PATH}")
-    http.server.HTTPServer(("127.0.0.1", args.port), ProxyHandler).serve_forever()
+    # ThreadingHTTPServer statt HTTPServer: mc.py verbindet sich pro Retry-
+    # Versuch neu -- ein einzelfaediger Server blockiert dabei komplett,
+    # solange der ERSTE (evtl. haengende) Request noch auf die Upstream-
+    # Antwort wartet, und macht so aus einem einzelnen langsamen Request
+    # eine komplette Verbindungs-Sackgasse fuer alle folgenden Versuche.
+    http.server.ThreadingHTTPServer(("127.0.0.1", args.port), ProxyHandler).serve_forever()
 
 
 if __name__ == "__main__":

@@ -261,6 +261,17 @@ THINK = _truthy(_setting("MC_THINK", "think", True))
 # das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
 THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
 
+# Harte Obergrenze pro EINZELNEM API-Aufruf (nicht pro Aufgabe!). Ohne das
+# koennen manche Modelle (real beobachtet: die GLM-Familie via OpenRouter)
+# versuchen, alles in EINER Riesenantwort zu erledigen -- 6000+ Tokens am
+# Stueck, mehrere Minuten pro Request, nahe an Client-/Proxy-Timeouts. Der
+# bestehende Fortsetzungs-Mechanismus (chat_stream/_looks_truncated,
+# MAX_CONTINUATIONS=4) faengt ein dadurch ausgeloestes finish_reason="length"
+# bereits ab und fordert nahtlose Fortsetzungen an -- es geht nichts verloren,
+# eine lange Antwort wird nur auf mehrere kuerzere, einzeln zeitlich
+# begrenzte Aufrufe verteilt. 0 = kein Limit (alter Zustand).
+MAX_TOKENS_PER_CALL = int(_setting("MC_MAX_TOKENS", "max_tokens_per_call", 4000))
+
 # OpenRouter-spezifisch: pinnt einen Request auf einen bestimmten Backend-
 # Anbieter statt OpenRouters automatischem Load-Balancing zwischen mehreren
 # Providern desselben Modells (z.B. "z-ai" statt wahlweise "novita" fuer
@@ -679,6 +690,8 @@ def _chat_once(messages, model):
     if PROVIDER_ORDER:
         payload["provider"] = {"order": PROVIDER_ORDER, "allow_fallbacks": False}
     payload["session_id"] = SESSION_ID
+    if MAX_TOKENS_PER_CALL > 0:
+        payload["max_tokens"] = MAX_TOKENS_PER_CALL
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
