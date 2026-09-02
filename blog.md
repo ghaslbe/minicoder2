@@ -6423,6 +6423,89 @@ Kostentreiber, aber kein zuverlaessiger Vorbote eines Scheiterns -- es
 kommt darauf an, ob das Modell sich danach wieder faengt oder die
 verlorene Arbeit erneut (und diesmal disziplinierter) nachholt.
 
+## 77. Root-Cause GLM-Riesenantworten, ein Proxy-Fix, Selbstbau-Vergleich -- und eine Tok/s-Lektion
+
+**Der eigentliche Root Cause der Haenger von Kapitel 76: kein max_tokens-
+Limit.** Live per Proxy-Debug-Logging (Zeile-fuer-Zeile-Tracking des
+SSE-Streams) nachgewiesen: `z-ai/glm-5.3-flash` produzierte teils EINE
+einzelne Antwort mit 6154 Completion-Tokens am Stueck (119,94s) --
+dasselbe Batch-alles-auf-einmal-Verhalten wie bei `glm-flash-latest`,
+nur als lange Einzelantwort statt vieler Aktionsbloecke. mc.py setzte
+bisher keinerlei `max_tokens`-Deckel. Neue Einstellung `MC_MAX_TOKENS`
+(Default 4000) faengt das ab -- der bereits vorhandene Fortsetzungs-
+Mechanismus (`chat_stream`, `MAX_CONTINUATIONS=4`) fuehrt das dadurch
+ausgeloeste `finish_reason="length"` automatisch fort, nichts geht
+verloren. Live verifiziert: derselbe Lauf teilte sich danach sauber in
+80,31s (exakt an der Grenze gekappt) + 26,36s (Fortsetzung, sogar mit
+2816 gecachten Tokens dank `session_id`) auf. Zwei begleitende
+mc_proxy.py-Fixes: `ThreadingHTTPServer` statt `HTTPServer` (ein
+haengender Request blockierte sonst alle folgenden Verbindungsversuche
+komplett -- Ursache der wiederholten "Verbindungsfehler: timed out" bei
+mc.py's eigenen Retries) und Timeout 300s -> 900s.
+
+**Nachtest mit dem Fix: GLM und DeepSeek liefen erneut, diesmal
+komplett sauber.** Ein voller CRUD-Lauf `z-ai/glm-5.3-flash` durch den
+gefixten Proxy: 32 Requests, 223185 Tokens, 44,3% Cache-Hit-Rate ueber
+den ganzen Lauf, laengster Einzel-Request nur noch 112,87s -- kein
+Ausreisser mehr. Und die entscheidende Erkenntnis danach: **das
+Schrittlimit war der eigentliche Blocker, nicht Zuverlaessigkeit.**
+Mit hoeherem `--max-steps` (40 bzw. 60 statt 30) erreichten sowohl
+`glm-5.3-flash` als auch `deepseek/deepseek-v4-flash-0731` einen
+sauberen `finish` samt Git-Commit -- beide waren vorher inhaltlich
+praktisch fertig (alle Endpunkte inkl. 404-Faellen curl-verifiziert),
+ihnen fehlte nur der letzte Schritt fuer die offizielle Bestaetigung.
+
+**Selbstbau-Vergleich: derselbe CRUD-Auftrag, diesmal direkt selbst
+umgesetzt statt an ein Modell delegiert.** Zwei unabhaengige Durchlaeufe,
+Backend komplett curl-verifiziert (GET/POST/PUT/DELETE inkl. 404/400-
+Fehlerfaelle), Frontend live im Browser durchgeklickt (Anlegen,
+Bearbeiten, Loeschen):
+
+| Durchlauf | Zeit | Ergebnis |
+|---|---:|---|
+| Test 1 | 192s (3,2 Min.) | vollstaendig verifiziert |
+| Test 2 | 166s (2,8 Min.) | vollstaendig verifiziert |
+
+**Ein Werkzeug fuer die exakte eigene Tokenzahl: `ccusage`.** Bisher
+gab es fuer den eigenen Verbrauch nur eine grobe Zeichen-Schaetzung.
+`npx ccusage session` liest die lokalen Session-Logs aus und lieferte
+die echte Session-ID als Treffer -- fuer die komplette Sitzung 3670644
+Output-Tokens, 2,94 Mrd. Tokens gesamt (der Loewenanteil Cache-Read),
+$1176,50. Per Zeitfenster-Filterung ueber die rohe JSONL-Transkript-Datei
+(nach `timestamp` gefiltert) liessen sich die zwei Selbstbau-Tests
+isolieren: 53 bzw. 39 Antworten, 23510 bzw. 16834 Output-Token --
+mehr als die grobe Zeichen-Schaetzung vermuten liess (die zaehlte nur
+sichtbaren Dateiinhalt, nicht Denk-/Tool-Call-Anteile).
+
+**Die wichtigste Lektion des Abends: was "Tok/s" eigentlich misst.**
+Completion-Tokens durch GESAMT-Wall-Clock-Zeit zu teilen (inklusive
+`npm install`, `curl`-Tests, Dateien schreiben zwischen den API-
+Aufrufen) ist keine echte Tok/s-Zahl -- Tool-Ausfuehrung erzeugt null
+Tokens, verwaesert die Zahl aber trotzdem. Die korrekte Methode: nur
+die reine Antwortzeit der API-Aufrufe zaehlen (mc.py's eigene "X Tokens
+generiert in Ys"-Zeilen aufsummiert, ohne die Zeit dazwischen). Nachgerechnet
+fuer alle Laeufe des Abends:
+
+| Modell | Antworten | Tokens | reine Generierungszeit | **echte Tok/s** |
+|---|---:|---:|---:|---:|
+| `deepseek-v4-flash-0731` (60 Schritte, sauberer `finish`) | 54 | 42574 | 278,5s | **152,9** |
+| `openai/gpt-5.6-luna` (non-Pro) | 29 | 12555 | 155,7s | 80,6 |
+| `openai/gpt-5.6-luna-pro` (Flex) | 26 | 89121 | 1108,5s | 80,4 |
+| `z-ai/glm-5.3-flash` (z-ai gepinnt, Lauf 1) | 29 | 28725 | 626,2s | 45,9 |
+| `z-ai/glm-5.3-flash` (z-ai gepinnt, Lauf 2) | 30 | 34721 | 812,7s | 42,7 |
+| `~z-ai/glm-flash-latest` | 26 | 55075 | 1293,3s | 42,6 |
+| `z-ai/glm-5.3-flash` (40 Schritte, sauberer `finish`) | 30 | 28572 | 1193,0s | 23,9 |
+| `qwen/qwen3.8-flash` | 30 | 57906 | 2657,2s | 21,8 |
+
+`deepseek-v4-flash-0731` ist damit das schnellste Modell des ganzen
+Abends -- schneller sogar als der eigene (methodisch nicht vollstaendig
+vergleichbare, da Tool-Zeit nicht sauber abtrennbare) Selbstbau-Wert.
+`qwen/qwen3.8-flash` bleibt ueber praktisch jede Messung hinweg das
+unzuverlaessigste und langsamste Modell des Abends -- Platzhalter-Token-
+Bug, Alibaba-Rate-Limit (einziger Anbieter, kein Fallback moeglich),
+wiederholte Netzwerkfehler, nie ein sauberer `finish` trotz mehrfacher
+Wiederholung mit steigendem Schrittlimit.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
