@@ -107,6 +107,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "model": model,
             "dauer_s": round(dauer, 2),
             "prompt_tokens": usage.get("prompt_tokens") if usage else None,
+            "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                              if usage else None,
             "completion_tokens": completion_tokens,
             "tok_s": round(completion_tokens / dauer, 2)
                      if completion_tokens and dauer > 0 else None,

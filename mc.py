@@ -49,6 +49,7 @@ import time
 import http.client
 import socket
 import ssl
+import uuid
 import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
@@ -268,6 +269,19 @@ THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
 # provider:{order:[...],allow_fallbacks:false} mitgeschickt -- Endpunkte,
 # die das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
 PROVIDER_ORDER = [p.strip() for p in str(_setting("MC_PROVIDER", "provider", "")).split(",") if p.strip()]
+
+# OpenRouter-spezifisch: eine pro mc.py-Lauf stabile session_id aktiviert
+# OpenRouters "Sticky Provider Routing" sofort ab dem ERSTEN Request (statt
+# erst nach einem zufaelligen Cache-Treffer) -- haelt damit ueber den ganzen
+# Agenten-Lauf hinweg denselben Backend-Anbieter warm, was Prompt-Caching
+# ueberhaupt erst zuverlaessig ermoeglicht. Anders als MC_PROVIDER schaltet
+# das KEINE Ausfallsicherheit ab (kein allow_fallbacks:false) -- faellt der
+# geklebte Anbieter aus, weicht OpenRouter weiterhin automatisch aus. Per
+# Default automatisch generiert (eine neue ID pro Prozessstart); ueber
+# MC_SESSION_ID explizit überschreibbar (z.B. um mehrere separate mc.py-
+# Aufrufe an derselben Aufgabe unter einer Session zu buendeln). Endpunkte,
+# die das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
+SESSION_ID = str(_setting("MC_SESSION_ID", "session_id", "")) or f"mc-{uuid.uuid4().hex[:24]}"
 
 # Manche neueren Reasoning-Modelle (u.a. OpenAIs eigene "gpt-5.x"-Serie
 # direkt ueber api.openai.com, nicht ueber OpenRouter) lehnen klassische
@@ -664,6 +678,7 @@ def _chat_once(messages, model):
         payload["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
     if PROVIDER_ORDER:
         payload["provider"] = {"order": PROVIDER_ORDER, "allow_fallbacks": False}
+    payload["session_id"] = SESSION_ID
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
