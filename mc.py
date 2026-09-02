@@ -260,6 +260,15 @@ THINK = _truthy(_setting("MC_THINK", "think", True))
 # das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
 THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
 
+# OpenRouter-spezifisch: pinnt einen Request auf einen bestimmten Backend-
+# Anbieter statt OpenRouters automatischem Load-Balancing zwischen mehreren
+# Providern desselben Modells (z.B. "z-ai" statt wahlweise "novita" fuer
+# z-ai/glm-5.3-flash). Kommagetrennte Liste von Provider-Slugs in
+# absteigender Prioritaet, z.B. MC_PROVIDER="z-ai,novita". Wird als
+# provider:{order:[...],allow_fallbacks:false} mitgeschickt -- Endpunkte,
+# die das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
+PROVIDER_ORDER = [p.strip() for p in str(_setting("MC_PROVIDER", "provider", "")).split(",") if p.strip()]
+
 # Manche neueren Reasoning-Modelle (u.a. OpenAIs eigene "gpt-5.x"-Serie
 # direkt ueber api.openai.com, nicht ueber OpenRouter) lehnen klassische
 # Sampling-Parameter wie frequency_penalty mit HTTP 400 rundweg ab, statt
@@ -653,6 +662,8 @@ def _chat_once(messages, model):
         payload["chat_template_kwargs"] = {"enable_thinking": False}
     if THINKING_BUDGET > 0:
         payload["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
+    if PROVIDER_ORDER:
+        payload["provider"] = {"order": PROVIDER_ORDER, "allow_fallbacks": False}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -3227,6 +3238,11 @@ Rules:
 - If a requirement is GENUINELY unclear, use the ask action instead of guessing.
   For unambiguous tasks, get started directly.
 - EXACTLY ONE action block per reply. You may briefly explain your approach before it.
+  If you emit more than one, ONLY THE FIRST is executed — every other block in
+  that same reply is discarded WITHOUT running, including a "finish" if you
+  bundled it in. Batching multiple actions to "save steps" backfires: it wastes
+  the reply on work that never happens. One action, see its real result, then
+  decide the next one.
 - JSON must be valid. @@CONTENT_RULE@@
 - Work in small steps. Read existing files before changing them.
 - SMALL changes to existing files ALWAYS via edit_file (targeted replacement)

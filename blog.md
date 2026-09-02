@@ -6176,6 +6176,253 @@ GPUs. Fuer die Optik/Ausgestaltung des Spiels selbst zeigt sich aber
 unabhaengig davon ein deutlicher qualitativer Unterschied zugunsten
 des OpenAI-Modells.
 
+## 72. LinkedIn Manager per vibelove, und ein Breakout mit ornith
+
+Zwei kleinere Praxis-Bauten zwischendurch, bevor der Schwerpunkt wieder
+zu reinen CRUD-Benchmarks wechselte.
+
+**LinkedIn Manager (vibelove, `stealth/ox-alpha` ueber OpenRouter).**
+Aufgabe: ein Kalender fuer geplante LinkedIn-Postings mit Vorschau,
+Bild-Upload/-Bearbeitung/-Loeschung, Listenansicht, frei anlegbaren
+Kategorien und SQLite-Speicherung. Die ersten beiden Build-Versuche
+gingen komplett verloren -- `mc_run.log`-Analyse zeigte, dass das Modell
+mehrere `write_files`-Bloecke in EINER Antwort buendelte ("Um Schritte
+zu sparen", so das Modell selbst im Reasoning), was mc.py's
+Ein-Block-pro-Antwort-Parser lautlos verschluckte: volle Dateiinhalte im
+Log, aber null "Datei(en) geschrieben"-Bestaetigungen. Der dritte
+Versuch mit strikt EINER Datei pro `/build`-Aufruf lief sauber durch --
+7 Frontend-Komponenten einzeln, danach noch ein nachtraeglich
+gewuenschtes Pflichtfeld "Fuer wen? (Tina/Guenther)" samt Filtern in
+Kalender und Liste, ebenfalls im Einzelschritt-Verfahren. Live im
+Browser verifiziert: Kategorie angelegt, Post mit Live-Vorschau erstellt,
+korrekt im Kalender platziert, Personen-Filter korrekt isoliert.
+
+**breakout6ornith (LM Studio, `ornith-1.5-35b-a3b-mlx`, Host `.79`).**
+Auto-Start funktionierte, Punktestand/Leben liefen live mit. Ein echter
+Syntaxfehler (`export { restart: reset, state };` -- Doppelpunkt-Umbenennung
+in `export{}` ist ungueltig, korrekt waere `as`) wurde gezielt gefunden
+und per `edit_file` behoben, `npm run build` danach exit 0. Ein zweiter,
+echter Bug blieb offen: `.hidden` wird per `classList` gesetzt, aber
+nirgends in `style.css` definiert -- das Game-Over-Overlay verschwindet
+nie. Der Fix-Auftrag war unterwegs, als LM Studio auf `.79` beendet
+wurde ("Connection refused"); unkritisch, aber unerledigt liegen
+geblieben.
+
+## 73. Die Denk-Budget-Frage: LM Studio, Ollama -- und ein neuer Player
+
+Ausgangspunkt: eine neue Serie CRUD-Benchmarks mit frisch aufgetauchten
+Qwen3.8-27B-Varianten auf Host `.191`, alle ueber die direkte mc.py-CLI
+(kein vibelove).
+
+**Drei neue Varianten, drei verschiedene Ausfaelle:**
+
+| Variante | Ergebnis |
+|---|---|
+| `qwen3.8-27b-ud-dflash2-mlx` | 3 Schritte (14,6 -> 9,2 -> 3,8 Tok/s), nach 7024s "Connection reset by peer" -- kein `finish`, unklar ob Host- oder Netzproblem |
+| `qwen3.8-whittle-moe-27b-mlx` | von der ersten Antwort an genuines mehrsprachiges Kauderwelsch bei nur ~3,2 Tok/s -- auf Nutzerwunsch per `kill` abgebrochen |
+| `qwen3.8-27b@mxfp4` | **sauberer `finish`**, live verifiziert: 16 Requests, 224468 Tokens (davon 119093 Reasoning/Completion), 9955s (165,9 Min.), **Ø 12,0 Tok/s** |
+
+Der dritte Lauf war der "Best Case"-Test der MXFP4-Hypothese aus
+Kapitel 66 (dieselbe Quantisierung, die vermutlich Gemma-4 schnell
+macht) -- und widerlegte sie fuer die dichte Qwen3.8-27B-Architektur
+klar: korrekt, aber mit 165,9 Minuten praktisch unbrauchbar langsam.
+
+**Kann man das Denken begrenzen? Zwei API-Recherchen.** LM Studios
+eigener GitHub-Bugtracker foerderte zwei relevante, offene Bugs zutage:
+**#988** -- `reasoning_effort` per API wird ignoriert, es zaehlt immer
+nur die GUI-Einstellung ("Inference -> Custom Fields -> Reasoning
+Effort"); **#2057** -- REST-API/CLI ignorieren `thinking_enable`
+komplett, Denken bleibt fuer programmatische Aufrufe permanent an. Ein
+eigener A/B-Test (`reasoning:{effort:"low"}` vs. kein Parameter, gegen
+`qwen3.8-27b@mxfp4`) lieferte IDENTISCHE Token-Zahlen (94 Reasoning-,
+214 Completion-Token, beide Male) -- deckt sich mit den gemeldeten Bugs.
+Ollama kann demgegenueber immerhin `think:false`/`reasoning_effort:"none"`
+zuverlaessig ganz abschalten, aber auch dort fehlt ein echtes
+Token-*Budget* (nur an/aus, keine Zwischenstufe) -- offene Feature-Requests
+seit Mai 2025 (#10925, #17561). Qwen3 selbst unterstuetzt serverseitig
+sogar einen `thinking_budget`-Parameter, den Ollama schlicht nicht
+durchreicht.
+
+**Der dritte Player: oMLX.** Eine Web-Recherche nach MLX-Servern mit
+nativer Multi-Token-Prediction (MTP) foerderte neben dem bereits
+bekannten MTPLX auch `oMLX` zutage -- und stellte sich heraus: lag
+bereits installiert auf der eigenen Maschine (Version 0.6.3rc2). Gestartet
+mit `--model-dir` direkt auf LM Studios `mlx-community`-Cache-Ordner
+(kein Duplizieren der Gewichte noetig, da das Verzeichnis-Layout mit
+`config.json` + `*.safetensors` exakt passt) -- oMLX erkannte alle dort
+liegenden Modelle automatisch. Ein Update auf 0.6.4 (u.a. mit Fixes fuer
+"Lightning MTP state handling") folgte kurz darauf ueber die offizielle
+GitHub-Release-Seite.
+
+Der entscheidende Unterschied zu LM Studio: oMLX's `thinking:{type:
+"enabled","budget_tokens":N}`-Feld wirkt tatsaechlich. Ein direkter
+Vorher-Nachher-Test (`budget_tokens=200` vs. kein Parameter, gleicher
+Prompt) zeigte einen klaren Unterschied -- 486 vs. 988 Completion-Token.
+Ein einfacher Python-Funktions-Test (`fibonacci(n)`) bestaetigte
+zusaetzlich korrekte, live-lauffaehige Ergebnisse bei ~22 Tok/s
+effektiver Decode-Geschwindigkeit.
+
+## 74. oMLX vs. LM Studio: das grosse Denk-Budget-Experiment
+
+Kernfrage: Hilft ein begrenztes Denk-Budget der Geschwindigkeit, ohne
+die Qualitaet zu verschlechtern? Drei identische CRUD-Laeufe gegen
+`Qwen3.8-27B-mxfp4` via oMLX 0.6.4, lokal auf einem M1 Pro Max (32 GB) --
+derselbe Prompt wie beim LM-Studio-Vergleichslauf.
+
+| Lauf | Budget | Zeit | Requests | Tokens (Prompt+Compl.) | Tok/s | Ergebnis |
+|---|---|---:|---:|---|---:|---|
+| minimal | 200 Token | 69 Min | 31 | 231582 (201155+30427) | 7,4 | Schrittlimit, kein `finish` |
+| mittel | 1500 Token | 67 Min | 32 | 238040 (209676+28364) | 7,0 | Schrittlimit, kein `finish` |
+| max | unbegrenzt | 89 Min | 31 | 252135 (210237+41898) | 7,85 | Schrittlimit, 0 Live-Tests (AirPlay respawnte nach jedem `kill`) |
+| *(Referenz)* LM Studio, unbegrenzt, M4 Pro | -- | **166 Min** | 16 | 224468 | **12,0** | sauberer `finish`, live verifiziert |
+
+**Erkenntnis 1 -- Budget-Groesse macht praktisch keinen Unterschied.**
+200 vs. 1500 Token Denk-Budget: fast identische Zeit (69 vs. 67 Min.)
+und Tempo (7,4 vs. 7,0 Tok/s). Sogar mit nur 200 Token Budget
+diagnostizierte das Modell einen echten Umgebungsfehler (macOS AirPlay
+belegt Port 5000) korrekt und wich selbststaendig auf Port 5010 aus --
+kein Hinweis darauf, dass wenig Denken hier die Qualitaet gekostet
+haette.
+
+**Erkenntnis 2 -- oMLX war auf dieser Hardware NICHT schneller als LM
+Studio.** Alle drei oMLX-Laeufe liegen bei 7,0-7,85 Tok/s, deutlich
+unter den 12,0 Tok/s der LM-Studio-Baseline -- und im Gegensatz zu LM
+Studio erreichte keiner der drei einen sauberen `finish`. Die kuerzere
+Wall-Clock-Zeit ist kein Geschwindigkeitsvorteil, sondern Artefakt des
+frueheren Anschlagens ans 30-Schritt-Limit. Wichtige offene Variable:
+der Hardware-Unterschied (M1 Pro Max hier vs. M4 Pro bei der Baseline)
+wurde nicht kontrolliert -- ein direkter oMLX-vs-LM-Studio-Vergleich auf
+identischer Hardware steht noch aus.
+
+**Ein echter oMLX-Bug: Gemma-4-26B-A4B als "VLM" geladen.** Zum
+Vergleich sollte `gemma-4-26b-a4b-it-mxfp4` -- auf genau dieser M4-Pro-
+Maschine via LM Studio historisch bei 84-171 Sekunden, 6/6, meist
+fehlerfrei (siehe Kapitel 9.17f) -- denselben Test auch via oMLX
+durchlaufen. Vier Versuche, vier Fehlschlaege: erst schrumpfte das
+Kontextfenster unter Speicherdruck auf nur 2878 Token; nach Anheben des
+`memory_guard_tier` auf `aggressive` kam der Lauf zwar bis Schritt 6
+(Backend vollstaendig curl-verifiziert!), scheiterte dann aber am
+selben Kontextfenster-Limit erneut; ein Versuch mit `--keep-context 1`
+brach schon nach 1 Request ab; ein letzter Versuch trotz mehr freiem
+RAM ebenfalls sofort. Der eigentliche Fund steckte im oMLX-Server-Log
+selbst:
+
+```
+Prefill would require ~16.20 GB peak (current 15.59 GB + KV+SDPA 623.84 MB)
+but static ceiling is 16.01 GB
+```
+
+Das Modell allein belegt im Leerlauf schon 15,4-15,6 GB; die von oMLX
+fuer dieses Modell berechnete "static ceiling" liegt bei nur ~16 GB --
+unabhaengig vom Memory-Guard-Tier bleiben so nur 0,4-0,6 GB fuer den
+KV-Cache. Ursache vermutlich: oMLX klassifiziert diesen (multimodal-
+faehigen) Gemma-Checkpoint intern als **VLM** (`"engine": "vlm"` im
+Start-Log) und berechnet dafuer offenbar eine viel zu enge
+Speicherobergrenze, obwohl er hier rein textuell genutzt wird. Kein
+Modell- oder Hardware-Problem -- LM Studio handhabt exakt dieselben
+Gewichte auf derselben Maschine problemlos --, sondern ein reproduzierbarer
+Fehler in oMLX 0.6.4's Speicher-Berechnung fuer VLM-klassifizierte
+Checkpoints auf speicherknapper Hardware.
+
+## 75. Vier neue REAP-geprunte Modelle, vier verschiedene Ausfaelle
+
+Auf Host `.191` (LM Studio) tauchten vier frisch heruntergeladene,
+Router-basiert geprunte ("REAP") Modell-Varianten auf. Ergebnis: ein
+lehrreiches Sammelsurium unterschiedlichster Fehlerarten.
+
+| Modell | Format-Problem? | Ergebnis |
+|---|---|---|
+| `Ornith-1.0-35B-OptiQ-4bit-REAP-19B` | ja | laedt gar nicht: `No LM Runtime found for model format 'torchSafetensors'` -- rohe, unkonvertierte HF-Gewichte |
+| `Ornith-1.5-35B-A3B-OptiQ-4bit-REAP-19B` | ja | dito |
+| `Qwen3.5-35B-A3B-OptiQ-4bit-REAP-19B` | ja | dito |
+| `Ornith-1.5-9B-OptiQ-4bit` | nein | laedt, Testlauf aber vom Nutzer vorzeitig gestoppt (kein Modellfehler) |
+
+Fuer die ladbaren Modelle (plus zwei weitere, waehrend der Downloads
+angekuendigte Varianten) der volle CRUD-Test:
+
+| Modell | Requests | Tokens (P+C) | Ergebnis |
+|---|---:|---|---|
+| `prism-ml/bonsai-27b` | 31 | 172769 (166243+6526) | **Totalausfall**: 30/30 Schritte reine Formatfehler (absolute statt relative Pfade, fehlende `content`-Bloecke) -- **null Dateien geschrieben** |
+| `qwen/qwen3.5-9b` | 31 | 234465 (227402+7063) | Schrittlimit; Backend fertig+korrekt (AirPlay selbst erkannt, Port 5010), aber **kein Frontend** -- 26 von 32 Aktionen reine `run`-Befehle |
+| `qwen3.8-9b-mlx` | 26 | 140110 (126034+14076) | Abbruch: 3x in Folge komplettes Antwort-Budget beim Nachdenken verbraucht, obwohl Kontextfenster (8192 Token) ausreichend war -- mc.py schlug korrekt `/settings think false` vor |
+| `qwen3.8-9b-distill-mlx` (keXjos, 5bit) | 31 | 169533 (159669+9864) | Schrittlimit, fast nichts Verwertbares -- halluzinierter absoluter Pfad liess fast alle Aktionen fehlschlagen, nur eine verirrte `package.json` uebrig |
+| `qwen3.8-9b-distill-mlx-oq4e-mtp` (nicolasramos) | 3 | 9971 (8358+1613) | Abbruch: **genuines mehrsprachiges Kauderwelsch** ab Schritt 3 -- dieselbe Degeneration wie bei `qwen3.8-whittle-moe-27b-mlx` in Kapitel 73, Quantisierungsschema fuer dieses Modell vermutlich kaputt |
+
+Fuenf von fuenf getesteten neuen 9B/27B-Kandidaten scheiterten also an
+fuenf VERSCHIEDENEN Fehlerarten -- Protokoll-Disziplin, fehlendes
+Frontend, Reasoning-Budget-Verschlingung, Pfad-Halluzination,
+Modell-Degeneration. Keiner davon war ein "normaler", brauchbarer Lauf.
+
+## 76. mc.py lernt Provider-Pinning -- und ein zweiter Blick aufs Batching-Problem
+
+**Neues Feature: `MC_PROVIDER`.** OpenRouter routet Anfragen standardmaessig
+automatisch zwischen mehreren Backend-Anbietern desselben Modells (z.B.
+"Z.AI" vs. "Novita" fuer `z-ai/glm-5.3-flash`, je mit eigener
+Quantisierung). Um das fuer Benchmarks zu kontrollieren statt dem
+Zufall zu ueberlassen, bekam mc.py eine neue Env-Var `MC_PROVIDER`
+(kommagetrennte Provider-Slugs, z.B. `MC_PROVIDER=z-ai`), die ein
+`provider:{order:[...],allow_fallbacks:false}`-Feld an den
+Chat-Completion-Request anhaengt -- Endpunkte, die das Feld nicht
+kennen, ignorieren es folgenlos, genau wie `MC_THINKING_BUDGET`. Ein
+direkter curl-Test bestaetigte die Wirkung: die Antwort enthielt
+`"provider":"Z.AI"` exakt wie angefordert.
+
+**Ein zweiter Blick aufs Batching-Problem.** Waehrend eines
+Provider-Pinning-Tests batchte `~z-ai/glm-flash-latest` (kein Pinning,
+freie Anbieterwahl) erneut 22 Aktionsbloecke in EINER Antwort --
+dasselbe Muster wie bei `stealth/ox-alpha` ganz frueh in dieser
+Session-Reihe, diesmal inklusive eines verfrueht mitgebuendelten
+`finish`-Aufrufs. Ueberlegt, aber verworfen: den Parser so umzubauen,
+dass mehrere Aktionsbloecke sequenziell ausgefuehrt werden -- das
+Risiko, den bewaehrten Normalfall (ein Block pro Antwort, praktisch
+alle Laeufe) durch einen Umbau am Parser-Kern subtil zu beschaedigen,
+ueberwog den Nutzen fuer den seltenen Batching-Fall. Stattdessen eine
+risikoarme, rein additive Massnahme: die bestehende Prompt-Regel
+"EXACTLY ONE action block per reply" um eine explizite
+Konsequenz-Warnung ergaenzt (nur der erste Block laeuft, der Rest wird
+ERSATZLOS verworfen, inklusive eines mitgebuendelten `finish`).
+
+**Ergebnisse, alle gegen denselben CRUD-Prompt ueber OpenRouter:**
+
+| Modell (Provider-Pin) | Requests | Tokens (P+C) | Zeit | Tok/s | Kosten | Ergebnis |
+|---|---:|---|---:|---:|---:|---|
+| `z-ai/glm-5.3-flash` (`z-ai`), Lauf 1 | 29 | 253899 (225797+28102) | 13 Min | 36,6 | **$0,0144** | sauberer `finish` + Git-Commit |
+| `z-ai/glm-5.3-flash` (`z-ai`), Lauf 2 | 31 | 243478 (207416+36062) | 17 Min | 34,9 | $0,0167 | Schrittlimit, kein `finish` -- Lauf-zu-Lauf-Streuung auch bei fixem Provider |
+| `~z-ai/glm-flash-latest` (kein Pin, alter Prompt) | 26 | 465295 (410220+55075) | 23 Min | 40,3 | $0,0262 | sauberer `finish` -- aber erst NACH Verlust von 21 Bloecken bei Schritt 1 |
+| `deepseek/deepseek-v4-flash-0731` (`baidu/fp8`) | 31 | 230870 (212333+18537) | ~5 Min | 58,1 | $0,0092 | Schrittlimit; Backend+Frontend gebaut, aber 404-Statuscode bei PUT/DELETE auf falsche ID nie verifiziert -- ehrlich als offen dokumentiert |
+| `openai/gpt-5.6-luna-pro` (`openai/flex`) | 19 | **1169672** (1089906+79766) | ~16 Min | **83,8** | **$0,1067** | Abbruch: Kontext-Overflow nach 3x leerer Antwort -- Backend/Frontend fertig gebaut, blieb bewusst auf dem geforderten Port 5000 (AirPlay-Workaround per Env-Var statt Portwechsel), aber die finale Verifikation sprengte den Kontext |
+| `~z-ai/glm-flash-latest`, Retest mit verstaerkter Prompt-Regel | 31 | 304740 (242336+62404) | 25 Min | 41,3 | $0,0244 | Schrittlimit, kein `finish` -- **batchte diesmal 33 Bloecke in EINER Antwort statt 22, 32 verworfen** |
+| `openai/gpt-5.6-luna` (`openai`, non-Pro) | 29 | 226667 (214398+12269) | ~5 Min | 44,0 | $0,0456 | batchte 3x (6, 3, 3 Bloecke verworfen), **trotzdem sauberer `finish`** -- deutlich guenstiger/schneller als die Pro/Flex-Variante |
+| `qwen/qwen3.8-flash` (kein Pin) | 4 | -- | ~18 Min | -- | -- | **manuell abgebrochen**: erzeugte Python-Code mit woertlichen, nie aufgeloesten Platzhalter-Tokens (`<NUM>`, `<HEX>`, `<SAFE_PORT>` etc.) statt echter Werte -- vermutlich ein durchsickerndes Trainings-Artefakt, jeder Testlauf scheiterte an `exit=1` |
+
+Der teurere, laengere Lauf zeigt konkret in Dollar und Minuten, was
+Batching-Verschwendung kostet: fast doppelt so viele Tokens, fast
+doppelt so teuer, fast doppelt so lang -- fuer dasselbe Endergebnis.
+
+**Der Nachtest der verstaerkten Prompt-Regel: ernuechternd.** Der
+Retest von `~z-ai/glm-flash-latest` mit der neuen Konsequenz-Warnung im
+System-Prompt batchte NICHT weniger, sondern MEHR -- 33 Aktionsbloecke
+in einer einzigen Antwort statt der urspruenglichen 22, 32 davon
+ersatzlos verworfen. Die reine Prompt-Verstaerkung wirkt bei diesem
+Modell also nicht. Das bestaetigt im Nachhinein die Entscheidung gegen
+den riskanten Parser-Umbau aus Sicht der Kosten-Nutzen-Abwaegung nicht
+direkt (das haette das Problem strukturell geloest), zeigt aber: bei
+einem Modell, das sich so hartnaeckig ueber eine explizite Anweisung
+hinwegsetzt, ist ohnehin Vorsicht geboten -- ein Parser-Fix haette das
+grundsaetzliche Verhalten des Modells nicht geaendert, nur die Kosten
+eines einzelnen Fehlverhaltens gemildert.
+
+Eine zusaetzliche Beobachtung relativiert das Bild etwas: Batching ist
+nicht zwangslaeufig toedlich fuer den Lauf. `openai/gpt-5.6-luna-pro`
+(Flex-Tier) batchte zweimal und scheiterte am Ende an einem
+Kontext-Overflow; die guenstigere Schwester `openai/gpt-5.6-luna`
+(ohne Pro, `openai`-Provider statt Flex) batchte sogar DREImal (6, 3,
+3 verworfene Bloecke) -- kam aber trotzdem zu einem sauberen `finish`,
+in nur ~5 Minuten fuer $0,0456. Batching ist also ein zuverlaessiger
+Kostentreiber, aber kein zuverlaessiger Vorbote eines Scheiterns -- es
+kommt darauf an, ob das Modell sich danach wieder faengt oder die
+verlorene Arbeit erneut (und diesmal disziplinierter) nachholt.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
