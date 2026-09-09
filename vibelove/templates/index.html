@@ -125,7 +125,7 @@
                 src="" data-preview-port="5173"
                 style="width:100%;height:100%;border:none;transition:width 0.3s;background:white;"
             ></iframe>
-<script>(function(){var f=document.getElementById("previewFrame");if(f){f.src=window.location.protocol+"//"+window.location.hostname+":"+f.dataset.previewPort;}})();</script>
+<script>(function(){var f=document.getElementById("previewFrame");if(f){f.src=window.location.protocol+"//"+window.location.hostname+":"+f.dataset.previewPort+"?_r="+Date.now();}})();</script>
         </div>
 
         <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
@@ -743,8 +743,10 @@
 <script>
     function reloadPreview() {
         const frame = document.getElementById('previewFrame');
-        if (frame) {
-            frame.src = frame.src;
+        if (frame && frame.src) {
+            const url = new URL(frame.src, window.location.href);
+            url.searchParams.set('_r', Date.now());
+            frame.src = url.toString();
         }
     }
 

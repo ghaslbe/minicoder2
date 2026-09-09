@@ -22,6 +22,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import po
 
 app = Flask(__name__)
+
+
+@app.after_request
+def _keine_zwischenspeicherung(response):
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB Obergrenze fuer Datei-Uploads
 
 # Konfiguration
