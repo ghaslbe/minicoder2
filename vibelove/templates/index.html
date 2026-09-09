@@ -122,9 +122,10 @@
         <div id="previewWrapper" class="flex-grow flex items-center justify-center bg-gray-200 overflow-auto">
             <iframe
                 id="previewFrame"
-                src="http://localhost:5173"
+                src="" data-preview-port="5173"
                 style="width:100%;height:100%;border:none;transition:width 0.3s;background:white;"
             ></iframe>
+<script>(function(){var f=document.getElementById("previewFrame");if(f){f.src=window.location.protocol+"//"+window.location.hostname+":"+f.dataset.previewPort;}})();</script>
         </div>
 
         <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
@@ -424,19 +425,16 @@
             }
         }
 
-        function renderChatAusGitLog() {
+        function renderChatAusVerlauf() {
             chatFeed.innerHTML = '';
-            if (!gitCommits.length) {
+            if (!verlaufEintraege.length) {
                 appendSystemBubble('Noch kein Verlauf für dieses Projekt.');
                 return;
             }
-            gitCommits.forEach((c, i) => {
-                if (i === 0) {
-                    appendSystemBubble('🆕 Projekt erstellt');
-                    return;
-                }
-                const msg = c.message.replace(/^mc:\s*/, '');
-                appendAssistantBubble({ headline: msg, rollbackTo: c.parent, pending: false, model: c.model });
+            appendSystemBubble('🆕 Projekt erstellt');
+            verlaufEintraege.forEach(e => {
+                appendUserBubble(e.instruction);
+                appendAssistantBubble({ headline: e.summary, rollbackTo: null, pending: false, model: e.model });
             });
         }
 
@@ -448,7 +446,14 @@
             } catch (e) {
                 gitCommits = [];
             }
-            renderChatAusGitLog();
+            try {
+                const res2 = await fetch('/bauverlauf');
+                const data2 = await res2.json();
+                verlaufEintraege = data2.eintraege || [];
+            } catch (e) {
+                verlaufEintraege = [];
+            }
+            renderChatAusVerlauf();
         }
 
         // Nach einem Bauauftrag: pruefen, ob ein NEUER Commit entstand (nur
