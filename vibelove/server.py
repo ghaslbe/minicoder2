@@ -26,6 +26,11 @@ app = Flask(__name__)
 
 @app.after_request
 def _keine_zwischenspeicherung(response):
+    """Vibelove ist ein Ein-Nutzer-Entwerkzeug mit staendig wechselndem
+    Zustand (Chat-Verlauf, Vorschau) -- ein vom Browser zwischengespeicherter
+    alter Stand (Chat zeigt nur die Antwort ohne den urspruenglichen Prompt,
+    Vorschau zeigt eine veraltete Version) sah wie ein Server-Bug aus, war
+    aber Browser-Caching. Kein Cache fuer irgendeine Antwort dieser App."""
     response.headers['Cache-Control'] = 'no-store'
     return response
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB Obergrenze fuer Datei-Uploads
@@ -192,8 +197,12 @@ VERLAUF_DATEINAME = "bauverlauf.jsonl"
 
 def schreibe_verlauf_eintrag(project_dir, instruction, summary, model):
     """Haengt einen VOLLSTAENDIGEN Eintrag (keine Kuerzung) an
-    <projekt>/bauverlauf.jsonl an -- unabhaengig von Git. Grundlage fuer
-    GET /bauverlauf und damit die Chat-Rekonstruktion beim Laden."""
+    <projekt>/bauverlauf.jsonl an -- unabhaengig von Git, damit die Historie
+    auch dann erhalten bleibt, wenn ein Commit fehlschlaegt oder ein Lauf
+    ohne eigene Dateiaenderungen durchlief. Grundlage fuer GET /bauverlauf
+    und damit die Chat-Rekonstruktion beim Laden (reichhaltiger als das
+    Git-Log allein, das nur eine knappe Commit-Message pro Lauf hat). Best
+    effort, wie stelle_sauberen_arbeitsbaum_sicher()."""
     pfad = os.path.join(project_dir, VERLAUF_DATEINAME)
     zeile = json.dumps({
         "zeit": time.strftime("%Y-%m-%d %H:%M:%S"), "model": model,
@@ -1097,8 +1106,10 @@ def push_project():
 
 @app.route('/bauverlauf', methods=['GET'])
 def bauverlauf():
-    """Liefert bauverlauf.jsonl-Eintraege (Anweisung+Ergebnis pro Build) des
-    aktiven Projekts als JSON -- Grundlage fuer die Chat-Rekonstruktion."""
+    """Liefert die BAUVERLAUF.md-Eintraege (Anweisung+Ergebnis pro Build)
+    des AKTIVEN Projekts als JSON -- Grundlage fuer die Chat-Rekonstruktion
+    beim Laden, reichhaltiger als das Git-Log allein (das nur eine knappe
+    Commit-Message hat, nicht die urspruengliche Anweisung)."""
     return jsonify({'eintraege': lade_verlauf(projekt_dir(CURRENT_PROJECT))})
 
 @app.route('/projects/git-log', methods=['GET'])
@@ -1390,4 +1401,4 @@ if __name__ == '__main__':
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)
     
     # Flask starten
-    app.run(port=PORT_VIBELOVE, debug=False)
+    app.run(host="0.0.0.0", port=PORT_VIBELOVE, debug=False)

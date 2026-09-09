@@ -230,6 +230,7 @@
         const instructionInput = document.getElementById('instruction');
 
         let gitCommits = []; // zuletzt geladene Commit-Liste des aktiven Projekts
+        let verlaufEintraege = []; // zuletzt geladene BAUVERLAUF.md-Eintraege (GET /bauverlauf)
 
         function escapeHtml(str) {
             const div = document.createElement('div');
@@ -425,6 +426,13 @@
             }
         }
 
+        // Chat-Rekonstruktion beim Laden/Projektwechsel: BAUVERLAUF.md
+        // (via GET /bauverlauf) statt Git-Log, weil das Git-Log nur eine
+        // knappe Commit-Message pro Lauf hat -- nicht die urspruengliche
+        // Anweisung. Git-Log wird weiterhin separat geladen (gitCommits),
+        // weil aktualisiereRollbackFuer() nach einem NEUEN Bauauftrag darauf
+        // angewiesen ist, um den Rollback-Button an die frische Bubble zu
+        // haengen.
         function renderChatAusVerlauf() {
             chatFeed.innerHTML = '';
             if (!verlaufEintraege.length) {
