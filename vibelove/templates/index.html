@@ -122,9 +122,10 @@
         <div id="previewWrapper" class="flex-grow flex items-center justify-center bg-gray-200 overflow-auto">
             <iframe
                 id="previewFrame"
-                src="http://localhost:5173"
+                src="" data-preview-port="5173"
                 style="width:100%;height:100%;border:none;transition:width 0.3s;background:white;"
             ></iframe>
+<script>(function(){var f=document.getElementById("previewFrame");if(f){f.src=window.location.protocol+"//"+window.location.hostname+":"+f.dataset.previewPort+"?_r="+Date.now();}})();</script>
         </div>
 
         <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
@@ -229,6 +230,7 @@
         const instructionInput = document.getElementById('instruction');
 
         let gitCommits = []; // zuletzt geladene Commit-Liste des aktiven Projekts
+        let verlaufEintraege = []; // zuletzt geladene BAUVERLAUF.md-Eintraege (GET /bauverlauf)
 
         function escapeHtml(str) {
             const div = document.createElement('div');
@@ -424,19 +426,23 @@
             }
         }
 
-        function renderChatAusGitLog() {
+        // Chat-Rekonstruktion beim Laden/Projektwechsel: BAUVERLAUF.md
+        // (via GET /bauverlauf) statt Git-Log, weil das Git-Log nur eine
+        // knappe Commit-Message pro Lauf hat -- nicht die urspruengliche
+        // Anweisung. Git-Log wird weiterhin separat geladen (gitCommits),
+        // weil aktualisiereRollbackFuer() nach einem NEUEN Bauauftrag darauf
+        // angewiesen ist, um den Rollback-Button an die frische Bubble zu
+        // haengen.
+        function renderChatAusVerlauf() {
             chatFeed.innerHTML = '';
-            if (!gitCommits.length) {
+            if (!verlaufEintraege.length) {
                 appendSystemBubble('Noch kein Verlauf für dieses Projekt.');
                 return;
             }
-            gitCommits.forEach((c, i) => {
-                if (i === 0) {
-                    appendSystemBubble('🆕 Projekt erstellt');
-                    return;
-                }
-                const msg = c.message.replace(/^mc:\s*/, '');
-                appendAssistantBubble({ headline: msg, rollbackTo: c.parent, pending: false, model: c.model });
+            appendSystemBubble('🆕 Projekt erstellt');
+            verlaufEintraege.forEach(e => {
+                appendUserBubble(e.instruction);
+                appendAssistantBubble({ headline: e.summary, rollbackTo: null, pending: false, model: e.model });
             });
         }
 
@@ -448,7 +454,14 @@
             } catch (e) {
                 gitCommits = [];
             }
-            renderChatAusGitLog();
+            try {
+                const res2 = await fetch('/bauverlauf');
+                const data2 = await res2.json();
+                verlaufEintraege = data2.eintraege || [];
+            } catch (e) {
+                verlaufEintraege = [];
+            }
+            renderChatAusVerlauf();
         }
 
         // Nach einem Bauauftrag: pruefen, ob ein NEUER Commit entstand (nur
@@ -738,8 +751,10 @@
 <script>
     function reloadPreview() {
         const frame = document.getElementById('previewFrame');
-        if (frame) {
-            frame.src = frame.src;
+        if (frame && frame.src) {
+            const url = new URL(frame.src, window.location.href);
+            url.searchParams.set('_r', Date.now());
+            frame.src = url.toString();
         }
     }
 

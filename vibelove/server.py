@@ -22,6 +22,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import po
 
 app = Flask(__name__)
+
+
+@app.after_request
+def _keine_zwischenspeicherung(response):
+    """Vibelove ist ein Ein-Nutzer-Entwerkzeug mit staendig wechselndem
+    Zustand (Chat-Verlauf, Vorschau) -- ein vom Browser zwischengespeicherter
+    alter Stand (Chat zeigt nur die Antwort ohne den urspruenglichen Prompt,
+    Vorschau zeigt eine veraltete Version) sah wie ein Server-Bug aus, war
+    aber Browser-Caching. Kein Cache fuer irgendeine Antwort dieser App."""
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB Obergrenze fuer Datei-Uploads
 
 # Konfiguration
@@ -181,6 +192,47 @@ def stelle_sauberen_arbeitsbaum_sicher(project_dir):
     except Exception:
         pass  # best effort -- ein Fehlschlag hier soll den Bauauftrag nicht blockieren
 
+
+VERLAUF_DATEINAME = "bauverlauf.jsonl"
+
+def schreibe_verlauf_eintrag(project_dir, instruction, summary, model):
+    """Haengt einen VOLLSTAENDIGEN Eintrag (keine Kuerzung) an
+    <projekt>/bauverlauf.jsonl an -- unabhaengig von Git, damit die Historie
+    auch dann erhalten bleibt, wenn ein Commit fehlschlaegt oder ein Lauf
+    ohne eigene Dateiaenderungen durchlief. Grundlage fuer GET /bauverlauf
+    und damit die Chat-Rekonstruktion beim Laden (reichhaltiger als das
+    Git-Log allein, das nur eine knappe Commit-Message pro Lauf hat). Best
+    effort, wie stelle_sauberen_arbeitsbaum_sicher()."""
+    pfad = os.path.join(project_dir, VERLAUF_DATEINAME)
+    zeile = json.dumps({
+        "zeit": time.strftime("%Y-%m-%d %H:%M:%S"), "model": model,
+        "instruction": instruction, "summary": summary,
+    }, ensure_ascii=False)
+    try:
+        with open(pfad, "a", encoding="utf-8") as f:
+            f.write(zeile + "\n")
+    except OSError:
+        pass
+
+def lade_verlauf(project_dir):
+    """Liest bauverlauf.jsonl (falls vorhanden) fuer GET /bauverlauf."""
+    pfad = os.path.join(project_dir, VERLAUF_DATEINAME)
+    eintraege = []
+    if not os.path.isfile(pfad):
+        return eintraege
+    try:
+        with open(pfad, "r", encoding="utf-8") as f:
+            for zeile in f:
+                zeile = zeile.strip()
+                if not zeile:
+                    continue
+                try:
+                    eintraege.append(json.loads(zeile))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return eintraege
 
 def reset_history():
     global BUILD_HISTORY, PO_HISTORY
@@ -494,8 +546,13 @@ def start_backend_server():
         print(f"Fehler beim Starten des Backend-Servers: {e}")
 
 def ensure_backend_running():
-    if not is_port_in_use(BACKEND_PORT):
-        start_backend_server()
+    global backend_process
+    if backend_process is not None and backend_process.poll() is None:
+        return
+    if is_port_in_use(BACKEND_PORT):
+        _kill_port(BACKEND_PORT)
+        time.sleep(0.3)
+    start_backend_server()
 
 def _hat_dev_skript(package_json_pfad):
     """True nur wenn package.json einen 'dev'-Skript-Eintrag hat -- ein
@@ -573,7 +630,7 @@ def start_vite_server():
     print(f"Starte Vite-Server auf Port {PORT_VITE}...")
     try:
         vite_process = subprocess.Popen(
-            ["npm", "run", "dev", "--", "--port", str(PORT_VITE), "--", "--strict", "--", "--host"],
+            ["npm", "run", "dev", "--", "--port", str(PORT_VITE), "--host", "0.0.0.0", "--strictPort"],
             cwd=front_dir,
             start_new_session=True
         )
@@ -591,8 +648,13 @@ def stop_vite_server():
         vite_process = None
 
 def ensure_vite_running():
-    if not is_port_in_use(5173):
-        start_vite_server()
+    global vite_process
+    if vite_process is not None and vite_process.poll() is None:
+        return
+    if is_port_in_use(PORT_VITE):
+        _kill_port(PORT_VITE)
+        time.sleep(0.3)
+    start_vite_server()
 
 @app.route('/settings', methods=['GET'])
 def get_settings():
@@ -884,6 +946,7 @@ def build():
                 full_output = "".join(output_lines)
                 output = full_output
                 summary = _extract_run_summary(full_output)
+                schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""
 
@@ -892,6 +955,7 @@ def build():
 
     except Exception as e:
         output = str(e)
+        schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, output, model)
         BUILD_HISTORY.append({"instruction": instruction, "result_summary": output})
         return output
 
@@ -1039,6 +1103,14 @@ def push_project():
     except Exception as e:
         return jsonify({'ok': False, 'ausgabe': str(e)})
 
+
+@app.route('/bauverlauf', methods=['GET'])
+def bauverlauf():
+    """Liefert die BAUVERLAUF.md-Eintraege (Anweisung+Ergebnis pro Build)
+    des AKTIVEN Projekts als JSON -- Grundlage fuer die Chat-Rekonstruktion
+    beim Laden, reichhaltiger als das Git-Log allein (das nur eine knappe
+    Commit-Message hat, nicht die urspruengliche Anweisung)."""
+    return jsonify({'eintraege': lade_verlauf(projekt_dir(CURRENT_PROJECT))})
 
 @app.route('/projects/git-log', methods=['GET'])
 def project_git_log():
@@ -1329,4 +1401,4 @@ if __name__ == '__main__':
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)
     
     # Flask starten
-    app.run(port=PORT_VIBELOVE, debug=False)
+    app.run(host="0.0.0.0", port=PORT_VIBELOVE, debug=False)
