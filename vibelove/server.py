@@ -1,4 +1,6 @@
 import io
+import hashlib
+import tempfile
 import json
 import os
 from collections import deque
@@ -8,13 +10,14 @@ import sys
 import time
 import atexit
 import signal
+import threading
 import socket
 import select
 import zipfile
 import urllib.request
 import urllib.error
 from collections import deque
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, g
 from werkzeug.utils import secure_filename
 
 # po.py liegt eine Ebene hoeher, direkt neben mc.py.
@@ -22,6 +25,33 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import po
 
 app = Flask(__name__)
+PROJECT_OPERATION_LOCK = threading.Lock()
+
+
+@app.before_request
+def reserve_project_operation():
+    if request.method == 'POST':
+        if not PROJECT_OPERATION_LOCK.acquire(blocking=False):
+            return jsonify({'ok': False, 'error': 'Ein Vorgang laeuft noch. Bitte warten.'}), 409
+        g.project_operation_reserved = True
+
+
+@app.after_request
+def release_project_operation(response):
+    if getattr(g, 'project_operation_reserved', False):
+        g.project_operation_reserved = False
+        if response.is_streamed:
+            response.call_on_close(PROJECT_OPERATION_LOCK.release)
+        else:
+            PROJECT_OPERATION_LOCK.release()
+    return response
+
+
+@app.teardown_request
+def release_failed_project_operation(error):
+    if getattr(g, 'project_operation_reserved', False):
+        g.project_operation_reserved = False
+        PROJECT_OPERATION_LOCK.release()
 
 
 @app.after_request
@@ -65,7 +95,8 @@ MC_SETTINGS = {
     'model': DEFAULT_MODEL,
     'base_url': DEFAULT_BASE_URL,
     'api_key': '',
-    'max_steps': 100
+    'max_steps': 200,
+    'max_tokens': 16000
 }
 
 def save_settings():
@@ -94,6 +125,12 @@ def load_settings():
                 saved_max_steps = int(saved.get('max_steps', MC_SETTINGS['max_steps']))
                 if saved_max_steps >= 1:
                     MC_SETTINGS['max_steps'] = saved_max_steps
+            except (TypeError, ValueError):
+                pass
+            try:
+                saved_max_tokens = int(saved.get('max_tokens', MC_SETTINGS['max_tokens']))
+                if saved_max_tokens >= 1:
+                    MC_SETTINGS['max_tokens'] = saved_max_tokens
             except (TypeError, ValueError):
                 pass
         print(f"[settings] mc_settings.json geladen: model={MC_SETTINGS['model']}, "
@@ -195,7 +232,18 @@ def stelle_sauberen_arbeitsbaum_sicher(project_dir):
 
 VERLAUF_DATEINAME = "bauverlauf.jsonl"
 
-def schreibe_verlauf_eintrag(project_dir, instruction, summary, model):
+def project_head(project_dir):
+    if not os.path.isdir(os.path.join(project_dir, '.git')):
+        return None
+    try:
+        result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=project_dir,
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def schreibe_verlauf_eintrag(project_dir, instruction, summary, model, before_commit=None):
     """Haengt einen VOLLSTAENDIGEN Eintrag (keine Kuerzung) an
     <projekt>/bauverlauf.jsonl an -- unabhaengig von Git, damit die Historie
     auch dann erhalten bleibt, wenn ein Commit fehlschlaegt oder ein Lauf
@@ -204,9 +252,12 @@ def schreibe_verlauf_eintrag(project_dir, instruction, summary, model):
     Git-Log allein, das nur eine knappe Commit-Message pro Lauf hat). Best
     effort, wie stelle_sauberen_arbeitsbaum_sicher()."""
     pfad = os.path.join(project_dir, VERLAUF_DATEINAME)
+    commit = project_head(project_dir)
     zeile = json.dumps({
         "zeit": time.strftime("%Y-%m-%d %H:%M:%S"), "model": model,
         "instruction": instruction, "summary": summary,
+        "commit": commit,
+        "rollback_to": before_commit if commit and commit != before_commit else None,
     }, ensure_ascii=False)
     try:
         with open(pfad, "a", encoding="utf-8") as f:
@@ -662,7 +713,8 @@ def get_settings():
     return jsonify({
         'model': MC_SETTINGS.get('model', DEFAULT_MODEL),
         'base_url': MC_SETTINGS.get('base_url', DEFAULT_BASE_URL),
-        'max_steps': MC_SETTINGS.get('max_steps', 100),
+        'max_steps': MC_SETTINGS.get('max_steps', 200),
+        'max_tokens': MC_SETTINGS.get('max_tokens', 16000),
         'api_key_gesetzt': bool(MC_SETTINGS.get('api_key'))
     })
 
@@ -677,6 +729,7 @@ def post_settings():
     base_url = data.get('base_url')
     api_key = data.get('api_key')
     max_steps = data.get('max_steps')
+    max_tokens = data.get('max_tokens')
 
     if model is not None:
         model = str(model).strip()
@@ -707,6 +760,14 @@ def post_settings():
         except (TypeError, ValueError):
             pass
 
+    if max_tokens is not None:
+        try:
+            parsed_max_tokens = int(max_tokens)
+            if parsed_max_tokens >= 1:
+                MC_SETTINGS['max_tokens'] = parsed_max_tokens
+        except (TypeError, ValueError):
+            pass
+
     # Persistieren – der Key wird gespeichert (nur lokal, nicht über GET ausgeliefert)
     try:
         save_settings()
@@ -716,6 +777,7 @@ def post_settings():
     print(f"[settings] Gespeichert: model={MC_SETTINGS['model']}, "
           f"base_url={MC_SETTINGS['base_url']}, "
           f"max_steps={MC_SETTINGS['max_steps']}, "
+          f"max_tokens={MC_SETTINGS['max_tokens']}, "
           f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
     return jsonify({'ok': True})
 
@@ -869,6 +931,7 @@ def build():
     # dem neuen Bauauftrag sichern -- sonst faellt mc.pys eigene Git-
     # Absicherung fuer den GESAMTEN naechsten Lauf aus (siehe Docstring).
     stelle_sauberen_arbeitsbaum_sicher(aktives_projekt_dir)
+    before_commit = project_head(aktives_projekt_dir)
 
     # Befehl zusammenbauen
     command = [
@@ -900,13 +963,16 @@ def build():
             env = os.environ.copy()
             if MC_SETTINGS.get('api_key'):
                 env['MC_API_KEY'] = MC_SETTINGS['api_key']
-            proc = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env
-            )
+            if MC_SETTINGS.get('max_tokens'):
+                env['MC_MAX_TOKENS'] = str(MC_SETTINGS['max_tokens'])
+            proc = None
             start_time = time.time()
             timeout_duration = 900
             try:
+                proc = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1, env=env
+                )
                 while True:
                     if time.time() - start_time > timeout_duration:
                         proc.terminate()
@@ -932,8 +998,15 @@ def build():
             except Exception as e:
                 yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
-                if proc.poll() is None:
+                if proc is not None and proc.poll() is None:
                     proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                if proc is not None and proc.stdout:
+                    proc.stdout.close()
                 BUILD_STATUS['laeuft'] = False
                 # Dieselbe Absicherung wie vor dem NAECHSTEN Bauauftrag, aber
                 # sofort statt erst verzoegert -- ein liegen gebliebener,
@@ -946,7 +1019,7 @@ def build():
                 full_output = "".join(output_lines)
                 output = full_output
                 summary = _extract_run_summary(full_output)
-                schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model)
+                schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model, before_commit)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""
 
@@ -1191,6 +1264,7 @@ def rollback_project():
     if reset.returncode != 0:
         return jsonify({'ok': False, 'error': reset.stderr.strip()[:300]}), 500
     subprocess.run(['git', 'clean', '-fd'], cwd=project_path, capture_output=True, text=True)
+    reset_history()
     ensure_vite_running()
     return jsonify({'ok': True})
 
@@ -1255,11 +1329,56 @@ def get_project_file():
     raw = raw[:FILE_PREVIEW_LIMIT]
     try:
         content = raw.decode('utf-8')
+        if '\x00' in content:
+            raise UnicodeDecodeError('utf-8', raw, 0, 1, 'binary content')
         return jsonify({'path': relpath, 'size': size, 'binary': False,
-                         'truncated': truncated, 'content': content})
+                         'truncated': truncated, 'content': content,
+                         'project': CURRENT_PROJECT,
+                         'revision': hashlib.sha256(raw).hexdigest() if not truncated else None})
     except UnicodeDecodeError:
         return jsonify({'path': relpath, 'size': size, 'binary': True,
                          'truncated': truncated})
+
+
+@app.route('/projects/file', methods=['POST'])
+def save_project_file():
+    data = request.get_json(silent=True) or {}
+    if data.get('project') != CURRENT_PROJECT:
+        return jsonify({'error': 'Das aktive Projekt hat sich geaendert. Datei neu laden.'}), 409
+    relpath = data.get('path')
+    content = data.get('content')
+    if not isinstance(relpath, str) or not isinstance(content, str) or '\x00' in content:
+        return jsonify({'error': 'Ungueltiger Dateipfad oder Textinhalt.'}), 400
+    full = _resolve_project_path(relpath)
+    base = os.path.realpath(projekt_dir(CURRENT_PROJECT))
+    if not full or not os.path.isfile(full) or '.git' in os.path.relpath(full, base).split(os.sep):
+        return jsonify({'error': 'Datei nicht bearbeitbar.'}), 400
+    encoded = content.encode('utf-8')
+    if len(encoded) > FILE_PREVIEW_LIMIT:
+        return jsonify({'error': 'Der Editor unterstuetzt Dateien bis 2 MB.'}), 413
+    temporary = None
+    try:
+        with open(full, 'rb') as source:
+            original = source.read(FILE_PREVIEW_LIMIT + 1)
+        if len(original) > FILE_PREVIEW_LIMIT or b'\x00' in original:
+            return jsonify({'error': 'Datei nicht bearbeitbar.'}), 400
+        original.decode('utf-8')
+        if data.get('revision') != hashlib.sha256(original).hexdigest():
+            return jsonify({'error': 'Die Datei wurde inzwischen geaendert. Bitte neu laden und Aenderungen abgleichen.'}), 409
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(full), delete=False) as target:
+            temporary = target.name
+            target.write(encoded)
+        os.chmod(temporary, os.stat(full).st_mode & 0o777)
+        os.replace(temporary, full)
+        temporary = None
+    except UnicodeDecodeError:
+        return jsonify({'error': 'Nur UTF-8-Textdateien koennen bearbeitet werden.'}), 400
+    except OSError as error:
+        return jsonify({'error': str(error)}), 500
+    finally:
+        if temporary:
+            os.unlink(temporary)
+    return jsonify({'ok': True, 'revision': hashlib.sha256(encoded).hexdigest()})
 
 
 @app.route('/projects/upload', methods=['POST'])

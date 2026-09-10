@@ -27,9 +27,12 @@ Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Li
 ## Ports-Uebersicht
 * Vibelove: 5050
 * Vorschau/Vite: 5173
-* Backend (falls vorhanden): 5090
+* Backend (falls vorhanden): 5001
 
-## Bekannte Grenzen
-* Nur ein Bauschritt pro Anfrage.
-* Kein Chat-Verlauf.
-* Kein automatisches Neuladen der Vorschau waehrend des Builds.
+## Projekte und Chat
+* Im Dateien-Tab lassen sich UTF-8-Textdateien bis 2 MB direkt bearbeiten und per Speichern-Button oder Strg/Cmd+S speichern. Ungespeicherte Aenderungen werden beim Verlassen abgefragt; zwischenzeitlich geaenderte Dateien werden nicht ueberschrieben.
+* Der Chatbereich laesst sich am Trenner in der Breite anpassen (auch mit den Pfeiltasten) und ueber den Pfeil neben der Vorschau einklappen.
+* Breite und Einklappzustand werden pro Projekt in diesem Browser gespeichert und beim Projektwechsel oder Neuladen wiederhergestellt.
+* Der Bauverlauf bleibt pro Projekt erhalten. Neue Bauschritte speichern ihren Git-Stand davor und danach, sodass Rueckgaengig auch nach einem Reload verfuegbar bleibt. Alte Eintraege ohne Git-Zuordnung werden weiterhin angezeigt.
+* Waehrend eines Bauauftrags sind konkurrierende Aenderungen und Projektwechsel gesperrt, auch aus einem zweiten Browser-Tab.
+* Die Vorschau wird nach dem Build neu geladen. Neben Vite werden statische Seiten und Backends mit `backend/vibelove-backend.json` unterstuetzt.

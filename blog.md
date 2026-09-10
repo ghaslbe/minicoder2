@@ -6506,6 +6506,157 @@ Bug, Alibaba-Rate-Limit (einziger Anbieter, kein Fallback moeglich),
 wiederholte Netzwerkfehler, nie ein sauberer `finish` trotz mehrfacher
 Wiederholung mit steigendem Schrittlimit.
 
+## 78. Vite + Bootstrap mit DeepSeek gebaut -- und wie man Bootstrap danach richtig huebsch macht
+
+**Der Build selbst: Cloudflare-429 statt OpenRouter-429, geloest durch
+Provider-Pin ENTFERNEN statt hinzufuegen.** Auftrag an
+`deepseek-v4-flash-0731` (ueber `mc_proxy.py`): dieselbe CRUD-
+Kundenverwaltung wie in den Kapiteln zuvor, diesmal explizit mit
+Vite + React + Bootstrap (`npm install bootstrap`, Import in `main.jsx`)
+statt eigenem CSS. Die ersten beiden Versuche (60s auseinander, mit
+`MC_PROVIDER=baidu/fp8` gepinnt) scheiterten beide sofort im ersten
+Schritt an einem `HTTP 429` -- aber einem mit HTML-Fehlerseite
+(Cloudflare-Format), nicht dem gewohnten JSON-429 von OpenRouter selbst.
+Auch eine laengere Abkuehlpause (10 Minuten) aenderte daran nichts. Die
+Loesung war gegenlaeufig zur Kapitel-76-Erkenntnis: **Provider-Pinning
+entfernen** statt draufsetzen -- ohne `MC_PROVIDER` durfte OpenRouter
+selbst auf einen anderen Endpunkt ausweichen, und der naechste Versuch
+lief sofort durch. Der gepinnte `baidu/fp8`-Endpunkt war offenbar selbst
+das Rate-Limit-Problem, nicht OpenRouter oder das Modell insgesamt --
+ein Gegenbeispiel dazu, dass Pinning immer nur hilft.
+
+**Ein neuer, echter mc.py-Fund: der `finish`-Check pruefte woertlich
+gegen den Prompt-Text.** Bei Schritt 48 (von 50) rief DeepSeek `finish`
+sauber auf, verifiziert per curl (alle vier Endpunkte inkl. 404-Faelle),
+Backend + Vite-Dev-Server liefen im Hintergrund. Trotzdem: **FINISH
+ABGELEHNT -- Datei fehlt: `bootstrap/dist/css/bootstrap.min.css`**. Der
+Finish-Checker sucht woertlich nach Dateipfaden, die im Aufgabentext
+vorkommen -- und der Prompt erwaehnte genau diesen Pfad als Beispiel fuer
+den Bootstrap-Import (`import 'bootstrap/dist/css/bootstrap.min.css'`),
+obwohl die Datei durch `npm install bootstrap` ganz normal unter
+`frontend/node_modules/bootstrap/dist/css/` liegt, nicht im Projekt-Root.
+DeepSeek diagnostizierte das in den letzten beiden Schritten korrekt
+("Der Validator sucht sie aber offenbar relativ zum Projekt-Root") und
+kopierte die Datei pragmatisch dorthin -- verbrauchte damit aber genau
+das Restbudget bis zum Schrittlimit (50), ohne den `finish`-Aufruf noch
+einmal abzusetzen. Ein zweiter, kurzer mc.py-Lauf im selben Verzeichnis
+(10 Schritte Budget) reichte, um Abhaengigkeiten/Server neu zu
+verifizieren und `finish` erfolgreich abzuschliessen. Zusammen: 60
+Requests, 477.845 Tokens, **$0,0469** -- fuer eine komplette, laufende
+Vite+React+Bootstrap-App mit SQLite-Backend.
+
+Der `finish`-Checker greift also zu woertlich auf Dateinamen aus der
+Aufgabenbeschreibung zu, statt zu pruefen, ob die *Bibliothek*
+tatsaechlich installiert ist (z.B. per `package.json`-Eintrag). Bei
+generierten npm-Paketen mit tief verschachtelten Pfaden im Prompt-Text
+ist das ein potenzieller Fehlalarm -- hier war er harmlos (ein Schritt
+Mehrverbrauch), koennte bei knapperem Schrittlimit aber ein "Schrittlimit
+erreicht" statt eines sauberen `finish` verursachen.
+
+**Danach: Bootstrap live und interaktiv huebscher gemacht -- ein Kochrezept.**
+Statt eines neuen mc.py-Laufs wurde die laufende App direkt (von Hand,
+bei laufendem Vite-Dev-Server, per Hot-Module-Reload sofort sichtbar)
+schrittweise erweitert. Das Ergebnis als wiederverwendbares Rezept, alles
+rein per CDN, ohne Bundler-Aenderung:
+
+1. **Theme-Switcher per Bootswatch.** Bootswatch (`bootswatch.com`) bietet
+   alle 25 offiziellen Themes fertig kompiliert auf jsDelivr:
+   `https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/<theme>/bootstrap.min.css`.
+   Der Trick, der das WAEHREND der Laufzeit umschaltbar macht: Bootstrap
+   nicht mehr per npm-Import in `main.jsx` einbinden, sondern als
+   `<link id="theme-css" rel="stylesheet" href="...">` in `index.html`,
+   und per Dropdown + `document.getElementById('theme-css').href = ...`
+   austauschen (Auswahl in `localStorage` gemerkt). Funktioniert nur
+   deshalb ohne jede Code-Aenderung, weil alle Bootswatch-Themes exakt
+   dieselben Klassennamen (`btn`, `card`, `form-control`, ...) wie
+   Standard-Bootstrap verwenden -- nur Farben/Radien/Schriften aendern
+   sich.
+2. **Classless Alternativen: Pico.css und Water.css.** Beide stylen rohe
+   HTML-Tags (`button`, `table`, `input`, ...) statt Klassen zu verlangen
+   -- die vorhandenen Bootstrap-Klassen in der JSX bleiben einfach
+   ungenutzt liegen, es war keinerlei Code-Aenderung noetig, nur ein
+   weiterer Eintrag im selben Theme-Dropdown
+   (`@picocss/pico@2/css/pico.min.css`, `water.css@2/out/water.css` bzw.
+   `dark.css`). Wichtige Einschraenkung, die sich hier gezeigt hat: dieser
+   Trick funktioniert NUR innerhalb einer Familie mit identischer
+   Klassen-API (Bootstrap-artig) oder klassenlos -- ein Wechsel zu Bulma
+   oder Tailwind wuerde echte JSX-Aenderungen brauchen, weil die
+   Klassennamen komplett anders heissen.
+3. **Animate.css fuer Bewegung.** Eine CSS-Klasse
+   (`animate__animated animate__fadeInLeft` etc.) reicht fuer fertige
+   Animationen, komplett CSS-only, funktioniert unabhaengig vom gewaehlten
+   Theme. Umgesetzt: neu angelegte Tabellenzeile fliegt animiert rein und
+   ist kurz gelb markiert (`table-warning`), Erfolgsmeldungen faden sanft
+   ein und nach ~2,2s automatisch wieder aus (zwei verkettete
+   `useEffect`+`setTimeout`, die erst eine Exit-Klasse setzen und danach
+   den State loeschen), Fehlermeldungen wackeln kurz (`animate__headShake`)
+   um Aufmerksamkeit zu erzeugen.
+4. **Bootstrap Icons statt/neben Text.** Eigenes CDN-Paket
+   (`bootstrap-icons@1.11.3`), reine `<i className="bi bi-trash">`-Tags --
+   kein JS noetig, kein Konflikt mit React.
+5. **Echtes Modal statt `window.confirm()`.** Statt Bootstraps JS-Bundle
+   (`bootstrap.bundle.min.js`) einzubinden und dessen Modal-Instanzen
+   manuell mit React zu synchronisieren, wurde das Modal komplett per
+   React-State gebaut: `loeschKandidat`-State haelt den zu loeschenden
+   Datensatz, das Markup nutzt nur Bootstraps Modal-CSS-Klassen
+   (`modal`, `modal-backdrop`, `modal-dialog`, ...) mit manuell
+   gesetztem `show d-block`, ohne jede Abhaengigkeit von Bootstraps JS.
+   Robuster als die JS-Variante, weil kein Lifecycle-Konflikt zwischen
+   Bootstraps eigener DOM-Verwaltung und Reacts Re-Renders entstehen kann.
+6. **Bewusst GEGEN DataTables entschieden.** DataTables ist die naheliegende
+   Wahl fuer Sortierung/Suche/Pagination, arbeitet aber klassischerweise
+   per jQuery direkt auf dem DOM -- ein bekannter Konfliktpunkt mit
+   Reacts virtuellem DOM (das Plugin manipuliert Knoten, die React beim
+   naechsten Render als "eigene" betrachtet). Stattdessen wurden Sortierung
+   (Klick auf Spaltenkopf, Pfeil-Icon zeigt Richtung) und Suche
+   (Live-Filter ueber alle Textfelder) nativ in React nachgebaut -- ein
+   `.filter().sort()` auf abgeleitetem State, keine zusaetzliche
+   Bibliothek, kein DOM-Konfliktrisiko.
+
+**Die Meta-Frage danach: haette DeepSeek das auch alles gebaut?**
+Technisch vermutlich ja -- der urspruengliche Build zeigte bereits
+korrekte Bootstrap-Semantik und sogar eigenstaendige Fehlerdiagnose (der
+`finish`-Check-Fund oben). Der eigentliche Unterschied liegt nicht in der
+Modellfaehigkeit, sondern im Modus: mc.py fuehrt EINEN Auftrag mit einem
+Ziel und einem `finish`-Check aus, kein iteratives Hin und Her. Die
+sechs Schritte oben entstanden aus einer Kette von Rueckfragen ("was
+gibt's an Themes", "auch andere Libraries", "mit wenig Aenderung",
+"Animationen dazu", "was ist sonst noch cool") -- jede Antwort hat die
+naechste Anfrage geformt, inklusive einer bewussten Technik-Entscheidung
+GEGEN eine naheliegende Bibliothek (DataTables) aus Robustheitsgruenden.
+Damit ein einzelner mc.py-Lauf dasselbe Ergebnis liefert, muessten alle
+sechs Punkte vorab explizit im Prompt stehen (konkrete CDN-URLs, welche
+Elemente welche Animate.css-Klasse bekommen, Modal-Markup statt
+`window.confirm`, Sortier-/Suchlogik) -- die Feinabstimmung, die hier per
+Dialog entstand, muesste komplett vorab spezifiziert werden. Ein direkter
+A/B-Test (ein Prompt mit allen sechs Punkten vs. dieses iterative
+Vorgehen) steht noch aus.
+
+**Ein genau dieser A/B-Test, direkt im Anschluss: `gemma-4-26b-a4b-it@mxfp4`
+(MLX, ueber LM Studio auf Host `.191`) bekam denselben CRUD-Auftrag, dann
+per Folgeauftrag alle sechs Bootstrap-Punkte oben explizit im Prompt
+vorgegeben.**
+
+| Lauf | Antworten | Tokens (Summe) | reine Generierungszeit | echte Tok/s |
+|---|---:|---:|---:|---:|
+| CRUD-Basis-Build (31 Schritte, sauberer `finish`) | 33 | 8.515 | 244,1s (4,1 min) | **34,9** |
+| Bootstrap-Erweiterung (Theme-Switcher, Icons, Animate.css, Modal, Suche/Sortierung; 11 Schritte) | 11 | 9.511 | 231,5s (3,9 min) | **41,1** |
+
+Kosten: $0 (lokales Modell). Requests gesamt: 31 + 12 = 43, Tokens gesamt
+(inkl. Prompt-Anteil): 288.455 + 142.632 = 431.087.
+
+**`deepseek-flash` direkt ueber die native DeepSeek-API** (`https://api.deepseek.com/v1`,
+nicht ueber OpenRouter), CRUD-Benchmark:
+
+| Lauf | Antworten | Tokens (Summe) | reine Generierungszeit | echte Tok/s |
+|---|---:|---:|---:|---:|
+| Basis (40 Schritte, Schrittlimit erreicht) | 50 | 28.327 | 156,7s (2,6 min) | 180,8 |
+| Fortsetzung (10 Schritte, sauberer `finish` auf letztem Schritt) | 10 | 3.615 | 23,1s (0,4 min) | 156,5 |
+| **Kombiniert** | 60 | 31.942 | 179,8s (3,0 min) | **177,7** |
+
+Schnellstes bisher gemessenes Modell des ganzen Benchmarks, deutlich vor
+`deepseek-v4-flash-0731` ueber OpenRouter (152,9 Tok/s, Kapitel 77).
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

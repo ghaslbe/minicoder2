@@ -8,9 +8,9 @@
 </head>
 <body class="bg-gray-100 h-screen flex overflow-hidden">
     <!-- LEFT: kompakte Toolbar + Chat-Verlauf -->
-    <div class="w-1/2 h-full flex flex-col border-r border-gray-300 bg-white">
+    <div id="chatPanel" class="h-full flex flex-col border-r border-gray-300 bg-white">
         <!-- Kompakte Toolbar -->
-        <div class="flex items-center gap-1.5 px-3 py-2 border-b border-gray-200">
+        <div class="chat-toolbar flex flex-wrap items-center gap-1.5 px-3 py-2 border-b border-gray-200">
             <h1 class="text-sm font-bold text-gray-800 mr-1 whitespace-nowrap">Vibelove</h1>
             <select
                 id="projektSelect"
@@ -51,9 +51,13 @@
         </form>
     </div>
 
-    <!-- RIGHT: Live Preview mit Werkzeugleiste (unveraendert) -->
-    <div class="w-1/2 h-full flex flex-col">
-        <div class="flex items-center gap-2 bg-gray-100 border-b border-gray-300 px-3 py-2">
+    <div id="chatResizer" role="separator" tabindex="0" aria-label="Chatbreite"
+        aria-orientation="vertical" aria-controls="chatPanel" title="Chatbreite anpassen"></div>
+    <!-- RIGHT: Live Preview mit Werkzeugleiste -->
+    <div id="mainPanel" class="flex-1 min-w-0 h-full flex flex-col">
+        <div class="flex flex-wrap items-center gap-2 bg-gray-100 border-b border-gray-300 px-3 py-2">
+            <button type="button" id="toggleChatBtn" class="icon-btn" aria-controls="chatPanel"
+                aria-expanded="true" aria-label="Chat einklappen" title="Chat einklappen">◀</button>
             <div class="flex items-center gap-1 mr-auto">
                 <button type="button" id="tabPreviewBtn" onclick="zeigeTab('preview')"
                     class="view-tab-btn bg-gray-700 text-white font-medium py-1 px-2.5 rounded text-sm">Vorschau</button>
@@ -64,7 +68,7 @@
                 <span class="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span>
                 arbeitet …
             </span>
-            <div id="previewControls" class="flex items-center gap-2">
+            <div id="previewControls" class="flex flex-wrap items-center gap-2">
                 <div class="flex items-center gap-1">
                     <button
                         type="button"
@@ -129,11 +133,11 @@
         </div>
 
         <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
-        <div id="filesPanel" class="hidden flex-grow overflow-hidden flex">
+        <div id="filesPanel" class="hidden flex-grow min-h-0 min-w-0 overflow-hidden flex">
             <div class="w-1/3 h-full overflow-y-auto border-r border-gray-300 bg-white">
                 <div id="fileList" class="text-sm"></div>
             </div>
-            <div class="flex-1 h-full flex flex-col overflow-hidden bg-gray-50">
+            <div class="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-gray-50">
                 <form id="uploadForm" class="flex items-center gap-2 p-2 border-b border-gray-200 bg-white">
                     <input type="text" id="uploadDir" placeholder="Zielordner (leer = Projekt-Wurzel)"
                         class="flex-1 min-w-0 p-1.5 border border-gray-300 rounded text-xs">
@@ -144,7 +148,7 @@
                     </button>
                 </form>
                 <p id="uploadStatus" class="hidden text-xs px-2 py-1"></p>
-                <div id="fileViewer" class="flex-1 overflow-auto p-3">
+                <div id="fileViewer" class="flex-1 min-h-0 min-w-0 overflow-auto p-3">
                     <p class="text-sm text-gray-400">Datei links auswählen, um sie anzuzeigen.</p>
                 </div>
             </div>
@@ -168,7 +172,11 @@
                 <button type="button" id="resetApiKeyBtn" class="self-start text-xs text-blue-600 hover:text-blue-800 underline">Key auf Env zurücksetzen</button>
                 <p id="resetApiKeyStatus" class="hidden text-xs text-green-600"></p>
                 <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Max. Schritte
-                    <input type="number" id="settingMaxSteps" min="1" step="1" value="100" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                    <input type="number" id="settingMaxSteps" min="1" step="1" value="200" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Max. Tokens pro Antwort
+                    <input type="number" id="settingMaxTokens" min="1" step="500" value="16000" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
+                    <span class="text-xs font-normal text-gray-400">Hoeher = weniger abgeschnittene Antworten, aber teurer pro Anfrage. Bei Modellen, die viel Text ohne Aktion erzeugen, hilft ein hoeherer Wert.</span>
                 </label>
                 <div class="flex gap-2 mt-3 justify-end">
                     <button type="button" id="cancelSettingsBtn" class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm">Abbrechen</button>
@@ -197,6 +205,30 @@
     </div>
 
     <style>
+        body { height: 100dvh; }
+        #chatPanel { width: 50%; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden; }
+        #chatPanel[hidden], #chatResizer[hidden] { display: none; }
+        #chatPanel textarea { min-width: 0; }
+        .chat-toolbar, #buildForm { flex-shrink: 0; }
+        #chatFeed { min-height: 0; overflow-wrap: anywhere; overflow-x: hidden; overscroll-behavior: contain; }
+        /* Messages keep their full height; only the feed scrolls above the composer. */
+        #chatFeed > * { flex-shrink: 0; min-width: 0; }
+        #chatFeed > * > * { min-width: 0; }
+        #chatFeed pre { max-width: 100%; overflow-wrap: anywhere; }
+        .po-thinking { display: flex; align-items: center; gap: 0.5rem; color: #4f46e5; }
+        .po-spinner { width: 14px; height: 14px; flex-shrink: 0; border: 2px solid #c7d2fe; border-top-color: #4f46e5; border-radius: 50%; animation: po-spin 0.9s linear infinite; }
+        @keyframes po-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { .po-spinner { animation: none; } }
+        #chatResizer { width: 7px; flex-shrink: 0; cursor: col-resize; touch-action: none; background: #e5e7eb; }
+        #chatResizer:hover, #chatResizer:focus-visible { background: #60a5fa; outline: none; }
+        body.resizing { cursor: col-resize; user-select: none; }
+        body.resizing iframe { pointer-events: none; }
+        #previewWrapper { min-height: 0; }
+        @media (max-width: 640px) {
+            #chatPanel { position: absolute; inset: 0 auto 0 0; z-index: 20; box-shadow: 4px 0 16px #0002; }
+            #chatResizer { position: absolute; top: 0; bottom: 0; z-index: 21; }
+            body:not(.chat-collapsed) #mainPanel { margin-left: min(80vw, 320px); }
+        }
         .icon-btn {
             width: 2rem;
             height: 2rem;
@@ -228,6 +260,79 @@
         const resetButton = document.getElementById('resetButton');
         const containerButton = document.getElementById('containerButton');
         const instructionInput = document.getElementById('instruction');
+        const chatPanel = document.getElementById('chatPanel');
+        const chatResizer = document.getElementById('chatResizer');
+        const toggleChatBtn = document.getElementById('toggleChatBtn');
+        let layoutProject = null;
+        let chatLayout = { width: null, collapsed: false };
+
+        function applyChatLayout() {
+            const mobile = window.innerWidth <= 640;
+            const max = mobile ? Math.min(window.innerWidth * 0.8, 320) : Math.max(280, window.innerWidth - 320);
+            const width = Math.min(max, Math.max(280, chatLayout.width || window.innerWidth / 2));
+            chatPanel.style.width = width + 'px';
+            chatPanel.hidden = chatLayout.collapsed;
+            chatResizer.hidden = chatLayout.collapsed;
+            chatResizer.style.left = mobile ? width + 'px' : '';
+            document.body.classList.toggle('chat-collapsed', chatLayout.collapsed);
+            toggleChatBtn.textContent = chatLayout.collapsed ? '▶' : '◀';
+            toggleChatBtn.title = chatLayout.collapsed ? 'Chat ausklappen' : 'Chat einklappen';
+            toggleChatBtn.setAttribute('aria-label', toggleChatBtn.title);
+            toggleChatBtn.setAttribute('aria-expanded', String(!chatLayout.collapsed));
+            chatResizer.setAttribute('aria-valuemin', Math.min(280, max));
+            chatResizer.setAttribute('aria-valuemax', max);
+            chatResizer.setAttribute('aria-valuenow', Math.round(width));
+        }
+
+        function saveChatLayout() {
+            if (!layoutProject) return;
+            try { localStorage.setItem('vibelove:chat:' + layoutProject, JSON.stringify(chatLayout)); }
+            catch (error) { console.warn('Chatlayout konnte nicht gespeichert werden.', error); }
+        }
+
+        function loadChatLayout(project) {
+            layoutProject = project;
+            chatLayout = { width: null, collapsed: false };
+            try {
+                const saved = JSON.parse(localStorage.getItem('vibelove:chat:' + project));
+                if (saved && typeof saved === 'object') {
+                    chatLayout.width = Number.isFinite(saved.width) && saved.width > 0 ? saved.width : null;
+                    chatLayout.collapsed = saved.collapsed === true;
+                }
+            } catch (error) { console.warn('Chatlayout konnte nicht geladen werden.', error); }
+            applyChatLayout();
+        }
+
+        toggleChatBtn.onclick = () => {
+            chatLayout.collapsed = !chatLayout.collapsed;
+            applyChatLayout();
+            saveChatLayout();
+        };
+        chatResizer.onpointerdown = event => {
+            if (event.button !== 0) return;
+            chatResizer.setPointerCapture(event.pointerId);
+            document.body.classList.add('resizing');
+        };
+        chatResizer.onpointermove = event => {
+            if (!chatResizer.hasPointerCapture(event.pointerId)) return;
+            chatLayout.width = event.clientX;
+            applyChatLayout();
+            chatLayout.width = chatPanel.getBoundingClientRect().width;
+        };
+        chatResizer.onlostpointercapture = () => {
+            document.body.classList.remove('resizing');
+            saveChatLayout();
+        };
+        chatResizer.onkeydown = event => {
+            if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+            event.preventDefault();
+            chatLayout.width = chatPanel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? -20 : 20);
+            applyChatLayout();
+            chatLayout.width = chatPanel.getBoundingClientRect().width;
+            saveChatLayout();
+        };
+        window.addEventListener('resize', applyChatLayout);
+        applyChatLayout();
 
         let gitCommits = []; // zuletzt geladene Commit-Liste des aktiven Projekts
         let verlaufEintraege = []; // zuletzt geladene BAUVERLAUF.md-Eintraege (GET /bauverlauf)
@@ -325,6 +430,23 @@
             bubble.appendChild(label);
         }
 
+        function appendPoThinkingBubble() {
+            const pending = document.createElement('div');
+            pending.className = 'po-thinking text-sm px-3 py-2';
+            pending.setAttribute('role', 'status');
+            const spinner = document.createElement('span');
+            spinner.className = 'po-spinner';
+            spinner.setAttribute('aria-hidden', 'true');
+            const label = document.createElement('span');
+            label.textContent = 'Product Owner denkt …';
+            pending.appendChild(spinner);
+            pending.appendChild(label);
+            chatFeed.appendChild(pending);
+            chatFeed.setAttribute('aria-busy', 'true');
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+            return pending;
+        }
+
         function appendPoQuestionBubble(question, raw) {
             const wrap = document.createElement('div');
             wrap.className = 'flex justify-start';
@@ -366,7 +488,7 @@
             if (raw) fuegeDetailsHinzuMitLabel(bubble, 'Product-Owner-Denken', raw);
 
             const btnRow = document.createElement('div');
-            btnRow.className = 'flex gap-2';
+            btnRow.className = 'flex flex-wrap gap-2';
             const bauenBtn = document.createElement('button');
             bauenBtn.type = 'button';
             bauenBtn.className = 'bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-xs';
@@ -442,7 +564,8 @@
             appendSystemBubble('🆕 Projekt erstellt');
             verlaufEintraege.forEach(e => {
                 appendUserBubble(e.instruction);
-                appendAssistantBubble({ headline: e.summary, rollbackTo: null, pending: false, model: e.model });
+                const rollbackTo = gitCommits.some(c => c.hash === e.commit) ? e.rollback_to : null;
+                appendAssistantBubble({ headline: e.summary, rollbackTo, pending: false, model: e.model });
             });
         }
 
@@ -515,7 +638,9 @@
         }
 
         async function starteBauauftrag(instruction) {
+            if (buildButton.disabled) return;
             buildButton.disabled = true;
+            setProjectControlsBusy(true);
 
             const statusEl = document.getElementById('buildStatus');
             const statusDot = statusEl.querySelector('span');
@@ -534,6 +659,10 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: `instruction=${encodeURIComponent(instruction)}`
                 });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Bauauftrag fehlgeschlagen.');
+                }
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -585,18 +714,21 @@
                 }, 2500);
 
                 await aktualisiereRollbackFuer(assistant);
+                setProjectControlsBusy(false);
             }
         }
 
         form.onsubmit = async (e) => {
             e.preventDefault();
             const nachricht = instructionInput.value.trim();
-            if (!nachricht) return;
+            if (!nachricht || buildButton.disabled) return;
 
             appendUserBubble(nachricht);
             instructionInput.value = '';
             autoResizeTextarea();
             buildButton.disabled = true;
+            setProjectControlsBusy(true);
+            const poPending = appendPoThinkingBubble();
 
             try {
                 const res = await fetch('/refine', {
@@ -605,6 +737,8 @@
                     body: JSON.stringify({ message: nachricht })
                 });
                 const decision = await res.json();
+                if (!res.ok) throw new Error(decision.error || 'Anfrage fehlgeschlagen.');
+                poPending.remove();
 
                 if (decision.type === 'question') {
                     setzePoDialogAktiv(true);
@@ -635,7 +769,11 @@
             } catch (err) {
                 appendSystemBubble('Product Owner nicht erreichbar: ' + err.message);
             } finally {
+                poPending.remove();
+                chatFeed.setAttribute('aria-busy', 'false');
                 buildButton.disabled = false;
+                setProjectControlsBusy(false);
+                requestAnimationFrame(() => { chatFeed.scrollTop = chatFeed.scrollHeight; });
             }
         };
 
@@ -688,7 +826,8 @@
                 const data = await res.json();
                 document.getElementById('settingModel').value = data.model || '';
                 document.getElementById('settingBaseUrl').value = data.base_url || '';
-                document.getElementById('settingMaxSteps').value = data.max_steps || 100;
+                document.getElementById('settingMaxSteps').value = data.max_steps || 200;
+                document.getElementById('settingMaxTokens').value = data.max_tokens || 16000;
                 document.getElementById('settingApiKey').value = '';
                 document.getElementById('settingApiKey').placeholder =
                     (data.api_key_gesetzt ? 'API Key bereits gesetzt' : 'API Key nicht gesetzt');
@@ -712,7 +851,8 @@
                 model: document.getElementById('settingModel').value.trim(),
                 base_url: document.getElementById('settingBaseUrl').value.trim(),
                 api_key: document.getElementById('settingApiKey').value,
-                max_steps: document.getElementById('settingMaxSteps').value
+                max_steps: document.getElementById('settingMaxSteps').value,
+                max_tokens: document.getElementById('settingMaxTokens').value
             };
             try {
                 const res = await fetch('/settings', {
@@ -877,22 +1017,36 @@
                 if (p === daten.aktiv) opt.selected = true;
                 projektSelect.appendChild(opt);
             }
+            loadChatLayout(daten.aktiv);
         } catch (e) {
             console.error('Projektliste nicht ladbar:', e);
         }
     }
 
     async function projektAktivieren(name) {
+        if (!mayLeaveEditor()) { projektSelect.value = layoutProject; return; }
         const res = await fetch('/projects/aktiv', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name })
         });
         if (res.ok) {
+            resetFileEditor();
+            loadChatLayout(name);
             await ladeGitLogUndRenderChat();
             ladeDateiListe();
             setTimeout(reloadPreview, 3500); // Vite braucht einen Moment
+        } else {
+            const error = await res.json();
+            alert(error.error || 'Projektwechsel fehlgeschlagen.');
+            await ladeProjekte();
         }
+    }
+
+    function setProjectControlsBusy(busy) {
+        ['projektSelect', 'neuesProjektBtn', 'resetButton', 'containerButton', 'restartViteBtn'].forEach(id => {
+            document.getElementById(id).disabled = busy;
+        });
     }
 
     projektSelect.addEventListener('change', function () {
@@ -900,6 +1054,7 @@
     });
 
     neuesProjektBtn.addEventListener('click', async function () {
+        if (!mayLeaveEditor()) return;
         const name = prompt('Name des neuen Projekts (Buchstaben/Zahlen/-/_):');
         if (!name) return;
         const res = await fetch('/projects', {
@@ -908,6 +1063,7 @@
             body: JSON.stringify({ name })
         });
         if (res.ok) {
+            resetFileEditor();
             await ladeProjekte();
             await ladeGitLogUndRenderChat();
             reloadPreview();
@@ -929,6 +1085,58 @@
     const uploadDir = document.getElementById('uploadDir');
     const uploadFileInput = document.getElementById('uploadFileInput');
     const uploadStatus = document.getElementById('uploadStatus');
+    let fileEditor = null;
+    let fileRequest = 0;
+
+    function editorDirty() {
+        return fileEditor && fileEditor.input.value !== fileEditor.original;
+    }
+
+    function mayLeaveEditor() {
+        if (fileEditor?.saving) return false;
+        return !editorDirty() || confirm('Ungespeicherte Dateiaenderungen verwerfen?');
+    }
+
+    function resetFileEditor() {
+        fileRequest++;
+        fileEditor = null;
+        fileViewer.innerHTML = '';
+    }
+
+    window.addEventListener('beforeunload', event => {
+        if (editorDirty() || fileEditor?.saving) {
+            event.preventDefault();
+            event.returnValue = '';
+        }
+    });
+
+    async function saveEditor() {
+        const editor = fileEditor;
+        if (!editor || editor.saving || !editorDirty()) return;
+        editor.saving = true;
+        editor.save.disabled = true;
+        editor.status.textContent = 'Speichert …';
+        const value = editor.input.value;
+        const content = editor.crlf ? value.replace(/\n/g, '\r\n') : value;
+        try {
+            const res = await fetch('/projects/file', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project: editor.project, path: editor.path, revision: editor.revision, content })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Speichern fehlgeschlagen.');
+            editor.original = value;
+            editor.revision = data.revision;
+            editor.status.textContent = editorDirty() ? 'Ungespeicherte Änderungen' : 'Gespeichert';
+            reloadPreview();
+            ladeDateiListe();
+        } catch (error) {
+            editor.status.textContent = error.message;
+        } finally {
+            editor.saving = false;
+            editor.save.disabled = !editorDirty();
+        }
+    }
 
     function zeigeTab(name) {
         const istPreview = name === 'preview';
@@ -982,15 +1190,60 @@
     }
 
     async function zeigeDatei(path, itemEl) {
+        if (!mayLeaveEditor()) return;
+        resetFileEditor();
+        const requestId = fileRequest;
         document.querySelectorAll('.file-list-item.active').forEach(el => el.classList.remove('active'));
         if (itemEl) itemEl.classList.add('active');
         fileViewer.innerHTML = '<p class="text-sm text-gray-400">Lädt …</p>';
         try {
             const res = await fetch('/projects/file?path=' + encodeURIComponent(path));
             const data = await res.json();
+            if (requestId !== fileRequest) return;
             if (!res.ok) throw new Error(data.error || 'Datei konnte nicht geladen werden.');
             if (data.binary) {
                 fileViewer.innerHTML = '<p class="text-sm text-gray-500">Binärdatei (' + formatBytes(data.size) + ') — keine Textvorschau möglich.</p>';
+                return;
+            }
+            if (!data.truncated && data.revision) {
+                fileViewer.innerHTML = '';
+                const container = document.createElement('div');
+                container.className = 'h-full min-h-0 flex flex-col gap-2';
+                const toolbar = document.createElement('div');
+                toolbar.className = 'flex flex-wrap items-center gap-2 shrink-0';
+                const filename = document.createElement('span');
+                filename.className = 'text-xs font-mono break-all flex-1 min-w-0';
+                filename.textContent = data.path;
+                const save = document.createElement('button');
+                save.type = 'button';
+                save.textContent = '💾 Speichern';
+                save.title = 'Speichern (Strg+S / Cmd+S)';
+                save.className = 'px-3 py-1 text-sm rounded bg-blue-600 text-white disabled:opacity-50 shrink-0';
+                save.disabled = true;
+                save.onclick = saveEditor;
+                const status = document.createElement('p');
+                status.className = 'text-xs text-gray-600 break-words shrink-0';
+                status.setAttribute('role', 'status');
+                const input = document.createElement('textarea');
+                input.className = 'flex-1 min-h-0 min-w-0 w-full p-3 font-mono text-xs bg-white border border-gray-300 rounded resize-none';
+                input.setAttribute('aria-label', data.path);
+                input.spellcheck = false;
+                input.wrap = 'off';
+                input.value = data.content;
+                fileEditor = { input, save, status, path: data.path, project: data.project,
+                    revision: data.revision, original: input.value, crlf: data.content.includes('\r\n'), saving: false };
+                input.oninput = () => {
+                    save.disabled = fileEditor.saving || !editorDirty();
+                    status.textContent = editorDirty() ? 'Ungespeicherte Änderungen' : '';
+                };
+                input.onkeydown = event => {
+                    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                        event.preventDefault(); saveEditor();
+                    }
+                };
+                toolbar.append(filename, save);
+                container.append(toolbar, status, input);
+                fileViewer.appendChild(container);
                 return;
             }
             const pre = document.createElement('pre');
@@ -1005,6 +1258,7 @@
             }
             fileViewer.appendChild(pre);
         } catch (err) {
+            if (requestId !== fileRequest) return;
             fileViewer.innerHTML = '<p class="text-sm text-red-600">' + escapeHtml(err.message) + '</p>';
         }
     }
