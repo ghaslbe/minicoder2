@@ -394,9 +394,16 @@
 
             const headlineEl = document.createElement('div');
             headlineEl.className = pending
-                ? 'text-gray-500 italic'
+                ? 'text-gray-500 italic flex items-center gap-2'
                 : 'text-gray-800 whitespace-pre-wrap';
             headlineEl.textContent = headline;
+            if (pending) {
+                const spinner = document.createElement('span');
+                spinner.className = 'po-spinner';
+                spinner.setAttribute('aria-hidden', 'true');
+                headlineEl.prepend(spinner);
+                headlineEl.setAttribute('role', 'status');
+            }
             bubble.appendChild(headlineEl);
 
             // Welches Modell diesen Lauf erzeugt hat (aus dem 'Modell:'-
