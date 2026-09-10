@@ -1,4 +1,5 @@
 import io
+import codecs
 import hashlib
 import tempfile
 import json
@@ -30,7 +31,7 @@ PROJECT_OPERATION_LOCK = threading.Lock()
 
 @app.before_request
 def reserve_project_operation():
-    if request.method == 'POST':
+    if request.method == 'POST' and request.endpoint != 'stop_build':
         if not PROJECT_OPERATION_LOCK.acquire(blocking=False):
             return jsonify({'ok': False, 'error': 'Ein Vorgang laeuft noch. Bitte warten.'}), 409
         g.project_operation_reserved = True
@@ -157,6 +158,33 @@ PO_HISTORY = []
 
 # Status eines laufenden Bauauftrags für das Polling bei Stream-Abbrüchen.
 BUILD_STATUS = {'laeuft': False, 'zeilen': deque(maxlen=200)}
+BUILD_STOP = threading.Event()
+BUILD_PROCESS = None
+
+
+@app.route('/build/stop', methods=['POST'])
+def stop_build():
+    if BUILD_PROCESS is None or BUILD_PROCESS.poll() is not None:
+        return jsonify({'ok': False, 'error': 'Kein Bauprozess aktiv.'}), 409
+    BUILD_STOP.set()
+    return jsonify({'ok': True})
+
+
+def terminate_build_process(proc):
+    # The build owns a process group, including shell commands started by mc.py.
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
 
 def add_build_lines(text):
     """Speichert gestreamte Ausgabe zeilenweise für den Status-Endpunkt."""
@@ -951,7 +979,9 @@ def build():
 
         def generate():
             nonlocal output
+            global BUILD_PROCESS
             output_lines = []
+            BUILD_STOP.clear()
             BUILD_STATUS['laeuft'] = True
             BUILD_STATUS['zeilen'].clear()
 
@@ -971,40 +1001,36 @@ def build():
             try:
                 proc = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, env=env
+                    bufsize=0, env=env, start_new_session=True
                 )
+                BUILD_PROCESS = proc
+                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                yield emit('\nBauprozess gestartet.\n')
                 while True:
+                    if BUILD_STOP.is_set():
+                        yield emit('\nBauauftrag gestoppt.\n')
+                        break
                     if time.time() - start_time > timeout_duration:
-                        proc.terminate()
                         yield emit("\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n")
                         break
                     ready, _, _ = select.select([proc.stdout], [], [], 1.0)
                     if ready:
-                        line = proc.stdout.readline()
-                        if line:
-                            yield emit(line)
-                        elif proc.poll() is not None:
-                            remaining = proc.stdout.read()
-                            if remaining:
-                                yield emit(remaining)
+                        chunk = os.read(proc.stdout.fileno(), 65536)
+                        if chunk:
+                            yield emit(decoder.decode(chunk))
+                        else:
+                            yield emit(decoder.decode(b'', final=True))
                             break
                     elif proc.poll() is not None:
-                        remaining = proc.stdout.read()
-                        if remaining:
-                            yield emit(remaining)
                         break
                     else:
                         time.sleep(0.1)
             except Exception as e:
                 yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
+                BUILD_PROCESS = None
+                if proc is not None:
+                    terminate_build_process(proc)
                 if proc is not None and proc.stdout:
                     proc.stdout.close()
                 BUILD_STATUS['laeuft'] = False
@@ -1018,7 +1044,8 @@ def build():
                 ensure_vite_running()
                 full_output = "".join(output_lines)
                 output = full_output
-                summary = _extract_run_summary(full_output)
+                summary = ('Bauauftrag gestoppt. Zwischenstand gesichert.'
+                           if BUILD_STOP.is_set() else _extract_run_summary(full_output))
                 schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model, before_commit)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""

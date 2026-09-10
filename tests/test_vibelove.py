@@ -53,6 +53,31 @@ def test_failed_process_start_releases_build(server, monkeypatch):
     assert not server.BUILD_STATUS['laeuft']
 
 
+def test_stop_build_while_waiting_for_output(server, monkeypatch):
+    original_popen = subprocess.Popen
+    processes = []
+
+    def launch(*args, **kwargs):
+        proc = original_popen(['python3', '-u', '-c',
+                              'import time; print("partial", end="", flush=True); time.sleep(30)'], **kwargs)
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(server.subprocess, 'Popen', launch)
+    client = server.app.test_client()
+    assert client.post('/build/stop').status_code == 409
+    response = client.post('/build', data={'instruction': 'test'}, buffered=False)
+    try:
+        assert server.app.test_client().post('/build/stop').status_code == 200
+        assert b'Bauauftrag gestoppt.' in response.get_data()
+    finally:
+        response.close()
+    assert processes[0].poll() is not None
+    assert not server.PROJECT_OPERATION_LOCK.locked()
+    assert not server.BUILD_STATUS['laeuft']
+    assert server.BUILD_HISTORY[-1]['result_summary'].startswith('Bauauftrag gestoppt.')
+
+
 def test_validation_error_does_not_hold_lock(server):
     client = server.app.test_client()
     assert client.post('/projects/aktiv', json={'name': ''}).status_code == 404

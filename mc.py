@@ -5015,6 +5015,9 @@ def main():
         print(f"{C.RED}Achtung: --yes aktiv, Aktionen werden ohne Rueckfrage ausgefuehrt.{C.RESET}")
     import atexit
     atexit.register(kill_bg_procs)
+    # Let external stops run atexit cleanup for detached background servers.
+    import signal
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     if CHECK:
         info("Check-Modus aktiv: finish erst nach echter Ausfuehrung (run mit exit=0).")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")

@@ -657,6 +657,31 @@
             statusEl.lastChild.textContent = ' arbeitet …';
 
             const assistant = appendAssistantBubble({ headline: 'Baue …', rollbackTo: null, pending: true });
+            const stopButton = document.createElement('button');
+            stopButton.type = 'button';
+            stopButton.className = 'mt-2 px-3 py-1 text-sm rounded border border-red-300 text-red-700 disabled:opacity-50';
+            stopButton.textContent = '■ Stoppen';
+            stopButton.title = 'Bauauftrag stoppen';
+            stopButton.disabled = true;
+            assistant.bubble.appendChild(stopButton);
+            let stopRequested = false;
+            let buildFinished = false;
+            stopButton.onclick = async () => {
+                stopButton.disabled = true;
+                stopButton.textContent = 'Wird gestoppt …';
+                try {
+                    const response = await fetch('/build/stop', { method: 'POST' });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'Stoppen fehlgeschlagen.');
+                    stopRequested = true;
+                } catch (error) {
+                    if (!buildFinished) {
+                        stopButton.disabled = false;
+                        stopButton.textContent = '■ Stoppen';
+                        appendSystemBubble(error.message);
+                    }
+                }
+            };
             const pre = fuegeDetailsHinzu(assistant.bubble, '');
             let rawText = '';
 
@@ -670,6 +695,7 @@
                     const error = await response.json();
                     throw new Error(error.error || 'Bauauftrag fehlgeschlagen.');
                 }
+                stopButton.disabled = false;
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
@@ -685,8 +711,12 @@
                 rawText += '\nFehler: ' + err.message;
                 pre.textContent = rawText;
             } finally {
+                buildFinished = true;
+                stopButton.remove();
+                const stopped = stopRequested || rawText.includes('Bauauftrag gestoppt.');
                 const summary = extractSummary(rawText);
-                assistant.headlineEl.textContent = summary || 'Lauf nicht sauber abgeschlossen — Details unten prüfen.';
+                assistant.headlineEl.textContent = stopped ? 'Bauauftrag gestoppt. Zwischenstand gesichert.'
+                    : summary || 'Lauf nicht sauber abgeschlossen — Details unten prüfen.';
                 assistant.headlineEl.className = summary
                     ? 'text-gray-800 whitespace-pre-wrap'
                     : 'text-red-600 whitespace-pre-wrap';
@@ -710,7 +740,7 @@
                 setzePoDialogAktiv(false);
 
                 statusDot.className = 'w-2 h-2 rounded-full bg-green-500 inline-block';
-                statusEl.lastChild.textContent = ' fertig — Preview neu geladen';
+                statusEl.lastChild.textContent = stopped ? ' gestoppt — Preview neu geladen' : ' fertig — Preview neu geladen';
                 reloadPreview();
                 ladeDateiListe();
                 setTimeout(() => {

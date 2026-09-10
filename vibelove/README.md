@@ -30,6 +30,7 @@ Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Li
 * Backend (falls vorhanden): 5001
 
 ## Projekte und Chat
+* Laufende Builds lassen sich direkt an der Chatnachricht mit Stoppen abbrechen. Der bisherige Dateistand bleibt erhalten und wird wie bei anderen abgebrochenen Builds gesichert.
 * Im Dateien-Tab lassen sich UTF-8-Textdateien bis 2 MB direkt bearbeiten und per Speichern-Button oder Strg/Cmd+S speichern. Ungespeicherte Aenderungen werden beim Verlassen abgefragt; zwischenzeitlich geaenderte Dateien werden nicht ueberschrieben.
 * Der Chatbereich laesst sich am Trenner in der Breite anpassen (auch mit den Pfeiltasten) und ueber den Pfeil neben der Vorschau einklappen.
 * Breite und Einklappzustand werden pro Projekt in diesem Browser gespeichert und beim Projektwechsel oder Neuladen wiederhergestellt.
