@@ -4,7 +4,10 @@
         <div id="profileList" class="manage-list" aria-label="Modellprofile"></div>
         <form id="profileForm" class="manage-form">
             <label>Name<input id="profileName" required autocomplete="off"></label>
-            <label>Modellkennung<input id="profileModel" required autocomplete="off"></label>
+            <label>Modellkennung (aktiv)<input id="profileModel" required autocomplete="off"></label>
+            <label>Weitere Modelle für dieses Profil (eins pro Zeile, zum schnellen Umschalten im Chat)
+                <textarea id="profileModels" rows="3" spellcheck="false" placeholder="z.B. openai/gpt-5.6-luna-pro&#10;openai/gpt-5.6-sol"></textarea>
+            </label>
             <label>Endpunkt<input id="profileUrl" type="url" required placeholder="http://localhost:1234/v1"></label>
             <label>API-Key<input id="profileKey" type="password" autocomplete="new-password"></label>
             <p id="profileKeyPreview" class="text-sm font-mono break-all text-gray-600"></p>

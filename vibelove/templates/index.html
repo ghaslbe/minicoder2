@@ -36,6 +36,11 @@
             <button type="button" id="resetButton" title="Kontext-Verlauf zurücksetzen (nicht Git)"
                 class="icon-btn">🔄</button>
             <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
+                title="Modell für den nächsten Bauauftrag -- Auswahl aus den im aktiven Profil hinterlegten Modellen, gilt sofort">
+                Modell
+                <select id="quickModel" class="p-1 border border-gray-300 rounded text-xs bg-white outline-none focus:ring-2 focus:ring-blue-500 max-w-[10rem]"></select>
+            </label>
+            <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
                 title="Max. Schritte für den nächsten Bauauftrag -- gilt sofort, kein Speichern nötig">
                 Schritte
                 <input type="number" id="quickMaxSteps" min="1" step="10"
@@ -1217,6 +1222,8 @@
             loadChatLayout(name);
             await ladeGitLogUndRenderChat();
             ladeDateiListe();
+            ladeSchnellSchritteFeld();
+            ladeSchnellModellFeld();
             setTimeout(reloadPreview, 3500); // Vite braucht einen Moment
         } else {
             const error = await res.json();
@@ -1468,6 +1475,41 @@
         }
     });
 
+    async function ladeSchnellModellFeld() {
+        const feld = document.getElementById('quickModel');
+        try {
+            const [profilRes, settingsRes] = await Promise.all([fetch('/profiles'), fetch('/settings')]);
+            if (!profilRes.ok || !settingsRes.ok) return;
+            const profilData = await profilRes.json();
+            const settingsData = await settingsRes.json();
+            const aktiv = profilData.profiles.find(p => p.id === profilData.selected);
+            const optionen = (aktiv?.models?.length ? aktiv.models : [settingsData.model]).slice();
+            if (settingsData.model && !optionen.includes(settingsData.model)) optionen.unshift(settingsData.model);
+            feld.replaceChildren();
+            optionen.forEach(m => {
+                const option = document.createElement('option');
+                option.value = m; option.textContent = m;
+                feld.appendChild(option);
+            });
+            feld.value = settingsData.model;
+        } catch (err) { /* stiller Fallback -- Feld behaelt zuletzt bekannten Zustand */ }
+    }
+
+    document.getElementById('quickModel').addEventListener('change', async function () {
+        const wert = this.value;
+        if (!wert) { ladeSchnellModellFeld(); return; }
+        try {
+            const res = await fetch('/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: wert })
+            });
+            if (!res.ok) throw new Error();
+        } catch (err) {
+            ladeSchnellModellFeld();
+        }
+    });
+
     async function ladeSchnellSchritteFeld() {
         const feld = document.getElementById('quickMaxSteps');
         try {
@@ -1497,6 +1539,7 @@
     ladeGitLogUndRenderChat();
     ladeDateiListe();
     ladeSchnellSchritteFeld();
+    ladeSchnellModellFeld();
 </script>
 <script src="https://unpkg.com/lucide@1.44.0/dist/umd/lucide.min.js"></script>
 <script src="{{ url_for('static', filename='management.js') }}"></script>

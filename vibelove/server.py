@@ -864,6 +864,26 @@ def profiles():
         profile['api_key'] = str(data.get('api_key') or old.get('api_key', ''))
         if data.get('clear_api_key'):
             profile['api_key'] = ''
+        # Weitere Modellkennungen, die sich dasselbe Endpunkt/Key-Paar teilen
+        # (z.B. mehrere OpenRouter-Modelle) -- Liste zum schnellen Umschalten
+        # im Chat, ohne fuer jedes Modell ein eigenes Profil anzulegen. Das
+        # 'model'-Feld oben bleibt das beim Speichern aktive Modell; ist es
+        # nicht Teil der Liste, wird es automatisch vorangestellt, damit die
+        # Schnellauswahl immer mit dem aktiven Wert startet.
+        models_raw = data.get('models')
+        if models_raw is None:
+            models = old.get('models', [])
+        elif isinstance(models_raw, list):
+            models = [str(m).strip() for m in models_raw if str(m).strip()]
+        else:
+            models = [line.strip() for line in str(models_raw).splitlines() if line.strip()]
+        seen = set()
+        deduped = []
+        for m in [profile['model']] + models:
+            if m not in seen:
+                seen.add(m)
+                deduped.append(m)
+        profile['models'] = deduped
         MC_SETTINGS['profiles'][profile_id] = profile
     apply_project_profile()
     save_settings()

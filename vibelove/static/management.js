@@ -20,6 +20,7 @@
 
     function profileValue() {
         return { name: byId('profileName').value, model: byId('profileModel').value,
+            models: byId('profileModels').value.split('\n').map(s => s.trim()).filter(Boolean),
             base_url: byId('profileUrl').value, api_key: byId('profileKey').value,
             clear_api_key: byId('profileClearKey').checked,
             max_steps: byId('profileSteps').value, max_tokens: byId('profileTokens').value };
@@ -53,6 +54,7 @@
         profileId = profile?.id || null;
         byId('profileName').value = profile?.name || '';
         byId('profileModel').value = profile?.model || '';
+        byId('profileModels').value = (profile?.models || []).filter(m => m !== profile?.model).join('\n');
         byId('profileUrl').value = profile?.base_url || 'http://localhost:1234/v1';
         byId('profileKey').value = '';
         byId('profileKey').placeholder = profile?.api_key_gesetzt ? 'Neuen Key zum Ersetzen eingeben' : 'API-Key eingeben';
@@ -212,6 +214,8 @@
         try {
             await api('/projects/profile', { project: profileProject, id: byId('projectProfileSelect').value });
             byId('closeProjectProfile').click();
+            window.ladeSchnellSchritteFeld?.();
+            window.ladeSchnellModellFeld?.();
         } catch (error) { byId('projectProfileStatus').textContent = error.message; }
     };
     window.addEventListener('beforeunload', event => {
