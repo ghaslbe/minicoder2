@@ -37,7 +37,7 @@ vm.runInContext("loadChatLayout('alpha'); chatLayout.width = 360; applyChatLayou
 assert.equal(element('chatPanel').hidden, true);
 vm.runInContext("loadChatLayout('beta')", context);
 assert.equal(element('chatPanel').hidden, false);
-assert.equal(element('chatPanel').style.width, '700px');
+assert.equal(element('chatPanel').style.width, '672px');
 vm.runInContext("loadChatLayout('alpha')", context);
 assert.equal(element('chatPanel').hidden, true);
 assert.equal(element('chatPanel').style.width, '360px');

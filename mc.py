@@ -104,7 +104,7 @@ def _setting(env, key, default):
 
 BASE_URL = str(_setting("MC_BASE_URL", "base_url", "http://localhost:1234/v1")).rstrip("/")
 DEFAULT_MODEL = str(_setting("MC_MODEL", "model", "gemma-4-26b-a4b-it@mxfp4"))
-API_KEY = str(_setting("MC_API_KEY", "api_key", ""))
+API_KEY = str(os.environ["MC_API_KEY"] if "MC_API_KEY" in os.environ else _setting("MC_API_KEY", "api_key", ""))
 # Zusaetzliche HTTP-Header pro Request, z.B. MC_HEADERS="X-Foo: bar; X-Baz: qux"
 # (mehrere durch ';' oder Zeilenumbruch getrennt, je 'Name: Wert'). In der
 # Konfig-Datei alternativ als Objekt: "headers": {"X-Foo": "bar"}.

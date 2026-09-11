@@ -12,6 +12,7 @@ import time
 import atexit
 import signal
 import threading
+import uuid
 import socket
 import select
 import zipfile
@@ -24,8 +25,9 @@ from werkzeug.utils import secure_filename
 # po.py liegt eine Ebene hoeher, direkt neben mc.py.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import po
+import mc_terminal
 
-app = Flask(__name__)
+app = Flask(__name__, root_path=os.path.dirname(os.path.abspath(__file__)))
 PROJECT_OPERATION_LOCK = threading.Lock()
 
 
@@ -102,8 +104,34 @@ MC_SETTINGS = {
 
 def save_settings():
     """Speichert alle Laufzeit-Einstellungen einschließlich des aktiven Projekts."""
-    with open(SETTINGS_FILE_PATH, 'w', encoding='utf-8') as f:
+    with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(SETTINGS_FILE_PATH),
+                                     encoding='utf-8', delete=False) as f:
         json.dump(MC_SETTINGS, f, indent=2, ensure_ascii=False)
+    os.replace(f.name, SETTINGS_FILE_PATH)
+
+
+PROFILE_FIELDS = ('model', 'base_url', 'api_key', 'max_steps', 'max_tokens')
+
+
+def ensure_profiles():
+    if not MC_SETTINGS.get('profiles'):
+        MC_SETTINGS['profiles'] = {'default': {
+            'name': MC_SETTINGS['model'], **{key: MC_SETTINGS[key] for key in PROFILE_FIELDS}}}
+    MC_SETTINGS.setdefault('project_profiles', {})
+
+
+def selected_profile():
+    ensure_profiles()
+    return MC_SETTINGS['project_profiles'].get(CURRENT_PROJECT, next(iter(MC_SETTINGS['profiles'])))
+
+
+def apply_project_profile():
+    ensure_profiles()
+    profile_id = selected_profile()
+    if profile_id not in MC_SETTINGS['profiles']:
+        profile_id = next(iter(MC_SETTINGS['profiles']))
+    MC_SETTINGS['project_profiles'][CURRENT_PROJECT] = profile_id
+    MC_SETTINGS.update({key: MC_SETTINGS['profiles'][profile_id][key] for key in PROFILE_FIELDS})
 
 def load_settings():
     """Lädt Laufzeit-Einstellungen: erst Env-Variablen, dann mc_settings.json (hat Vorrang)."""
@@ -119,6 +147,9 @@ def load_settings():
     try:
         with open(SETTINGS_FILE_PATH, 'r', encoding='utf-8') as f:
             saved = json.load(f)
+            for key in ('profiles', 'project_profiles'):
+                if isinstance(saved.get(key), dict):
+                    MC_SETTINGS[key] = saved[key]
             for key in ('model', 'base_url', 'api_key', 'projekt'):
                 if key in saved and saved[key]:
                     MC_SETTINGS[key] = saved[key]
@@ -139,6 +170,7 @@ def load_settings():
               f"api_key={'gesetzt' if MC_SETTINGS['api_key'] else '(leer)'}")
     except FileNotFoundError:
         print("[settings] Keine mc_settings.json vorhanden – nutze Umgebungsvariablen/Defaults.")
+    ensure_profiles()
 
 # Globaler Prozess-Speicher für den Vite-Server
 vite_process = None
@@ -172,6 +204,8 @@ def stop_build():
 
 def terminate_build_process(proc):
     # The build owns a process group, including shell commands started by mc.py.
+    if proc.poll() is not None:
+        return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -351,6 +385,7 @@ def switch_project(name, start_vite=True):
         raise ValueError('Ungültiger Projektname')
     CURRENT_PROJECT = cleaned
     MC_SETTINGS['projekt'] = CURRENT_PROJECT
+    apply_project_profile()
     save_settings()
     reset_history()
     if not start_vite:
@@ -746,6 +781,131 @@ def get_settings():
         'api_key_gesetzt': bool(MC_SETTINGS.get('api_key'))
     })
 
+
+def mask_api_key(key):
+    if not key:
+        return ''
+    return (key[:4] if len(key) > 4 else '') + 'xxxxxxxxxxxx'
+
+
+@app.route('/profiles', methods=['GET', 'POST'])
+def profiles():
+    ensure_profiles()
+    if request.method == 'GET':
+        return jsonify({'profiles': [dict(id=key, **{k: v for k, v in profile.items() if k != 'api_key'},
+                                         api_key_gesetzt=bool(profile.get('api_key')),
+                                         api_key_masked=mask_api_key(profile.get('api_key', '')))
+                                     for key, profile in MC_SETTINGS['profiles'].items()],
+                        'selected': selected_profile(), 'project': CURRENT_PROJECT})
+    data = request.get_json(silent=True) or {}
+    profile_id = data.get('id') or uuid.uuid4().hex
+    if not isinstance(profile_id, str):
+        return jsonify({'error': 'Ungueltiges Profil.'}), 400
+    if data.get('delete'):
+        if profile_id not in MC_SETTINGS['profiles']:
+            return jsonify({'error': 'Profil nicht gefunden.'}), 404
+        if len(MC_SETTINGS['profiles']) == 1 or profile_id in MC_SETTINGS['project_profiles'].values():
+            return jsonify({'error': 'Dieses Profil wird noch verwendet oder ist das letzte Profil.'}), 409
+        del MC_SETTINGS['profiles'][profile_id]
+    else:
+        try:
+            profile = {key: str(data.get(key, '')).strip() for key in ('name', 'model', 'base_url')}
+            if not all(profile.values()) or not profile['base_url'].startswith(('http://', 'https://')):
+                raise ValueError()
+            for key in ('max_steps', 'max_tokens'):
+                profile[key] = int(data.get(key, 0))
+                if profile[key] < 1:
+                    raise ValueError()
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Name, Modell, HTTP-Endpunkt und positive Limits erforderlich.'}), 400
+        old = MC_SETTINGS['profiles'].get(profile_id, {})
+        profile['api_key'] = str(data.get('api_key') or old.get('api_key', ''))
+        if data.get('clear_api_key'):
+            profile['api_key'] = ''
+        MC_SETTINGS['profiles'][profile_id] = profile
+    apply_project_profile()
+    save_settings()
+    return jsonify({'ok': True, 'id': profile_id})
+
+
+@app.route('/projects/profile', methods=['POST'])
+def select_project_profile():
+    ensure_profiles()
+    data = request.get_json(silent=True) or {}
+    if data.get('project') != CURRENT_PROJECT:
+        return jsonify({'error': 'Projekt hat sich geaendert.'}), 409
+    if data.get('id') not in MC_SETTINGS['profiles']:
+        return jsonify({'error': 'Profil nicht gefunden.'}), 404
+    MC_SETTINGS['project_profiles'][CURRENT_PROJECT] = data['id']
+    apply_project_profile()
+    save_settings()
+    return jsonify({'ok': True})
+
+
+GLOBAL_SKILLS_DIR = os.path.expanduser('~/.mc/skills')
+SHARED_SKILLS_DIR = os.path.join(os.path.dirname(MC_PATH), 'mc_skills')
+
+
+def skill_directory(scope):
+    if scope == 'shared':
+        return SHARED_SKILLS_DIR
+    return GLOBAL_SKILLS_DIR if scope == 'global' else os.path.join(projekt_dir(CURRENT_PROJECT), 'mc_skills')
+
+
+def available_skills():
+    result = []
+    for scope in ('shared', 'global', 'project'):
+        directory = skill_directory(scope)
+        if not os.path.isdir(directory):
+            continue
+        for filename in sorted(os.listdir(directory)):
+            if not filename.endswith(mc_terminal.SKILL_EXTS):
+                continue
+            path = os.path.join(directory, filename)
+            if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding='utf-8') as source:
+                    content = source.read()
+                meta, body = mc_terminal._split_frontmatter(content)
+                result.append(dict(name=filename, scope=scope, content=content,
+                                   description=meta.get('beschreibung', meta.get('description', '')),
+                                   body=body, meta=meta))
+            except (OSError, UnicodeError):
+                continue
+    return result
+
+
+@app.route('/skills', methods=['GET', 'POST'])
+def manage_skills():
+    if request.method == 'GET':
+        return jsonify({'skills': available_skills(), 'project': CURRENT_PROJECT})
+    data = request.get_json(silent=True) or {}
+    scope, name = data.get('scope'), data.get('name')
+    if scope not in ('shared', 'global', 'project') or not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+\.(md|txt)', name):
+        return jsonify({'error': 'Ungueltiger Skillname oder Geltungsbereich.'}), 400
+    if scope == 'project' and data.get('project') != CURRENT_PROJECT:
+        return jsonify({'error': 'Projekt hat sich geaendert.'}), 409
+    directory = skill_directory(scope)
+    path = os.path.join(directory, name)
+    if os.path.islink(directory) or os.path.islink(path):
+        return jsonify({'error': 'Verknuepfungen sind nicht bearbeitbar.'}), 400
+    try:
+        if data.get('delete'):
+            os.unlink(path)
+        else:
+            content = data.get('content')
+            if not isinstance(content, str) or len(content.encode('utf-8')) > FILE_PREVIEW_LIMIT:
+                return jsonify({'error': 'Ungueltiger oder zu grosser Skillinhalt.'}), 400
+            if data.get('create') and os.path.exists(path):
+                return jsonify({'error': 'Ein Skill mit diesem Namen existiert bereits.'}), 409
+            os.makedirs(directory, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as target:
+                target.write(content)
+    except OSError as error:
+        return jsonify({'error': str(error)}), 400
+    return jsonify({'ok': True})
+
 @app.route('/settings', methods=['POST'])
 def post_settings():
     """Übernimmt neue MC-Einstellungen aus JSON und speichert sie persistent."""
@@ -797,6 +957,8 @@ def post_settings():
             pass
 
     # Persistieren – der Key wird gespeichert (nur lokal, nicht über GET ausgeliefert)
+    ensure_profiles()
+    MC_SETTINGS['profiles'][selected_profile()].update({key: MC_SETTINGS[key] for key in PROFILE_FIELDS})
     try:
         save_settings()
     except Exception as e:
@@ -840,6 +1002,13 @@ def refine_instruction():
     message = str(data.get('message', '')).strip()
     if not message:
         return jsonify({'type': 'error', 'error': 'Keine Nachricht erhalten'}), 400
+    first, _, arguments = message.partition(' ')
+    skills = {os.path.splitext(skill['name'])[0].lower(): skill for skill in available_skills()}
+    if first.startswith('/') and first[1:].lower() in skills:
+        skill = skills[first[1:].lower()]
+        return jsonify({'type': 'spec', 'summary': skill['description'] or first,
+                        'instruction': mc_terminal.render_skill(skill, arguments),
+                        'analyse': mc_terminal.skill_flags(skill)['analyse']})
     global PO_HISTORY
     context_text = _po_project_context()
     # refine_retrying(), NICHT refine(): dieselbe automatische Wiederholung
@@ -850,7 +1019,8 @@ def refine_instruction():
     # automatisch neu zu versuchen.
     decision, PO_HISTORY = po.refine_retrying(
         message, context_text, PO_HISTORY,
-        MC_SETTINGS['base_url'], MC_SETTINGS['model'], MC_SETTINGS['api_key'])
+        MC_SETTINGS['base_url'], MC_SETTINGS['model'], MC_SETTINGS['api_key'],
+        max_tokens=MC_SETTINGS['max_tokens'])
     return jsonify(decision)
 
 
@@ -973,6 +1143,8 @@ def build():
         "--model", model,
         full_instruction
     ]
+    if request.form.get('analyse') == 'true':
+        command.insert(3, '--analyse')
 
     try:
         from flask import stream_with_context, Response
@@ -991,8 +1163,7 @@ def build():
                 return text
 
             env = os.environ.copy()
-            if MC_SETTINGS.get('api_key'):
-                env['MC_API_KEY'] = MC_SETTINGS['api_key']
+            env['MC_API_KEY'] = MC_SETTINGS.get('api_key', '')
             if MC_SETTINGS.get('max_tokens'):
                 env['MC_MAX_TOKENS'] = str(MC_SETTINGS['max_tokens'])
             proc = None
@@ -1542,6 +1713,8 @@ if __name__ == '__main__':
                          or os.path.isdir(os.path.join(PROJEKTE_ROOT, _gespeichert))):
         CURRENT_PROJECT = _gespeichert
         print(f"[projekt] Aktives Projekt wiederhergestellt: {CURRENT_PROJECT}")
+    apply_project_profile()
+    save_settings()
     start_backend_server()
     start_vite_server()
     # Falls der Server schon läuft, nichts tun (wird durch is_port_in_use geprüft)

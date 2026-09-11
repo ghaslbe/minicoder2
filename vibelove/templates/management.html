@@ -1,0 +1,48 @@
+<section id="setupView" class="app-view manage-view" hidden>
+    <header><h2>Modellprofile</h2><button type="button" id="newProfile" class="manage-command"><i data-lucide="plus"></i>Neues Profil</button></header>
+    <div class="manage-columns">
+        <div id="profileList" class="manage-list" aria-label="Modellprofile"></div>
+        <form id="profileForm" class="manage-form">
+            <label>Name<input id="profileName" required autocomplete="off"></label>
+            <label>Modellkennung<input id="profileModel" required autocomplete="off"></label>
+            <label>Endpunkt<input id="profileUrl" type="url" required placeholder="http://localhost:1234/v1"></label>
+            <label>API-Key<input id="profileKey" type="password" autocomplete="new-password"></label>
+            <p id="profileKeyPreview" class="text-sm font-mono break-all text-gray-600"></p>
+            <label class="check-label"><input id="profileClearKey" type="checkbox">Gespeicherten Key entfernen</label>
+            <label>Max. Schritte<input id="profileSteps" type="number" min="1" required value="200"></label>
+            <label>Max. Tokens pro Antwort<input id="profileTokens" type="number" min="1" required value="16000"></label>
+            <div class="manage-actions">
+                <button class="manage-command primary" type="submit"><i data-lucide="save"></i>Speichern</button>
+                <button class="manage-command" id="deleteProfile" type="button"><i data-lucide="trash-2"></i>Löschen</button>
+            </div>
+            <p id="profileStatus" class="manage-status" role="status"></p>
+        </form>
+    </div>
+</section>
+<section id="skillsView" class="app-view manage-view" hidden>
+    <header><h2>Skills</h2><span id="skillProject" class="text-sm text-gray-500"></span><button type="button" id="newSkill" class="manage-command"><i data-lucide="plus"></i>Neuer Skill</button></header>
+    <div class="manage-columns">
+        <div id="skillList" class="manage-list" aria-label="Skills"></div>
+        <form id="skillForm" class="manage-form">
+            <label>Dateiname<input id="skillName" required pattern="[a-zA-Z0-9_-]+\.(md|txt)" placeholder="review.md"></label>
+            <label>Geltungsbereich<select id="skillScope"><option value="project">Aktuelles Projekt</option><option value="shared">Vibelove (alle Projekte)</option><option value="global">Global</option></select></label>
+            <label>Vorlage<textarea id="skillContent" rows="18" spellcheck="false" class="font-mono text-sm" required></textarea></label>
+            <div class="manage-actions">
+                <button class="manage-command primary" type="submit"><i data-lucide="save"></i>Speichern</button>
+                <button class="manage-command" id="useSkill" type="button"><i data-lucide="play"></i>Verwenden</button>
+                <button class="manage-command" id="deleteSkill" type="button"><i data-lucide="trash-2"></i>Löschen</button>
+            </div>
+            <p id="skillStatus" class="manage-status" role="status"></p>
+        </form>
+    </div>
+</section>
+<div id="projectProfileModal" class="hidden fixed inset-0 bg-gray-900/50 flex items-center justify-center z-50">
+    <form id="projectProfileForm" class="bg-white rounded-lg p-6 mx-4 w-full max-w-sm flex flex-col gap-4">
+        <h2 class="text-lg font-bold">Modell für dieses Projekt</h2>
+        <label for="projectProfileSelect" class="text-sm">Modellprofil</label>
+        <select id="projectProfileSelect"></select>
+        <p id="projectProfileDetails" class="text-sm text-gray-600 break-words"></p>
+        <p id="projectProfileStatus" role="status" class="text-sm text-red-700"></p>
+        <div class="manage-actions"><button type="button" id="closeProjectProfile" class="manage-command">Abbrechen</button><button type="submit" class="manage-command primary">Übernehmen</button></div>
+    </form>
+</div>

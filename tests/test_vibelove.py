@@ -1,5 +1,6 @@
 """Vibelove request isolation and persistent rollback references, without LLMs."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 from unittest.mock import patch
@@ -16,6 +17,10 @@ def server(tmp_path, monkeypatch):
     with patch('atexit.register'), patch('signal.signal'):
         spec.loader.exec_module(module)
     monkeypatch.setattr(module, 'WORKSPACE_DIR', str(tmp_path))
+    monkeypatch.setattr(module, 'PROJEKTE_ROOT', str(tmp_path / 'projects'))
+    monkeypatch.setattr(module, 'SETTINGS_FILE_PATH', str(tmp_path / 'settings.json'))
+    monkeypatch.setattr(module, 'GLOBAL_SKILLS_DIR', str(tmp_path / 'global_skills'))
+    monkeypatch.setattr(module, 'SHARED_SKILLS_DIR', str(tmp_path / 'shared_skills'))
     monkeypatch.setattr(module, 'ensure_backend_running', lambda: None)
     monkeypatch.setattr(module, 'ensure_vite_running', lambda: None)
     monkeypatch.setattr(module, '_preflight_key_modell_fehler', lambda *args: None)
@@ -144,3 +149,144 @@ def test_editor_rejects_truncated_files(server, tmp_path, monkeypatch):
     loaded = client.get('/projects/file?path=large.txt').get_json()
     assert loaded['truncated'] and loaded['revision'] is None
     assert client.post('/projects/file', json={**loaded, 'content': 'short'}).status_code == 400
+
+
+def test_profiles_migrate_legacy_and_hide_keys(server, tmp_path):
+    saved = dict(server.MC_SETTINGS, model='legacy-model', api_key='secret-value', max_steps=200, max_tokens=16000)
+    Path(server.SETTINGS_FILE_PATH).write_text(json.dumps(saved))
+    server.load_settings()
+    server.apply_project_profile()
+    server.save_settings()
+    response = server.app.test_client().get('/profiles')
+    assert b'secret-value' not in response.data
+    profile = response.get_json()['profiles'][0]
+    assert profile['model'] == 'legacy-model'
+    assert profile['api_key_gesetzt'] is True
+    assert profile['api_key_masked'] == 'secrxxxxxxxxxxxx'
+    assert profile['max_tokens'] == 16000
+    assert json.loads(Path(server.SETTINGS_FILE_PATH).read_text())['profiles']['default']['api_key'] == 'secret-value'
+    assert Path(server.SETTINGS_FILE_PATH).stat().st_mode & 0o777 == 0o600
+
+
+def test_mask_api_key_handles_empty_and_short_keys(server):
+    assert server.mask_api_key('') == ''
+    assert server.mask_api_key('abcd') == 'xxxxxxxxxxxx'
+    assert server.mask_api_key('abcde') == 'abcdxxxxxxxxxxxx'
+
+
+def test_profile_selection_persists_per_project(server):
+    client = server.app.test_client()
+    payload = dict(name='Remote', model='remote-model', base_url='https://example.invalid/v1',
+                   api_key='secret', max_steps=50, max_tokens=8000)
+    profile_id = client.post('/profiles', json=payload).get_json()['id']
+    assert client.post('/projects/profile', json={'project': 'workspace', 'id': profile_id}).status_code == 200
+    assert server.MC_SETTINGS['model'] == 'remote-model'
+    server.switch_project('second', start_vite=False)
+    assert server.MC_SETTINGS['model'] == server.DEFAULT_MODEL
+    server.switch_project('workspace', start_vite=False)
+    assert server.MC_SETTINGS['max_steps'] == 50
+    assert server.MC_SETTINGS['api_key'] == 'secret'
+    server.load_settings()
+    assert server.selected_profile() == profile_id
+    assert client.post('/profiles', json={'id': profile_id, 'delete': True}).status_code == 409
+    assert client.post('/projects/profile', json={'project': 'second', 'id': profile_id}).status_code == 409
+
+
+def test_profile_edit_keeps_or_clears_key_and_validates(server):
+    client = server.app.test_client()
+    payload = dict(name='Test', model='test', base_url='http://localhost:1234/v1',
+                   api_key='secret', max_steps=200, max_tokens=16000)
+    profile_id = client.post('/profiles', json=payload).get_json()['id']
+    payload.update(id=profile_id, api_key='')
+    assert client.post('/profiles', json=payload).status_code == 200
+    assert server.MC_SETTINGS['profiles'][profile_id]['api_key'] == 'secret'
+    payload['clear_api_key'] = True
+    assert client.post('/profiles', json=payload).status_code == 200
+    assert server.MC_SETTINGS['profiles'][profile_id]['api_key'] == ''
+    payload['max_tokens'] = 0
+    assert client.post('/profiles', json=payload).status_code == 400
+    assert client.post('/profiles', json={'id': profile_id, 'delete': True}).status_code == 200
+
+
+def test_skill_crud_and_project_override_used_by_refine(server):
+    client = server.app.test_client()
+    payload = dict(name='review.md', scope='global', content='Global $ARGUMENTS', create=True)
+    assert client.post('/skills', json=payload).status_code == 200
+    payload.update(scope='project', project='workspace', content='---\nanalyse: true\n---\nProject $ARGUMENTS')
+    assert client.post('/skills', json=payload).status_code == 200
+    assert client.post('/skills', json=payload).status_code == 409
+    skills = client.get('/skills').get_json()['skills']
+    assert len(skills) == 2
+    result = client.post('/refine', json={'message': '/review backend'}).get_json()
+    assert result['instruction'] == 'Project backend'
+    assert result['analyse'] is True
+    assert client.post('/skills', json={**payload, 'delete': True}).status_code == 200
+    result = client.post('/refine', json={'message': '/review backend'}).get_json()
+    assert result['instruction'] == 'Global backend'
+
+
+def test_skill_path_and_project_guards(server):
+    client = server.app.test_client()
+    payload = dict(name='../bad.md', scope='project', project='workspace', content='text')
+    assert client.post('/skills', json=payload).status_code == 400
+    payload.update(name='good.md', project='other')
+    assert client.post('/skills', json=payload).status_code == 409
+
+
+def test_shared_skills_are_listed_editable_and_usable(server):
+    client = server.app.test_client()
+    payload = dict(name='seo.md', scope='shared', content='Pruefe $ARGUMENTS', create=True)
+    assert client.post('/skills', json=payload).status_code == 200
+    skills = client.get('/skills').get_json()['skills']
+    assert skills[0]['scope'] == 'shared'
+    assert skills[0]['name'] == 'seo.md'
+    result = client.post('/refine', json={'message': '/seo example.com'}).get_json()
+    assert result['instruction'] == 'Pruefe example.com'
+    payload.update(create=False, content='SEO fuer $ARGUMENTS')
+    assert client.post('/skills', json=payload).status_code == 200
+    assert Path(server.SHARED_SKILLS_DIR, 'seo.md').read_text() == 'SEO fuer $ARGUMENTS'
+
+
+def test_three_views_render(server):
+    response = server.app.test_client().get('/')
+    assert response.status_code == 200
+    for name in ('buildView', 'setupView', 'skillsView', 'projectProfileSelect'):
+        assert name.encode() in response.data
+    assert b'id="settingsModal"' not in response.data
+
+
+def test_build_uses_profile_limits_and_skill_analysis(server, monkeypatch):
+    captured = {}
+    original_popen = subprocess.Popen
+
+    def launch(command, **kwargs):
+        captured['command'] = command
+        captured['env'] = kwargs['env']
+        return original_popen(['python3', '-c', 'print("done")'], **kwargs)
+
+    monkeypatch.setattr(server.subprocess, 'Popen', launch)
+    monkeypatch.setenv('MC_API_KEY', 'unrelated-inherited-key')
+    server.MC_SETTINGS.update(model='chosen', max_steps=123, max_tokens=4567, api_key='')
+    response = server.app.test_client().post('/build', data={'instruction': 'test', 'analyse': 'true'}, buffered=True)
+    response.close()
+    command = captured['command']
+    assert command[2] == server.MC_PATH
+    assert '--analyse' in command[3:]
+    assert command[command.index('--max-steps') + 1] == '123'
+    assert command[command.index('--model') + 1] == 'chosen'
+    assert captured['env']['MC_MAX_TOKENS'] == '4567'
+    assert captured['env']['MC_API_KEY'] == ''
+
+
+def test_po_uses_profile_token_limit(server, monkeypatch):
+    captured = {}
+
+    def fake_llm(messages, base_url, model, api_key, **kwargs):
+        captured.update(kwargs)
+        return '```decision\n{"type":"question"}\n```\n```question\nWelche Farbe?\n```'
+
+    monkeypatch.setattr(server.po, '_call_llm', fake_llm)
+    server.MC_SETTINGS['max_tokens'] = 4321
+    response = server.app.test_client().post('/refine', json={'message': 'Baue eine App'})
+    assert response.get_json()['type'] == 'question'
+    assert captured['max_tokens'] == 4321

@@ -7,6 +7,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 h-screen flex overflow-hidden">
+    <nav id="appNav" aria-label="Hauptnavigation">
+        <span class="nav-brand">V</span>
+        <button type="button" data-view="build" title="Build" aria-label="Build" aria-current="page"><i data-lucide="hammer"></i><span>Build</span></button>
+        <button type="button" data-view="setup" title="Setup" aria-label="Setup"><i data-lucide="settings"></i><span>Setup</span></button>
+        <button type="button" data-view="skills" title="Skills" aria-label="Skills"><i data-lucide="hand-fist"></i><span>Skills</span></button>
+    </nav>
+    <main id="buildView" class="app-view flex flex-1 min-w-0 h-full">
     <!-- LEFT: kompakte Toolbar + Chat-Verlauf -->
     <div id="chatPanel" class="h-full flex flex-col border-r border-gray-300 bg-white">
         <!-- Kompakte Toolbar -->
@@ -155,36 +162,8 @@
         </div>
     </div>
 
-    <!-- MC-EINSTELLUNGEN MODAL (unsichtbar bis geoeffnet) -->
-    <div id="settingsModal" class="hidden fixed top-0 left-0 w-full h-full bg-gray-900/50 flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
-            <h2 class="text-lg font-bold mb-4 text-gray-800">MC-Einstellungen</h2>
-            <form id="settingsForm" class="flex flex-col gap-3">
-                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Modell
-                    <input type="text" id="settingModel" placeholder="z.B. gemma3:12b" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
-                </label>
-                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Endpunkt / Base URL
-                    <input type="text" id="settingBaseUrl" placeholder="z.B. http://localhost:11434/api/chat" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
-                </label>
-                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">API Key
-                    <input type="password" id="settingApiKey" autocomplete="off" placeholder="API Key nicht gesetzt" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
-                </label>
-                <button type="button" id="resetApiKeyBtn" class="self-start text-xs text-blue-600 hover:text-blue-800 underline">Key auf Env zurücksetzen</button>
-                <p id="resetApiKeyStatus" class="hidden text-xs text-green-600"></p>
-                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Max. Schritte
-                    <input type="number" id="settingMaxSteps" min="1" step="1" value="200" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
-                </label>
-                <label class="flex flex-col gap-1 text-sm font-medium text-gray-600">Max. Tokens pro Antwort
-                    <input type="number" id="settingMaxTokens" min="1" step="500" value="16000" class="border border-gray-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500">
-                    <span class="text-xs font-normal text-gray-400">Hoeher = weniger abgeschnittene Antworten, aber teurer pro Anfrage. Bei Modellen, die viel Text ohne Aktion erzeugen, hilft ein hoeherer Wert.</span>
-                </label>
-                <div class="flex gap-2 mt-3 justify-end">
-                    <button type="button" id="cancelSettingsBtn" class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm">Abbrechen</button>
-                    <button type="submit" id="saveSettingsBtn" class="bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-sm">Speichern</button>
-                </div>
-            </form>
-        </div>
-    </div>
+    </main>
+    {% include 'management.html' %}
 
     <!-- GIT-REMOTE MODAL (unsichtbar bis geoeffnet) -->
     <div id="gitModal" class="hidden fixed top-0 left-0 w-full h-full bg-gray-900/50 flex items-center justify-center z-50">
@@ -206,6 +185,33 @@
 
     <style>
         body { height: 100dvh; }
+        #appNav { width: 56px; flex-shrink: 0; background: #fff; border-right: 1px solid #d1d5db; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 4px; z-index: 30; }
+        .nav-brand { font-weight: 800; color: #15803d; padding: 8px; }
+        #appNav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; border-radius: 6px; color: #4b5563; }
+        #appNav button span { font-size: 10px; line-height: 12px; }
+        #appNav button:hover { background: #f3f4f6; }
+        #appNav button[aria-current] { background: #dcfce7; color: #166534; }
+        #appNav svg { width: 20px; height: 20px; }
+        .app-view[hidden] { display: none !important; }
+        #buildView { position: relative; }
+        .manage-view { flex: 1; min-width: 0; overflow: auto; padding: 24px; background: #fafafa; }
+        .manage-view header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+        .manage-view h2 { font-size: 22px; font-weight: 650; margin-right: auto; }
+        .manage-columns { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 640px); gap: 24px; }
+        .manage-list button { width: 100%; padding: 12px; text-align: left; border-bottom: 1px solid #ddd; overflow-wrap: anywhere; }
+        .manage-list button[aria-pressed="true"] { background: #dcfce7; }
+        .manage-form { display: flex; flex-direction: column; gap: 14px; }
+        .manage-form label { display: flex; flex-direction: column; gap: 5px; font-size: 14px; }
+        .manage-form input, .manage-form select, .manage-form textarea, #projectProfileSelect { border: 1px solid #cbd5e1; border-radius: 4px; padding: 8px; background: white; width: 100%; min-width: 0; }
+        .manage-form .check-label { flex-direction: row; align-items: center; }
+        .manage-form input[type="checkbox"] { width: auto; }
+        .manage-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .manage-command { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; font-size: 14px; }
+        .manage-command svg { width: 16px; height: 16px; }
+        .manage-command.primary { background: #166534; color: white; border-color: #166534; }
+        .manage-command:disabled { opacity: .5; }
+        .manage-status { min-height: 24px; font-size: 14px; overflow-wrap: anywhere; }
+        @media (max-width: 700px) { .manage-view { padding: 16px; } .manage-columns { grid-template-columns: minmax(0, 1fr); } .manage-list { max-height: 180px; overflow: auto; } }
         #chatPanel { width: 50%; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden; }
         #chatPanel[hidden], #chatResizer[hidden] { display: none; }
         #chatPanel textarea { min-width: 0; }
@@ -227,7 +233,7 @@
         @media (max-width: 640px) {
             #chatPanel { position: absolute; inset: 0 auto 0 0; z-index: 20; box-shadow: 4px 0 16px #0002; }
             #chatResizer { position: absolute; top: 0; bottom: 0; z-index: 21; }
-            body:not(.chat-collapsed) #mainPanel { margin-left: min(80vw, 320px); }
+            body:not(.chat-collapsed) #mainPanel > div:first-child > :not(#toggleChatBtn) { display: none; }
         }
         .icon-btn {
             width: 2rem;
@@ -267,13 +273,15 @@
         let chatLayout = { width: null, collapsed: false };
 
         function applyChatLayout() {
+            const available = window.innerWidth - 56;
             const mobile = window.innerWidth <= 640;
-            const max = mobile ? Math.min(window.innerWidth * 0.8, 320) : Math.max(280, window.innerWidth - 320);
-            const width = Math.min(max, Math.max(280, chatLayout.width || window.innerWidth / 2));
+            const max = mobile ? Math.min(available * 0.8, 320) : Math.max(280, available - 320);
+            const width = Math.min(max, Math.max(280, chatLayout.width || available / 2));
             chatPanel.style.width = width + 'px';
             chatPanel.hidden = chatLayout.collapsed;
             chatResizer.hidden = chatLayout.collapsed;
             chatResizer.style.left = mobile ? width + 'px' : '';
+            document.getElementById('mainPanel').style.marginLeft = mobile && !chatLayout.collapsed ? width + 'px' : '';
             document.body.classList.toggle('chat-collapsed', chatLayout.collapsed);
             toggleChatBtn.textContent = chatLayout.collapsed ? '▶' : '◀';
             toggleChatBtn.title = chatLayout.collapsed ? 'Chat ausklappen' : 'Chat einklappen';
@@ -315,7 +323,7 @@
         };
         chatResizer.onpointermove = event => {
             if (!chatResizer.hasPointerCapture(event.pointerId)) return;
-            chatLayout.width = event.clientX;
+            chatLayout.width = event.clientX - 56;
             applyChatLayout();
             chatLayout.width = chatPanel.getBoundingClientRect().width;
         };
@@ -644,7 +652,7 @@
                 : 'Was soll gebaut/geändert werden?';
         }
 
-        async function starteBauauftrag(instruction) {
+        async function starteBauauftrag(instruction, analyse = false) {
             if (buildButton.disabled) return;
             buildButton.disabled = true;
             setProjectControlsBusy(true);
@@ -684,12 +692,15 @@
             };
             const pre = fuegeDetailsHinzu(assistant.bubble, '');
             let rawText = '';
+            let laufendesModel = '';
 
             try {
+                const settingsResponse = await fetch('/settings');
+                if (settingsResponse.ok) laufendesModel = (await settingsResponse.json()).model;
                 const response = await fetch('/build', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `instruction=${encodeURIComponent(instruction)}`
+                    body: `instruction=${encodeURIComponent(instruction)}&analyse=${analyse}`
                 });
                 if (!response.ok) {
                     const error = await response.json();
@@ -725,7 +736,6 @@
                 // welches Modell diesen GERADE gelaufenen Bauauftrag erzeugt
                 // hat, aus dem Einstellungsfeld ausgelesen (der Server hat
                 // exakt diesen Wert fuer den /build-Aufruf verwendet).
-                const laufendesModel = document.getElementById('settingModel')?.value;
                 if (laufendesModel) {
                     const modelEl = document.createElement('div');
                     modelEl.className = 'text-xs text-gray-400 mt-0.5';
@@ -786,7 +796,7 @@
                         decision.summary,
                         decision.instruction,
                         decision.raw,
-                        () => starteBauauftrag(decision.instruction),
+                        () => starteBauauftrag(decision.instruction, decision.analyse === true),
                         () => {
                             instructionInput.value = decision.instruction;
                             autoResizeTextarea();
@@ -848,82 +858,6 @@
             }
         };
 
-        // --- MC-Einstellungen Modal-Logik ---
-        const settingsButton = document.getElementById('settingsButton');
-        const settingsModal = document.getElementById('settingsModal');
-        const settingsForm = document.getElementById('settingsForm');
-        const cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
-        const resetApiKeyBtn = document.getElementById('resetApiKeyBtn');
-        const settingsFeedback = document.getElementById('resetApiKeyStatus');
-
-        settingsButton.onclick = async () => {
-            try {
-                const res = await fetch('/settings');
-                if (!res.ok) throw new Error('GET /settings fehlgeschlagen');
-                const data = await res.json();
-                document.getElementById('settingModel').value = data.model || '';
-                document.getElementById('settingBaseUrl').value = data.base_url || '';
-                document.getElementById('settingMaxSteps').value = data.max_steps || 200;
-                document.getElementById('settingMaxTokens').value = data.max_tokens || 16000;
-                document.getElementById('settingApiKey').value = '';
-                document.getElementById('settingApiKey').placeholder =
-                    (data.api_key_gesetzt ? 'API Key bereits gesetzt' : 'API Key nicht gesetzt');
-                settingsFeedback.textContent = '';
-                settingsFeedback.classList.add('hidden');
-            } catch (err) {
-                appendSystemBubble('Fehler beim Laden der Einstellungen: ' + err.message);
-            }
-            settingsModal.classList.remove('hidden');
-        };
-
-        cancelSettingsBtn.onclick = () => settingsModal.classList.add('hidden');
-
-        settingsModal.addEventListener('click', (e) => {
-            if (e.target === settingsModal) settingsModal.classList.add('hidden');
-        });
-
-        settingsForm.onsubmit = async (e) => {
-            e.preventDefault();
-            const payload = {
-                model: document.getElementById('settingModel').value.trim(),
-                base_url: document.getElementById('settingBaseUrl').value.trim(),
-                api_key: document.getElementById('settingApiKey').value,
-                max_steps: document.getElementById('settingMaxSteps').value,
-                max_tokens: document.getElementById('settingMaxTokens').value
-            };
-            try {
-                const res = await fetch('/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) throw new Error('POST /settings fehlgeschlagen');
-                appendSystemBubble('Einstellungen gespeichert ✓');
-            } catch (err) {
-                appendSystemBubble('Einstellungen speichern fehlgeschlagen: ' + err.message);
-            }
-            settingsModal.classList.add('hidden');
-        };
-
-        resetApiKeyBtn.onclick = async () => {
-            try {
-                const res = await fetch('/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ reset_api_key: true })
-                });
-                if (!res.ok) throw new Error('POST /settings fehlgeschlagen');
-                document.getElementById('settingApiKey').value = '';
-                document.getElementById('settingApiKey').placeholder = 'API Key aus Umgebung übernommen';
-                settingsFeedback.textContent = 'Key aus Umgebung übernommen ✓';
-                settingsFeedback.classList.remove('hidden', 'text-red-600');
-                settingsFeedback.classList.add('text-green-600');
-            } catch (err) {
-                settingsFeedback.textContent = 'Zurücksetzen fehlgeschlagen: ' + err.message;
-                settingsFeedback.classList.remove('hidden', 'text-green-600');
-                settingsFeedback.classList.add('text-red-600');
-            }
-        };
     </script>
 <script>
     function reloadPreview() {
@@ -1327,5 +1261,7 @@
     ladeGitLogUndRenderChat();
     ladeDateiListe();
 </script>
+<script src="https://unpkg.com/lucide@1.44.0/dist/umd/lucide.min.js"></script>
+<script src="{{ url_for('static', filename='management.js') }}"></script>
 </body>
 </html>

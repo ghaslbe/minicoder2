@@ -124,9 +124,11 @@ def _extra_headers():
     return out
 
 
-def _call_llm(messages, base_url, model, api_key, timeout=90):
+def _call_llm(messages, base_url, model, api_key, timeout=90, max_tokens=None):
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": False}
+    if max_tokens is not None:
+        payload['max_tokens'] = max_tokens
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -138,7 +140,7 @@ def _call_llm(messages, base_url, model, api_key, timeout=90):
     return obj["choices"][0]["message"]["content"]
 
 
-def refine(user_message, project_context, history, base_url, model, api_key):
+def refine(user_message, project_context, history, base_url, model, api_key, max_tokens=None):
     """Fuehrt EINEN Schritt des Produktdialogs aus.
     'history' ist die bisherige [{role, content}, ...]-Liste (ohne
     System-Prompt, wird von vibelove zwischen Aufrufen gehalten).
@@ -157,7 +159,7 @@ def refine(user_message, project_context, history, base_url, model, api_key):
     messages.extend(history)
 
     try:
-        reply = _call_llm(messages, base_url, model, api_key)
+        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]
         return {"type": "error", "error": f"HTTP {e.code} vom Endpoint: {body}",
@@ -220,7 +222,7 @@ def refine(user_message, project_context, history, base_url, model, api_key):
             "raw": reply, "retryable": True}, history
 
 
-def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3):
+def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3, max_tokens=None):
     """Wie refine(), aber wiederholt automatisch bei RETRYABLE Fehlern
     (kaputtes Protokoll-Format -- bei einem kleinen Modell mit mehrteiliger
     strukturierter Ausgabe ein erwartbarer gelegentlicher Aussetzer, kein
@@ -231,7 +233,7 @@ def refine_retrying(user_message, project_context, history, base_url, model, api
     last = None
     for _ in range(attempts):
         decision, new_history = refine(user_message, project_context, history,
-                                        base_url, model, api_key)
+                                        base_url, model, api_key, max_tokens=max_tokens)
         if decision["type"] != "error" or not decision.get("retryable"):
             return decision, new_history
         last = (decision, new_history)
