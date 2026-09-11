@@ -1,8 +1,10 @@
 """Vibelove request isolation and persistent rollback references, without LLMs."""
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -290,3 +292,94 @@ def test_po_uses_profile_token_limit(server, monkeypatch):
     response = server.app.test_client().post('/refine', json={'message': 'Baue eine App'})
     assert response.get_json()['type'] == 'question'
     assert captured['max_tokens'] == 4321
+
+
+@pytest.fixture
+def preview_restart(server, monkeypatch):
+    calls = []
+    process = SimpleNamespace(poll=lambda: None, returncode=None)
+    monkeypatch.setattr(server, 'stop_vite_processes', lambda: calls.append('stop-preview'))
+    monkeypatch.setattr(server, 'stop_backend_server', lambda: calls.append('stop-backend'))
+    monkeypatch.setattr(server, '_kill_port', lambda port, *args: calls.append(('kill', port, args)))
+    monkeypatch.setattr(server, 'wait_preview_stopped', lambda *args: True)
+    monkeypatch.setattr(server, '_backend_manifest', lambda *args: ('backend', 'start'))
+
+    def start_backend():
+        calls.append('start-backend')
+        server.backend_process = process
+
+    def start_preview():
+        calls.append('start-preview')
+        server.vite_process = process
+
+    monkeypatch.setattr(server, 'start_backend_server', start_backend)
+    monkeypatch.setattr(server, 'start_vite_server', start_preview)
+    monkeypatch.setattr(server, 'preview_http_status', lambda port: 200)
+    return server, calls
+
+
+def test_restart_reports_ready_only_after_both_http_checks(preview_restart, monkeypatch):
+    server, calls = preview_restart
+    client = server.app.test_client()
+
+    def probe(port):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            state = pool.submit(lambda: server.app.test_client().get('/preview-status').get_json()).result()
+            blocked = pool.submit(lambda: server.app.test_client().post('/projects/aktiv', json={'name': 'other'}).status_code).result()
+        calls.append(('http', port, state['phase']))
+        assert state['running']
+        assert blocked == 409
+        return 404 if port == server.BACKEND_PORT else 200
+
+    monkeypatch.setattr(server, 'preview_http_status', probe)
+    assert client.post('/restart-vite').status_code == 200
+    assert calls.index(('http', server.BACKEND_PORT, 'backend')) < calls.index('start-preview')
+    assert ('http', server.PORT_VITE, 'preview') in calls
+    state = client.get('/preview-status').get_json()
+    assert state['phase'] == 'ready' and not state['running']
+    assert not server.PROJECT_OPERATION_LOCK.locked()
+
+
+def test_restart_refuses_occupied_ports(preview_restart, monkeypatch):
+    server, calls = preview_restart
+    monkeypatch.setattr(server, 'wait_preview_stopped', lambda *args: False)
+    response = server.app.test_client().post('/restart-vite')
+    assert response.status_code == 500
+    assert 'start-backend' not in calls and 'start-preview' not in calls
+    assert server.PREVIEW_STATE['phase'] == 'error'
+    assert not server.PROJECT_OPERATION_LOCK.locked()
+
+
+def test_restart_timeout_exposes_logs_and_can_retry(preview_restart, monkeypatch):
+    server, calls = preview_restart
+    monkeypatch.setattr(server, 'PREVIEW_START_TIMEOUT', 0)
+    monkeypatch.setattr(server, 'preview_http_status', lambda port: 503)
+    original_start = server.start_backend_server
+
+    def failing_backend():
+        original_start()
+        server.PREVIEW_LOG.append('backend failed to load config')
+
+    monkeypatch.setattr(server, 'start_backend_server', failing_backend)
+    client = server.app.test_client()
+    response = client.post('/restart-vite')
+    assert response.status_code == 500
+    state = client.get('/preview-status').get_json()
+    assert 'HTTP 503' in state['message']
+    assert 'failed to load config' in state['log']
+    monkeypatch.setattr(server, 'preview_http_status', lambda port: 200)
+    assert client.post('/restart-vite').status_code == 200
+
+
+def test_preview_readiness_detects_process_exit(server):
+    proc = SimpleNamespace(poll=lambda: 1, returncode=1)
+    with pytest.raises(RuntimeError, match='Exit 1'):
+        server.wait_preview_ready(proc, server.PORT_VITE, 'Vorschau')
+
+
+def test_restart_static_preview_needs_no_backend(preview_restart, monkeypatch):
+    server, calls = preview_restart
+    monkeypatch.setattr(server, '_backend_manifest', lambda *args: None)
+    assert server.app.test_client().post('/restart-vite').status_code == 200
+    assert 'start-backend' not in calls
+    assert 'start-preview' in calls

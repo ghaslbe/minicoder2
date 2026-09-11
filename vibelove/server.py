@@ -1,5 +1,6 @@
 import io
 import codecs
+import http.client
 import hashlib
 import tempfile
 import json
@@ -26,6 +27,7 @@ from werkzeug.utils import secure_filename
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import po
 import mc_terminal
+from vibelove.terminal_backend import TerminalManager
 
 app = Flask(__name__, root_path=os.path.dirname(os.path.abspath(__file__)))
 PROJECT_OPERATION_LOCK = threading.Lock()
@@ -33,7 +35,7 @@ PROJECT_OPERATION_LOCK = threading.Lock()
 
 @app.before_request
 def reserve_project_operation():
-    if request.method == 'POST' and request.endpoint != 'stop_build':
+    if request.method == 'POST' and request.endpoint != 'stop_build' and request.blueprint != 'terminal':
         if not PROJECT_OPERATION_LOCK.acquire(blocking=False):
             return jsonify({'ok': False, 'error': 'Ein Vorgang laeuft noch. Bitte warten.'}), 409
         g.project_operation_reserved = True
@@ -359,6 +361,10 @@ def projekt_dir(name):
         return WORKSPACE_DIR
     return os.path.join(PROJEKTE_ROOT, name)
 
+
+TERMINALS = TerminalManager(lambda name: projekt_dir(name))
+app.register_blueprint(TERMINALS.blueprint)
+
 STATIC_SERVER_MARKER = 'vibelove_static_preview_marker'
 
 def stop_vite_processes():
@@ -599,7 +605,7 @@ def generate_container_files(proj):
     return files, hinweis
 
 
-def _kill_port(port):
+def _kill_port(port, sig=signal.SIGTERM):
     """Beendet JEDEN Prozess, der auf 'port' lauscht -- unabhaengig davon, ob
     vibelove ihn selbst gestartet hat. Noetig, weil ein Backend nicht nur
     von start_backend_server() stammen kann, sondern auch von mc.py WAEHREND
@@ -610,10 +616,10 @@ def _kill_port(port):
     trifft ihn also nicht. Portbasiertes Beenden ist das einzig zuverlaessige
     Mittel, unabhaengig vom Ursprung des Prozesses."""
     try:
-        out = subprocess.run(['lsof', '-ti', f':{port}'], capture_output=True, text=True)
+        out = subprocess.run(['lsof', '-nP', f'-tiTCP:{port}', '-sTCP:LISTEN'], capture_output=True, text=True, timeout=5)
         for pid in out.stdout.split():
             try:
-                os.kill(int(pid), signal.SIGTERM)
+                os.kill(int(pid), sig)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
     except Exception as e:
@@ -635,6 +641,42 @@ def stop_backend_server():
         backend_process = None
     _kill_port(BACKEND_PORT)
 
+PREVIEW_LOCK = threading.Lock()
+PREVIEW_STATE = {'running': False, 'phase': 'idle', 'message': '', 'project': None}
+PREVIEW_LOG = deque(maxlen=100)
+PREVIEW_START_TIMEOUT = 30
+PREVIEW_STOP_TIMEOUT = 5
+
+
+def preview_phase(phase, message, running=True):
+    with PREVIEW_LOCK:
+        PREVIEW_STATE.update(phase=phase, message=message, running=running, project=CURRENT_PROJECT)
+
+
+def launch_preview(label, command, **kwargs):
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+    except OSError as error:
+        with PREVIEW_LOCK:
+            PREVIEW_LOG.append(f'[{label}] {error}\n')
+        raise
+
+    def collect_output():
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        try:
+            while True:
+                chunk = os.read(proc.stdout.fileno(), 2048)
+                if not chunk:
+                    break
+                with PREVIEW_LOCK:
+                    PREVIEW_LOG.append(f'[{label}] ' + decoder.decode(chunk))
+        finally:
+            proc.stdout.close()
+
+    threading.Thread(target=collect_output, daemon=True).start()
+    return proc
+
+
 def start_backend_server():
     """Startet das Backend des AKTIVEN Projekts auf BACKEND_PORT, falls eines
     per backend/vibelove-backend.json beschrieben ist. Analog zu
@@ -651,7 +693,7 @@ def start_backend_server():
     backend_dir, command = manifest
     print(f"Starte Backend fuer '{CURRENT_PROJECT}' auf Port {BACKEND_PORT}: {command}")
     try:
-        backend_process = subprocess.Popen(
+        backend_process = launch_preview('Backend',
             ["env", f"{BACKEND_MARKER}=1", "bash", "-c", command],
             cwd=backend_dir,
             start_new_session=True
@@ -707,7 +749,7 @@ def start_vite_server():
                       f"{'ja, Port ' + str(backend_port) if backend_port else 'nein'}) "
                       f"fuer die Vorschau auf Port {PORT_VITE}...")
                 try:
-                    vite_process = subprocess.Popen(
+                    vite_process = launch_preview('Vorschau',
                         ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
                          STATIC_PREVIEW_SCRIPT, static_dir, str(PORT_VITE),
                          str(backend_port), API_PREFIX],
@@ -729,7 +771,7 @@ def start_vite_server():
                       f"Port {PORT_VITE} an das Backend (Port {BACKEND_PORT}) "
                       f"weiter...")
                 try:
-                    vite_process = subprocess.Popen(
+                    vite_process = launch_preview('Vorschau',
                         ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
                          STATIC_PREVIEW_SCRIPT, "", str(PORT_VITE),
                          str(BACKEND_PORT), API_PREFIX],
@@ -743,7 +785,7 @@ def start_vite_server():
 
     print(f"Starte Vite-Server auf Port {PORT_VITE}...")
     try:
-        vite_process = subprocess.Popen(
+        vite_process = launch_preview('Vite',
             ["npm", "run", "dev", "--", "--port", str(PORT_VITE), "--host", "0.0.0.0", "--strictPort"],
             cwd=front_dir,
             start_new_session=True
@@ -983,13 +1025,38 @@ def build_status():
     })
 
 
-def _po_project_context():
+def _bauverlauf_kontext_text():
+    """Baut den 'bisherige Bauschritte'-Kontext-Text aus BUILD_HISTORY (letzte
+    5 Eintraege), gemeinsam genutzt von /build (immer, siehe unten) und
+    /refine (nur wenn der Nutzer im Chat 'Verlauf einbeziehen' aktiviert hat).
+    Leerer String, wenn es noch keine Bauschritte in dieser Sitzung gab."""
+    if not BUILD_HISTORY:
+        return ""
+    teile = ["Bisherige Bauschritte in dieser Sitzung (chronologisch, ggf. darauf aufbauen):"]
+    for i, entry in enumerate(BUILD_HISTORY[-5:]):
+        instr = entry['instruction']
+        if len(instr) > 300:
+            instr = instr[:300] + f"…[gekuerzt, ursprünglich {len(instr)} Zeichen]"
+        teile.append(f"{i+1}. Anweisung: {instr}")
+        teile.append(f"   Ergebnis: {entry['result_summary']}")
+    return "\n".join(teile)
+
+
+def _po_project_context(mit_verlauf=False):
     """Kurzer Kontext-Text ueber das aktive Projekt fuer po.py -- die eigentliche
     Sammel-Logik lebt in po.gather_project_context() (auch von po.py's eigener
     Kommandozeile genutzt), hier nur mit dem aktiven vibelove-Projektnamen
-    vorangestellt statt eines nackten Pfades."""
-    return (f"Aktives Projekt: {CURRENT_PROJECT}\n\n"
+    vorangestellt statt eines nackten Pfades. mit_verlauf=True haengt zusaetzlich
+    die letzten Bauschritte dieser Sitzung an -- standardmaessig AUS, weil der
+    Produktdialog sonst bei jeder Rueckfrage denselben (ggf. langen) Verlauf
+    erneut mitschickt; der Nutzer aktiviert es gezielt per Checkbox im Chat."""
+    text = (f"Aktives Projekt: {CURRENT_PROJECT}\n\n"
             + po.gather_project_context(projekt_dir(CURRENT_PROJECT)))
+    if mit_verlauf:
+        verlauf = _bauverlauf_kontext_text()
+        if verlauf:
+            text += "\n\n" + verlauf
+    return text
 
 
 @app.route('/refine', methods=['POST'])
@@ -1010,7 +1077,7 @@ def refine_instruction():
                         'instruction': mc_terminal.render_skill(skill, arguments),
                         'analyse': mc_terminal.skill_flags(skill)['analyse']})
     global PO_HISTORY
-    context_text = _po_project_context()
+    context_text = _po_project_context(mit_verlauf=bool(data.get('mit_verlauf')))
     # refine_retrying(), NICHT refine(): dieselbe automatische Wiederholung
     # bei kaputtem Protokoll-Format, die die eigenstaendige Kommandozeile
     # (po.py _main()) schon nutzt -- ohne sie sah dieser Endpunkt hier
@@ -1079,18 +1146,9 @@ def build():
     # 200000 Prompt-Token an, ohne dass der eigentliche NEUE Auftrag laenger
     # geworden waere. Fuer Kontinuitaet reicht ein kurzer Hinweis, WAS
     # verlangt war -- das Ergebnis (Erfolg/Fehler) bleibt vollstaendig.
-    context_parts = []
-    if BUILD_HISTORY:
-        context_parts.append("Bisherige Bauschritte in dieser Sitzung (chronologisch, ggf. darauf aufbauen):")
-        for i, entry in enumerate(BUILD_HISTORY[-5:]):
-            instr = entry['instruction']
-            if len(instr) > 300:
-                instr = instr[:300] + f"…[gekuerzt, ursprünglich {len(instr)} Zeichen]"
-            context_parts.append(f"{i+1}. Anweisung: {instr}")
-            context_parts.append(f"   Ergebnis: {entry['result_summary']}")
-    
-    if context_parts:
-        full_instruction = "\n".join(context_parts) + f"\n\nNEUE Anweisung: {instruction}"
+    verlauf = _bauverlauf_kontext_text()
+    if verlauf:
+        full_instruction = verlauf + f"\n\nNEUE Anweisung: {instruction}"
     else:
         full_instruction = instruction
 
@@ -1602,17 +1660,89 @@ def upload_project_file():
 
 @app.route('/restart-vite', methods=['POST'])
 def restart_vite():
-    stop_vite_processes()
-    stop_backend_server()
-    # Kurz warten, bis Vite-/Backend-Port frei sind (max ~5s)
-    for _ in range(50):
-        if not is_port_in_use(PORT_VITE) and not is_port_in_use(BACKEND_PORT):
-            break
+    preview_phase('stopping', 'Wird beendet …')
+    with PREVIEW_LOCK:
+        PREVIEW_LOG.clear()
+    old_processes = [proc for proc in (vite_process, backend_process) if proc is not None]
+    try:
+        stop_vite_processes()
+        stop_backend_server()
+        _kill_port(PORT_VITE)
+        if not wait_preview_stopped(old_processes, PREVIEW_STOP_TIMEOUT):
+            preview_phase('stopping', 'Prozesse reagieren nicht. Beenden wird erzwungen …')
+            for proc in old_processes:
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            for port in (PORT_VITE, BACKEND_PORT):
+                _kill_port(port, signal.SIGKILL)
+            if not wait_preview_stopped(old_processes, PREVIEW_STOP_TIMEOUT):
+                raise RuntimeError('Alte Prozesse oder Ports sind weiterhin belegt. Neustart abgebrochen.')
+        if _backend_manifest(projekt_dir(CURRENT_PROJECT)):
+            preview_phase('backend', 'Backend startet …')
+            start_backend_server()
+            wait_preview_ready(backend_process, BACKEND_PORT, 'Backend')
+        preview_phase('preview', 'Vorschau startet …')
+        start_vite_server()
+        wait_preview_ready(vite_process, PORT_VITE, 'Vorschau')
+        if backend_process is not None and backend_process.poll() is not None:
+            raise RuntimeError('Backend ist beim Start der Vorschau abgestuerzt.')
+        preview_phase('ready', 'Bereit', running=False)
+        return jsonify({'ok': True})
+    except Exception as error:
+        preview_phase('error', str(error), running=False)
+        return jsonify({'ok': False, 'error': str(error)}), 500
+
+
+def wait_preview_stopped(processes, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        processes_stopped = all(proc.poll() is not None for proc in processes)
+        ports_free = not any(is_port_in_use(port) for port in (PORT_VITE, BACKEND_PORT))
+        if processes_stopped and ports_free:
+            return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.1)
-    # Backend + Vite neu starten
-    start_backend_server()
-    start_vite_server()
-    return 'Vorschau (Vite/Backend) wurde neu gestartet.'
+
+
+def preview_http_status(port):
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
+    try:
+        connection.request('GET', '/')
+        return connection.getresponse().status
+    finally:
+        connection.close()
+
+
+def wait_preview_ready(proc, port, label):
+    if proc is None:
+        raise RuntimeError(f'{label} konnte nicht gestartet werden. Projektdateien und Startbefehl pruefen.')
+    deadline = time.monotonic() + PREVIEW_START_TIMEOUT
+    last = 'noch keine HTTP-Antwort'
+    while True:
+        if proc.poll() is not None:
+            raise RuntimeError(f'{label} wurde beendet (Exit {proc.returncode}). Siehe Prozessausgabe.')
+        try:
+            status = preview_http_status(port)
+            last = f'HTTP {status}'
+            # API-only backends may legitimately have no route at /.
+            if 200 <= status < 400 or status in (401, 403) or (label == 'Backend' and status == 404):
+                if proc.poll() is None:
+                    return
+        except (OSError, http.client.HTTPException):
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f'{label} auf Port {port} nach {PREVIEW_START_TIMEOUT} Sekunden nicht bereit ({last}).')
+        time.sleep(0.2)
+
+
+@app.route('/preview-status')
+def preview_status():
+    with PREVIEW_LOCK:
+        return jsonify({**PREVIEW_STATE, 'log': ''.join(PREVIEW_LOG)})
 
 @app.route('/reset', methods=['POST'])
 def reset():
@@ -1682,6 +1812,7 @@ def generate_container():
 
 
 def cleanup():
+    TERMINALS.close()
     stop_vite_server()
     stop_backend_server()
 

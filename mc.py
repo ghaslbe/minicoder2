@@ -582,6 +582,8 @@ def extra_headers():
 
 
 MAX_CONTINUATIONS = 4  # max. automatische Fortsetzungen bei abgeschnittener Antwort
+READ_ONLY_STREAK_LIMIT = 12  # NUR-LESE-Aktionen (auch verschiedene Dateien) in Folge ohne
+                             # dazwischenliegendes write_file/edit_file, bevor genudged wird
 
 # Stillstands-Timeout fuer den Streaming-Request: siehe Kommentar in _chat_once()
 # an der Stelle, wo er geprueft wird -- schuetzt vor per Keep-Alive endlos
@@ -4169,6 +4171,11 @@ def run_task(messages, model):
     prose_nudges = 0
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
+    read_only_streak = 0  # NUR-LESE-Aktionen seit dem letzten Schreiben (Schleifen-Erkennung
+                           # ueber mehrere Schritte hinweg, nicht nur direkt hintereinander)
+    read_only_violations = 0  # wie oft READ_ONLY_STREAK_LIMIT ueberschritten wurde, seit
+                               # zuletzt geschrieben wurde -- ab der 2. Ueberschreitung wird
+                               # die naechste Lese-Aktion blockiert statt nur gemahnt
     ctx_overflows = 0   # vom Endpoint gemeldete Kontext-Ueberlaeufe
     budget_warned = False
     notes_probe_done = False
@@ -4719,8 +4726,48 @@ def run_task(messages, model):
                 messages.append({"role": "user", "content": obs})
                 continue
             last_ro_raw = raw
+            # Allgemeinere Bremse als der Check oben: NICHT nur exakt dieselbe
+            # Aktion direkt hintereinander, sondern zu viele NUR-LESE-Aktionen
+            # in Folge (auch verschiedene Dateien), ohne dass dazwischen etwas
+            # geschrieben wurde. Real beobachtet: eine Datei wird bei Schritt
+            # N gelesen, das Ergebnis faellt spaeter der Kontext-Beschneidung
+            # zum Opfer, und bei Schritt N+40 wird dieselbe Datei erneut
+            # gelesen -- der Check oben (nur EIN Schritt Gedaechtnis) greift
+            # hier nicht, weil dazwischen andere Aktionen lagen.
+            #
+            # Erste Ueberschreitung: nur mahnen (Hinweis wird, wie
+            # ueberzaehlige_bloecke unten, an DIESES Aktionsergebnis angehaengt,
+            # nicht vorab als eigene Nachricht). Reale Beobachtung (Portscanner-
+            # Projekt, deepseek-flash): eine reine Mahnung wurde mehrfach
+            # ignoriert, das Modell las munter weiter, ohne je zu schreiben --
+            # deshalb ab der ZWEITEN Ueberschreitung ein echter Block: die
+            # Aktion wird gar nicht erst ausgefuehrt.
+            read_only_streak += 1
+            pending_read_streak_nudge = False
+            if read_only_streak >= READ_ONLY_STREAK_LIMIT:
+                read_only_violations += 1
+                read_only_streak = 0
+                if read_only_violations >= 2:
+                    obs = (f"BLOCKIERT: Der vorherige Hinweis (zu viele Lese-Aktionen "
+                           f"in Folge ohne Schreiben) wurde ignoriert — diese "
+                           f"{name}-Aktion wird DESHALB NICHT ausgefuehrt. Lies jetzt "
+                           f"NICHTS mehr. Triff SOFORT eine konkrete Entscheidung: "
+                           f"schreibe etwas per edit_file/write_file mit dem, was du "
+                           f"bereits weisst, oder rufe finish auf, falls du wirklich "
+                           f"nicht weiterkommst.")
+                    print(f"{C.RED}✗ Lese-Aktion blockiert — Hinweis wurde ignoriert."
+                          f"{C.RESET}")
+                    messages.append({"role": "user", "content": obs})
+                    continue
+                pending_read_streak_nudge = True
+        elif name in ("write_file", "edit_file"):
+            last_ro_raw = None
+            read_only_streak = 0
+            read_only_violations = 0
+            pending_read_streak_nudge = False
         else:
             last_ro_raw = None
+            pending_read_streak_nudge = False
 
         ok, result = handler(action)
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
@@ -4736,6 +4783,18 @@ def run_task(messages, model):
             print(f"{C.YELLOW}⚠ {ueberzaehlige_bloecke} zusaetzliche(r) "
                   f"action-Block/Bloecke verworfen — Hinweis angehaengt."
                   f"{C.RESET}")
+        if pending_read_streak_nudge:
+            result += (f"\n\n[HINWEIS VOM TOOL] Das waren {READ_ONLY_STREAK_LIMIT} lesende "
+                       f"Aktionen in Folge (read_file/read_files/list_dir/find/grep) ohne "
+                       f"eine einzige schreibende Aktion dazwischen. Lies JETZT NICHT "
+                       f"weiter — entscheide dich mit dem, was du bereits weisst, fuer "
+                       f"eine konkrete Aenderung per edit_file oder write_file. Falls dir "
+                       f"wirklich noch Information fehlt: schreib sie STICHWORTARTIG in "
+                       f"MC-NOTIZEN.md, damit sie nicht erneut nachgelesen werden muss. "
+                       f"Ignorierst du diesen Hinweis und liest trotzdem weiter ohne zu "
+                       f"schreiben, wird die NAECHSTE Lese-Aktion blockiert.")
+            print(f"{C.YELLOW}⚠ {READ_ONLY_STREAK_LIMIT} Lese-Aktionen in Folge ohne "
+                  f"Schreiben — Hinweis angehaengt.{C.RESET}")
         # Prosa-Waechter wieder scharf schalten: die Rueckfrage war bisher
         # EINMALIG pro Lauf — real beobachtet, dass ein Modell sie frueh
         # verbraucht und der Lauf viel spaeter (nach Dutzenden echten

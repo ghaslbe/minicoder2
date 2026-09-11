@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vibelove Builder</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/xterm/xterm.css') }}">
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 h-screen flex overflow-hidden">
@@ -33,6 +35,12 @@
                 class="icon-btn">🐳</button>
             <button type="button" id="resetButton" title="Kontext-Verlauf zurücksetzen (nicht Git)"
                 class="icon-btn">🔄</button>
+            <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
+                title="Max. Schritte für den nächsten Bauauftrag -- gilt sofort, kein Speichern nötig">
+                Schritte
+                <input type="number" id="quickMaxSteps" min="1" step="10"
+                    class="w-14 p-1 border border-gray-300 rounded text-xs outline-none focus:ring-2 focus:ring-blue-500">
+            </label>
             <button type="button" id="settingsButton" title="Einstellungen"
                 class="icon-btn">⚙️</button>
         </div>
@@ -41,7 +49,15 @@
         <div id="chatFeed" class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5 bg-gray-50"></div>
 
         <!-- Eingabe unten, Chat-Stil -->
-        <form id="buildForm" class="flex items-end gap-2 p-3 border-t border-gray-200 bg-white">
+        <div class="px-3 pt-2 border-t border-gray-200 bg-white">
+            <label class="flex items-center gap-1.5 text-xs text-gray-500 select-none"
+                title="Bezieht die letzten Bauschritte dieser Sitzung (Anweisung + Ergebnis) in den Kontext fuer den Product Owner ein">
+                <input type="checkbox" id="poMitVerlauf" checked
+                    class="w-3.5 h-3.5 border-gray-300 rounded text-blue-600 focus:ring-blue-500">
+                Bisherige Bauschritte für den Product Owner einbeziehen
+            </label>
+        </div>
+        <form id="buildForm" class="flex items-end gap-2 p-3 bg-white">
             <textarea
                 id="instruction"
                 name="instruction"
@@ -126,9 +142,20 @@
                     onclick="restartVite()"
                     class="bg-gray-200 text-gray-700 font-medium py-1 px-3 rounded hover:bg-gray-300 transition-colors text-sm"
                 >
-                    Vite neu starten
+                    Vorschau neu starten
                 </button>
             </div>
+        </div>
+        <div id="previewRestartStatus" class="hidden shrink-0 border-b border-gray-300 bg-white px-3 py-2">
+            <div class="flex flex-wrap items-center gap-2">
+                <span id="previewRestartSpinner" class="po-spinner" aria-hidden="true"></span>
+                <span id="previewRestartMessage" class="text-sm break-words min-w-0 flex-1" role="status"></span>
+                <button type="button" id="previewRestartRetry" onclick="restartVite()" class="hidden text-sm px-2 py-1 rounded border border-red-300 text-red-700">Erneut versuchen</button>
+            </div>
+            <details id="previewRestartDetails" class="mt-1">
+                <summary class="text-xs cursor-pointer text-gray-600">Prozessausgabe</summary>
+                <pre id="previewRestartLog" class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words bg-gray-900 text-gray-100 p-2 rounded text-xs"></pre>
+            </details>
         </div>
         <div id="previewWrapper" class="flex-grow flex items-center justify-center bg-gray-200 overflow-auto">
             <iframe
@@ -140,7 +167,8 @@
         </div>
 
         <!-- Datei-Explorer: Liste links, Inhalt/Upload rechts (nur sichtbar im 'Dateien'-Tab) -->
-        <div id="filesPanel" class="hidden flex-grow min-h-0 min-w-0 overflow-hidden flex">
+        <div id="filesPanel" class="hidden flex-grow min-h-0 min-w-0 overflow-hidden flex flex-col">
+          <div class="flex flex-1 min-h-0 overflow-hidden">
             <div class="w-1/3 h-full overflow-y-auto border-r border-gray-300 bg-white">
                 <div id="fileList" class="text-sm"></div>
             </div>
@@ -159,6 +187,16 @@
                     <p class="text-sm text-gray-400">Datei links auswählen, um sie anzuzeigen.</p>
                 </div>
             </div>
+          </div>
+          <section id="projectTerminal" aria-label="Projektterminal">
+            <div id="terminalResize" role="separator" tabindex="0" aria-label="Terminalhöhe" aria-orientation="horizontal" aria-controls="terminalBody" hidden></div>
+            <div class="terminal-toolbar">
+                <button type="button" id="terminalToggle" aria-expanded="false" aria-controls="terminalBody" title="Terminal öffnen"><i data-lucide="terminal"></i><span>Terminal</span><i id="terminalChevron" data-lucide="chevron-up"></i></button>
+                <span id="terminalStatus" role="status"></span>
+                <button type="button" id="terminalRestart" title="Terminalsitzung neu starten" aria-label="Terminalsitzung neu starten" hidden><i data-lucide="rotate-cw"></i></button>
+            </div>
+            <div id="terminalBody" hidden></div>
+          </section>
         </div>
     </div>
 
@@ -185,6 +223,18 @@
 
     <style>
         body { height: 100dvh; }
+        #projectTerminal { flex: 0 0 34px; min-height: 34px; display: flex; flex-direction: column; border-top: 1px solid #d1d5db; overflow: hidden; background: #16191c; }
+        .terminal-toolbar { height: 33px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px; background: #f3f4f6; }
+        .terminal-toolbar button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font-size: 12px; height: 30px; }
+        .terminal-toolbar button[hidden], #terminalBody[hidden], #terminalResize[hidden] { display: none; }
+        .terminal-toolbar svg { width: 15px; height: 15px; }
+        #terminalStatus { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #4b5563; }
+        #terminalBody { flex: 1; min-height: 0; padding: 4px 6px; overflow: hidden; }
+        #terminalBody > div { height: 100%; }
+        #terminalResize { height: 5px; flex-shrink: 0; cursor: row-resize; touch-action: none; background: #d1d5db; }
+        #terminalResize:hover, #terminalResize:focus-visible { background: #60a5fa; outline: none; }
+        body.terminal-resizing { cursor: row-resize; user-select: none; }
+        body.terminal-resizing iframe { pointer-events: none; }
         #appNav { width: 56px; flex-shrink: 0; background: #fff; border-right: 1px solid #d1d5db; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 4px; z-index: 30; }
         .nav-brand { font-weight: 800; color: #15803d; padding: 8px; }
         #appNav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 44px; height: 52px; border-radius: 6px; color: #4b5563; }
@@ -309,6 +359,7 @@
                 }
             } catch (error) { console.warn('Chatlayout konnte nicht geladen werden.', error); }
             applyChatLayout();
+            window.projectTerminal?.setProject(project);
         }
 
         toggleChatBtn.onclick = () => {
@@ -404,7 +455,13 @@
             headlineEl.className = pending
                 ? 'text-gray-500 italic flex items-center gap-2'
                 : 'text-gray-800 whitespace-pre-wrap';
-            headlineEl.textContent = headline;
+            // Eigenes Span fuer den Text (statt headlineEl.textContent direkt) --
+            // so kann der Text waehrend eines laufenden Baus wiederholt aktualisiert
+            // werden (z.B. Live-Schrittzahl), ohne den davor eingefuegten Spinner
+            // mit zu loeschen.
+            const textSpan = document.createElement('span');
+            textSpan.textContent = headline;
+            headlineEl.appendChild(textSpan);
             if (pending) {
                 const spinner = document.createElement('span');
                 spinner.className = 'po-spinner';
@@ -432,7 +489,7 @@
             wrap.appendChild(bubble);
             chatFeed.appendChild(wrap);
             chatFeed.scrollTop = chatFeed.scrollHeight;
-            return { wrap, bubble, headlineEl };
+            return { wrap, bubble, headlineEl, textSpan };
         }
 
         // Product-Owner-Bubbles (po.py): optisch abgesetzt vom Coder
@@ -521,6 +578,54 @@
             wrap.appendChild(bubble);
             chatFeed.appendChild(wrap);
             chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
+        function appendPoPlanBubble(summary, steps, raw, onBauenAlle) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bg-indigo-50 border border-indigo-200 rounded-2xl rounded-bl-sm px-3 py-2 max-w-[85%] text-sm shadow-sm';
+            appendPoLabel(bubble);
+            const text = document.createElement('div');
+            text.className = 'text-gray-800 whitespace-pre-wrap mb-2';
+            text.textContent = summary;
+            bubble.appendChild(text);
+
+            steps.forEach((step) => {
+                const details = document.createElement('details');
+                details.className = 'mb-1.5';
+                const dsummary = document.createElement('summary');
+                dsummary.className = 'text-xs text-indigo-600 cursor-pointer select-none';
+                dsummary.textContent = `Schritt ${step.num}`;
+                const pre = document.createElement('pre');
+                pre.className = 'mt-1 max-h-40 overflow-auto whitespace-pre-wrap bg-white border border-gray-200 rounded p-2 text-xs';
+                pre.textContent = step.instruction;
+                details.appendChild(dsummary);
+                details.appendChild(pre);
+                bubble.appendChild(details);
+            });
+            if (raw) fuegeDetailsHinzuMitLabel(bubble, 'Product-Owner-Denken', raw);
+
+            const btnRow = document.createElement('div');
+            btnRow.className = 'flex flex-wrap gap-2';
+            const bauenBtn = document.createElement('button');
+            bauenBtn.type = 'button';
+            bauenBtn.className = 'bg-blue-600 text-white font-medium py-1 px-3 rounded hover:bg-blue-700 transition-colors text-xs';
+            bauenBtn.textContent = `Jetzt bauen (${steps.length} Schritte nacheinander)`;
+            bauenBtn.onclick = () => { btnRow.remove(); onBauenAlle(); };
+            btnRow.appendChild(bauenBtn);
+            bubble.appendChild(btnRow);
+
+            wrap.appendChild(bubble);
+            chatFeed.appendChild(wrap);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
+        async function starteMehrstufigenBauauftrag(steps) {
+            for (const step of steps) {
+                appendSystemBubble(`Schritt ${step.num} von ${steps.length} …`);
+                await starteBauauftrag(step.instruction);
+            }
         }
 
         function fuegeDetailsHinzuMitLabel(bubble, label, initialText) {
@@ -664,7 +769,21 @@
             statusDot.className = 'w-2 h-2 rounded-full bg-yellow-500 inline-block animate-pulse';
             statusEl.lastChild.textContent = ' arbeitet …';
 
-            const assistant = appendAssistantBubble({ headline: 'Baue …', rollbackTo: null, pending: true });
+            let laufendesModel = '';
+            let maxSteps = null;
+            try {
+                const settingsResponse = await fetch('/settings');
+                if (settingsResponse.ok) {
+                    const s = await settingsResponse.json();
+                    laufendesModel = s.model;
+                    maxSteps = s.max_steps;
+                }
+            } catch (err) { /* stiller Fallback -- Kopfzeile bleibt dann generisch */ }
+
+            const assistant = appendAssistantBubble({
+                headline: maxSteps ? `Baue … (max ${maxSteps} Schritte)` : 'Baue …',
+                rollbackTo: null, pending: true
+            });
             const stopButton = document.createElement('button');
             stopButton.type = 'button';
             stopButton.className = 'mt-2 px-3 py-1 text-sm rounded border border-red-300 text-red-700 disabled:opacity-50';
@@ -692,11 +811,8 @@
             };
             const pre = fuegeDetailsHinzu(assistant.bubble, '');
             let rawText = '';
-            let laufendesModel = '';
 
             try {
-                const settingsResponse = await fetch('/settings');
-                if (settingsResponse.ok) laufendesModel = (await settingsResponse.json()).model;
                 const response = await fetch('/build', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -710,13 +826,43 @@
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                let warnEl = null;
+                let abschnitteGezaehlt = 0;
+                let kontextUeberlaufGezaehlt = 0;
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    rawText += decoder.decode(value, { stream: true });
+                    const chunkText = decoder.decode(value, { stream: true });
+                    rawText += chunkText;
                     pre.textContent = rawText;
                     pre.scrollTop = pre.scrollHeight;
                     chatFeed.scrollTop = chatFeed.scrollHeight;
+
+                    // Live-Schrittzahl aus den "── Schritt N" Markern von mc.py --
+                    // nur im NEUEN Chunk suchen (nicht im gesamten rawText erneut),
+                    // damit das bei langen Laeufen nicht unnoetig teuer wird.
+                    const schrittTreffer = chunkText.match(/── Schritt (\d+)/g);
+                    if (schrittTreffer && schrittTreffer.length) {
+                        const letzterSchritt = schrittTreffer[schrittTreffer.length - 1].match(/\d+/)[0];
+                        assistant.textSpan.textContent = maxSteps
+                            ? `Baue … (Schritt ${letzterSchritt} von ${maxSteps})`
+                            : `Baue … (Schritt ${letzterSchritt})`;
+                    }
+
+                    // Fruehwarnung, wenn max_tokens/Kontextfenster zu knapp sind --
+                    // mc.py meldet beides bereits selbst im Terminal, hier nur
+                    // sichtbar in die Chat-Blase gespiegelt, statt im ausgeklappten
+                    // Rohtext unterzugehen. Schwelle >1 gegen einmalige Ausreisser.
+                    if (chunkText.includes('Antwort abgeschnitten: Token-Limit')) abschnitteGezaehlt++;
+                    if (chunkText.includes('Kontext-Ueberlauf')) kontextUeberlaufGezaehlt++;
+                    if (!warnEl && (abschnitteGezaehlt >= 2 || kontextUeberlaufGezaehlt >= 1)) {
+                        warnEl = document.createElement('div');
+                        warnEl.className = 'text-xs text-amber-600 mt-0.5';
+                        warnEl.textContent = kontextUeberlaufGezaehlt >= 1
+                            ? '⚠ Kontext-Überlauf vom Endpunkt gemeldet — Kontextfenster evtl. zu klein für dieses Modell'
+                            : '⚠ Antworten werden wiederholt abgeschnitten — "Max. Tokens pro Antwort" in den Einstellungen evtl. zu niedrig';
+                        assistant.bubble.insertBefore(warnEl, assistant.headlineEl.nextSibling);
+                    }
                 }
             } catch (err) {
                 rawText += '\nFehler: ' + err.message;
@@ -781,7 +927,10 @@
                 const res = await fetch('/refine', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: nachricht })
+                    body: JSON.stringify({
+                        message: nachricht,
+                        mit_verlauf: document.getElementById('poMitVerlauf').checked
+                    })
                 });
                 const decision = await res.json();
                 if (!res.ok) throw new Error(decision.error || 'Anfrage fehlgeschlagen.');
@@ -803,6 +952,14 @@
                             instructionInput.focus();
                             setzePoDialogAktiv(true);
                         }
+                    );
+                } else if (decision.type === 'plan') {
+                    setzePoDialogAktiv(false);
+                    appendPoPlanBubble(
+                        decision.summary,
+                        decision.steps,
+                        decision.raw,
+                        () => starteMehrstufigenBauauftrag(decision.steps)
                     );
                 } else {
                     appendSystemBubble('Product Owner: ' + (decision.error || 'unbekannter Fehler'));
@@ -902,15 +1059,69 @@
     // Standard: Desktop beim Laden aktivieren
     setPreviewWidth('desktop');
 
-    function restartVite() {
+    let previewRestartRunning = false;
+
+    function showPreviewRestart(state) {
+        document.getElementById('previewRestartStatus').classList.remove('hidden');
+        document.getElementById('previewRestartMessage').textContent = state.message;
+        document.getElementById('previewRestartMessage').classList.toggle('text-red-700', state.phase === 'error');
+        document.getElementById('previewRestartMessage').classList.toggle('text-green-700', state.phase === 'ready');
+        document.getElementById('previewRestartSpinner').classList.toggle('hidden', !state.running);
+        document.getElementById('previewRestartRetry').classList.toggle('hidden', state.phase !== 'error');
+        document.getElementById('previewRestartLog').textContent = state.log || '';
+        if (state.phase === 'error') document.getElementById('previewRestartDetails').open = true;
+    }
+
+    async function restartVite() {
+        if (previewRestartRunning) return;
+        previewRestartRunning = true;
         const btn = document.getElementById('restartViteBtn');
-        if (btn) btn.disabled = true;
-        fetch('/restart-vite', { method: 'POST' })
-            .then(function () { return new Promise(function (r) { setTimeout(r, 3000); }); })
-            .then(function () { reloadPreview(); })
-            .finally(function () {
-                if (btn) btn.disabled = false;
-            });
+        const controls = ['restartViteBtn', 'projektSelect', 'neuesProjektBtn', 'buildButton', 'resetButton', 'containerButton'];
+        const previous = controls.map(id => [document.getElementById(id), document.getElementById(id).disabled]);
+        previous.forEach(([control]) => { control.disabled = true; });
+        btn.textContent = 'Neustart läuft …';
+        document.getElementById('previewRestartDetails').open = false;
+        showPreviewRestart({ running: true, phase: 'stopping', message: 'Neustart wird angefordert …' });
+        let polling = false;
+        let finished = false;
+        let lastLog = '';
+        const timer = setInterval(async () => {
+            if (polling) return;
+            polling = true;
+            try {
+                const response = await fetch('/preview-status');
+                if (!response.ok) return;
+                const state = await response.json();
+                if (!finished && state.running) {
+                    lastLog = state.log;
+                    showPreviewRestart(state);
+                }
+            } catch (error) { /* The POST below reports connection errors. */ }
+            finally { polling = false; }
+        }, 500);
+        try {
+            const response = await fetch('/restart-vite', { method: 'POST' });
+            const result = await response.json();
+            finished = true;
+            clearInterval(timer);
+            if (!response.ok || !result.ok) {
+                if (response.status !== 409) {
+                    try { lastLog = (await (await fetch('/preview-status')).json()).log; } catch (error) {}
+                }
+                throw new Error(result.error || 'Neustart fehlgeschlagen.');
+            }
+            try { lastLog = (await (await fetch('/preview-status')).json()).log; } catch (error) {}
+            showPreviewRestart({ phase: 'ready', running: false, message: 'Bereit', log: lastLog });
+            reloadPreview();
+        } catch (error) {
+            showPreviewRestart({ phase: 'error', running: false, message: error.message, log: lastLog });
+        } finally {
+            finished = true;
+            clearInterval(timer);
+            previous.forEach(([control, disabled]) => { control.disabled = disabled; });
+            btn.textContent = 'Vorschau neu starten';
+            previewRestartRunning = false;
+        }
     }
 
     // ── Projekt-Verwaltung ─────────────────────────────────────────────
@@ -1257,11 +1468,40 @@
         }
     });
 
+    async function ladeSchnellSchritteFeld() {
+        const feld = document.getElementById('quickMaxSteps');
+        try {
+            const res = await fetch('/settings');
+            if (!res.ok) return;
+            const data = await res.json();
+            feld.value = data.max_steps || 100;
+        } catch (err) { /* stiller Fallback -- Feld behaelt zuletzt bekannten Wert */ }
+    }
+
+    document.getElementById('quickMaxSteps').addEventListener('change', async function () {
+        const wert = parseInt(this.value, 10);
+        if (!wert || wert < 1) { ladeSchnellSchritteFeld(); return; }
+        try {
+            const res = await fetch('/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ max_steps: wert })
+            });
+            if (!res.ok) throw new Error();
+        } catch (err) {
+            ladeSchnellSchritteFeld();
+        }
+    });
+
     ladeProjekte();
     ladeGitLogUndRenderChat();
     ladeDateiListe();
+    ladeSchnellSchritteFeld();
 </script>
 <script src="https://unpkg.com/lucide@1.44.0/dist/umd/lucide.min.js"></script>
 <script src="{{ url_for('static', filename='management.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/xterm/xterm.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/xterm/addon-fit.js') }}"></script>
+<script src="{{ url_for('static', filename='terminal.js') }}"></script>
 </body>
 </html>

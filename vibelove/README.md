@@ -30,6 +30,9 @@ Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Li
 * Backend (falls vorhanden): 5001
 
 ## Projekte und Chat
+* Im Dateien-Tab ist unten zunaechst nur die Terminalleiste sichtbar. Anklicken oeffnet eine Shell im Projektverzeichnis; der obere Trenner passt die Hoehe an. Hoehe und Einklappzustand werden pro Projekt im Browser gespeichert. Sitzungen bleiben beim Einklappen und Projektwechsel erhalten, bis Vibelove beendet oder die Terminalsitzung neu gestartet wird.
+* Das Terminal nutzt lokale xterm.js-Assets (5.5.0, Fit-Addon 0.10.0) und ein Unix-Pseudoterminal. Es braucht keine zusaetzlichen Python-Pakete. Ausgaben werden gepuffert; Strg+C und interaktive Programme werden unterstuetzt.
+* Vorschau neu starten zeigt Beenden, Backend-Start, Vorschau-Start und Bereit an. Erst nach HTTP-Pruefung wird die Vorschau neu geladen. Startfehler bleiben mit Prozessausgabe und Erneut-versuchen-Button sichtbar; nach 30 Sekunden pro Dienst wird ein Timeout gemeldet.
 * Der Skills-Bereich zeigt auch die vorhandenen gemeinsamen Vorlagen aus `mc_skills` neben `mc.py` (Geltungsbereich Vibelove). Bei gleichem Namen haben globale und danach projektspezifische Vorlagen Vorrang.
 * Links gibt es drei Ansichten: Build, Setup (Modellprofile) und Skills. Ein Ansichtswechsel unterbricht keinen Build.
 * Setup verwaltet benannte Modellprofile mit Modellkennung, Endpunkt, API-Key, Schritten und Ausgabetokens. Bestehende Einstellungen werden als erstes Profil uebernommen. Das Projekt-Zahnrad waehlt nur noch das Profil fuer das aktive Projekt. Die Auswahl bleibt pro Projekt erhalten.
