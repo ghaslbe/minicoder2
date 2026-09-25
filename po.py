@@ -294,9 +294,22 @@ For EACH criterion, decide exactly one of:
 - FAIL: clearly NOT satisfied based on concrete evidence you can see
   (missing file, a failing build/test, wrong status code, code that
   obviously cannot do what the criterion asks).
-- UNVERIFIED: you cannot tell from files/logs alone (e.g. it genuinely
-  needs actual clicking/playing in a browser). Do NOT guess PASS or FAIL
-  for these -- an honest UNVERIFIED is far better than a guess.
+- UNVERIFIED: you cannot tell from files/logs alone, AND NOTHING in the
+  output suggests it was even attempted or that it is broken -- e.g. a
+  criterion that genuinely needs actual clicking/playing in a browser, and
+  the coding agent never tried any automated check for it. Do NOT guess
+  PASS or FAIL for these -- an honest UNVERIFIED is far better than a
+  guess.
+
+IMPORTANT distinction: UNVERIFIED is for things nobody could check with
+the tools available -- it is NOT a safe fallback for something the coding
+agent itself tried to test and failed at. If the output shows a test
+script, harness, or verification attempt for a criterion that crashed,
+errored out, or stopped partway through, that is real (if partial)
+evidence of a problem -- treat it as FAIL for that criterion (name the
+crashed/incomplete test as your evidence), not as UNVERIFIED. Reserve
+UNVERIFIED strictly for criteria with NO verification attempt visible at
+all in the output.
 
 Always reply in German, with a short line of reasoning first, then exactly
 these fenced blocks:
