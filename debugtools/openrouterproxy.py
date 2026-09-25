@@ -108,7 +108,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         req = urllib.request.Request(url, data=body or None, method=method,
                                       headers=req_headers)
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            # 360s statt vorher 300s: manche Qwen-Modelle (v.a. mit langem
+            # Reasoning vor dem ersten sichtbaren Chunk) haben Antworten
+            # ueber 5 Minuten produziert -- ein zu knapper Timeout wuerde
+            # den Client mit einem 502 abschneiden, obwohl der Endpoint noch
+            # arbeitet.
+            resp = urllib.request.urlopen(req, timeout=360)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:

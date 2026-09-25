@@ -6864,6 +6864,106 @@ ist aber kein Ersatz fuer eine echte native `tool_calls`-Anbindung. Die
 zugrundeliegende Tendenz dieses Modells zu unkontrollierten Text-Exzessen
 bleibt bestehen und aeussert sich nur in einer anderen Form.
 
+## 83. Der eigentliche Root-Cause: mc.py fuehrt nur den ERSTEN Block einer
+buendelnden Antwort aus -- der Rest wird ERSATZLOS VERWORFEN
+
+Der Prompt-Patch aus Kapitel 82 loeste das `<tool_call>`-Symptom, aber ein
+direkter Vergleichslauf mit `nvidia/Qwen3-30B-A3B-NVFP4` auf einer neuen
+gemieteten Instanz zeigte, dass das eigentliche Problem tiefer sitzt --
+und viel banaler ist, als vermutet.
+
+**Der Befund:** In Schritt 1 dieses Laufs generierte das Modell NICHT nur
+den ersten `write_file`-Block, sondern in derselben Antwort direkt
+weiter: `npm install`, Backend starten, Frontend starten, alle vier
+curl-Tests (GET/POST/PUT/DELETE), einen Fehlerfall-Test und `finish` --
+insgesamt 23 `action`-Bloecke in einer einzigen Antwort, so als haette das
+Modell die Tool-Ergebnisse bereits gekannt. mc.py's Protokoll sieht aber
+GENAU EINEN Block pro Antwort vor: `extract_action()` fuehrte nur den
+allerersten aus und verwarf den Rest -- mit einem Hinweis an das Modell
+("22 zusaetzliche Action-Bloecke ERSATZLOS VERWORFEN"), der zwar die
+ANZAHL, aber nicht die PFADE der verworfenen Bloecke nannte. Das Modell
+konnte die Luecke deshalb nie gezielt nachholen.
+
+**Konkreter Schaden, live nachvollzogen:** `frontend/src/index.js` und
+`frontend/public/index.html` -- beide im verworfenen Batch enthalten --
+fehlten am Ende komplett; das Frontend liess sich nicht starten (React
+"Could not find a required file: index.html"). Schlimmer: die vier
+curl-Tests aus demselben verworfenen Batch liefen NIE wirklich, aber die
+`finish`-Zusammenfassung behauptete "alle vier REST-Methoden mit
+Validierung getestet". Ein manueller Nachtest deckte auf, warum das nie
+aufgefallen war: das Backend warf bei POST einen echten Bug
+(`sqlalchemy.orm.exc.DetachedInstanceError` -- `session.close()` wurde
+vor dem Zugriff auf `new_kunde.id` aufgerufen) -- HTTP 500 statt 201. Das
+Modell hatte sich die komplette Verifikation praktisch ausgedacht, bevor
+die Tool-Ausfuehrung ueberhaupt an der Reihe war.
+
+**Bestaetigung ueber einen zweiten Client:** Ein parallel per Proxy
+mitgeschnittener opencode-Request (`qwen/qwen3.8-27b`, echtes
+`tools`-Array) zeigte dieselbe Buendelungs-Neigung -- 4 `tool_calls`
+(`todowrite`, 3x `bash`) in einer einzigen Antwort. Der Unterschied: weil
+opencode ueber die native `tool_calls`-Struktur des API-Feldes verfuegt,
+konnte es alle vier sauber der Reihe nach ausfuehren, ohne etwas zu
+verlieren. Root Cause ist also nicht "Qwen labert", sondern: **Qwen will
+strukturell mehrere Schritte pro Antwort erledigen -- ob das funktioniert,
+haengt rein davon ab, ob der Client das auffangen kann.**
+
+**Der Fix:** `extract_action()` wurde zu `extract_actions()` erweitert --
+findet ALLE `action`-Bloecke einer Antwort (jeder mit korrekt zugeordneten
+`content`/`old`/`new`-Fences, begrenzt auf den Bereich bis zum naechsten
+Block). Die Hauptschleife in `run_task()` haelt jetzt eine Warteschlange
+(`pending_actions`) offener Bloecke derselben Antwort: nach einer
+ERFOLGREICH ausgefuehrten Aktion wird sofort der naechste Block aus der
+Warteschlange verarbeitet, OHNE einen neuen Request an das Modell zu
+schicken. Schlaegt ein Block fehl (Parse-Fehler, Validierungs-Gate,
+`finish`-Ablehnung etc.), wird die restliche Warteschlange verworfen und
+das Modell bekommt frisches Feedback -- ein kaputter Block darf keine
+nachfolgenden Bloecke "blind" mitziehen, die seinen Erfolg voraussetzen.
+Technisch: ein neuer `_append_obs()`-Helper haengt Ergebnisse an dieselbe
+`user`-Nachricht an (statt mehrere `user`-Rollen hintereinander zu
+erzeugen, was manche Chat-Templates nicht vertragen) und leert bei
+Fehlern gleichzeitig die Warteschlange.
+
+**Erster Test nach dem Fix (`qwen/qwen3.8-27b` ueber OpenRouter):** kein
+brauchbares Ergebnis, aber aus einem unabhaengigen Grund -- das Modell
+kuendigte zweimal hintereinander nur Arbeit an ("Jetzt lege ich die
+Backend-Dateien an ..."), ohne je einen Aktionsblock zu senden, und
+mc.py's bereits laenger bestehende Prosa-Ende-Erkennung wertete das nach
+der zweiten Nicht-Aktion als bewusstes Ende -- der Lauf endete nach nur 5
+Schritten, ohne dass ueberhaupt eine gebuendelte Antwort auftrat, die den
+neuen Code haette testen koennen.
+
+**Zweiter Test, `qwen/qwen3.8-omni-flash` ueber OpenRouter:** lief sauber
+bis zum Schrittlimit (40), mit einer brauchbaren Uebergabe-Zusammenfassung
+(Backend inkl. aller vier Endpunkte laut Modell per curl getestet), 49
+Requests, 373.999 Tokens, nur $0,0538 -- kein `finish`, aber inhaltlich
+der bisher guenstigste vollstaendige Lauf mit diesem Modell.
+
+**Nebenbefund, wichtig fuer die Einordnung:** Ein weiterer parallel
+gestarteter opencode-Lauf mit `qwen/qwen3-coder-30b-a3b-instruct` (ueber
+OpenRouter, mit echtem `tools`-Schema) brach sofort ab -- das Modell
+leakte dieselbe rohe `<function=write><parameter=...></tool_call>`-Syntax
+als sichtbaren Text, OBWOHL der Client (opencode) korrekt auf native
+Tool-Calls ausgelegt ist. Das zeigt: der Root Cause liegt bei manchen
+Modell/Route-Kombinationen nicht beim Client, sondern in OpenRouters
+eigener Server-seitiger Uebersetzung in das `tools`-Feld -- die
+funktioniert fuer `qwen/qwen3.8-27b` zuverlaessig, fuer
+`qwen/qwen3-coder-30b-a3b-instruct` (zumindest in diesem Versuch) nicht.
+Ein per Proxy mitgeschnittener opencode-Request bestaetigte zusaetzlich
+den strukturellen Unterschied zu mc.py: opencode schickt ein 17.811
+Zeichen langes System-Prompt plus ein echtes `tools`-Array mit 10
+Werkzeugen (bash, edit, glob, grep, read, skill, task, todowrite,
+webfetch, write) -- mc.py schickt bewusst KEIN `tools`-Feld und verlaesst
+sich komplett auf Text-Parsing.
+
+**Einordnung:** Ein grosser Umbau von mc.py auf natives `tools`-Schema
+wurde erwogen, aber angesichts des Qwen3-Coder-30B-Befunds zurueckgestellt
+-- die native Struktur ist kein Garant fuer Zuverlaessigkeit, wenn schon
+die Server-seitige Normalisierung fuer ein bestimmtes Modell nicht
+funktioniert. Der jetzt umgesetzte, deutlich kleinere Fix (mehrere
+Bloecke pro Antwort sequenziell statt nur den ersten auszufuehren) trifft
+den tatsaechlich beobachteten Mechanismus direkter und funktioniert
+unabhaengig davon, ob der Endpoint ein `tools`-Feld sauber unterstuetzt.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
