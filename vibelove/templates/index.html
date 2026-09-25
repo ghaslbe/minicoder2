@@ -429,6 +429,23 @@
             chatFeed.appendChild(div);
         }
 
+        // QA-Feedback des Evaluators (server.py /build, Zeilen mit "[QA] "
+        // bzw. "=== QA-Korrekturlauf") sichtbar im Chat statt nur im
+        // aufklappbaren Rohtext -- macht den Coder<->Evaluator-Loop live
+        // nachvollziehbar.
+        function appendQaBubble(text) {
+            const passed = /\[QA\] Status: PASS/.test(text);
+            const blocked = /\[QA\] BLOCKIERT/.test(text) || /\[QA\] Status: FAIL/.test(text);
+            const div = document.createElement('div');
+            div.className = 'text-xs my-1 whitespace-pre-wrap rounded px-2 py-1 mx-auto max-w-[90%] '
+                + (passed ? 'bg-green-50 text-green-800 border border-green-200'
+                   : blocked ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                   : 'bg-gray-50 text-gray-600 border border-gray-200');
+            div.textContent = text;
+            chatFeed.appendChild(div);
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
         function appendUserBubble(text) {
             const wrap = document.createElement('div');
             wrap.className = 'flex justify-end';
@@ -540,7 +557,7 @@
             chatFeed.scrollTop = chatFeed.scrollHeight;
         }
 
-        function appendPoSpecBubble(summary, instruction, raw, onBauen, onAnpassen) {
+        function appendPoSpecBubble(summary, instruction, raw, onBauen, onAnpassen, acceptance) {
             const wrap = document.createElement('div');
             wrap.className = 'flex justify-start';
             const bubble = document.createElement('div');
@@ -562,6 +579,24 @@
             details.appendChild(dsummary);
             details.appendChild(pre);
             bubble.appendChild(details);
+
+            if (acceptance) {
+                // Nach dem Bauen prueft ein separater QA-Schritt automatisch
+                // GENAU diese Kriterien (s. server.py /build) -- standardmaessig
+                // aufgeklappt, damit sie vor dem Klick auf "Jetzt bauen"
+                // sichtbar sind, nicht in einem Details-Element versteckt.
+                const accWrap = document.createElement('div');
+                accWrap.className = 'mb-2';
+                const accLabel = document.createElement('div');
+                accLabel.className = 'text-xs text-indigo-600 mb-1';
+                accLabel.textContent = 'Akzeptanzkriterien (werden nach dem Bauen automatisch geprüft)';
+                const accPre = document.createElement('pre');
+                accPre.className = 'whitespace-pre-wrap bg-white border border-gray-200 rounded p-2 text-xs';
+                accPre.textContent = acceptance;
+                accWrap.appendChild(accLabel);
+                accWrap.appendChild(accPre);
+                bubble.appendChild(accWrap);
+            }
             if (raw) fuegeDetailsHinzuMitLabel(bubble, 'Product-Owner-Denken', raw);
 
             const btnRow = document.createElement('div');
@@ -762,7 +797,7 @@
                 : 'Was soll gebaut/geändert werden?';
         }
 
-        async function starteBauauftrag(instruction, analyse = false) {
+        async function starteBauauftrag(instruction, analyse = false, acceptance = '') {
             if (buildButton.disabled) return;
             buildButton.disabled = true;
             setProjectControlsBusy(true);
@@ -822,6 +857,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: `instruction=${encodeURIComponent(instruction)}&analyse=${analyse}`
+                        + `&acceptance=${encodeURIComponent(acceptance || '')}`
                 });
                 if (!response.ok) {
                     const error = await response.json();
@@ -834,6 +870,37 @@
                 let warnEl = null;
                 let abschnitteGezaehlt = 0;
                 let kontextUeberlaufGezaehlt = 0;
+                // QA-Zeilen live erkennen: ein Block beginnt mit "[QA] " oder
+                // "=== QA-Korrekturlauf" und laeuft bis zur naechsten Leerzeile
+                // bzw. dem naechsten Marker -- erst dann (Block vollstaendig
+                // angekommen) als eigene Bubble anzeigen, s. verarbeiteQaZeilen().
+                let qaVerarbeiteteZeilen = 0;
+                function verarbeiteQaZeilen(abschliessen) {
+                    const zeilen = rawText.split('\n');
+                    const grenze = abschliessen ? zeilen.length : zeilen.length - 1;
+                    let i = qaVerarbeiteteZeilen;
+                    while (i < grenze) {
+                        const zeile = zeilen[i];
+                        if (zeile.startsWith('[QA] ') || zeile.startsWith('=== QA-Korrekturlauf')) {
+                            const block = [zeile];
+                            let j = i + 1;
+                            while (j < grenze && zeilen[j].trim() !== ''
+                                   && !zeilen[j].startsWith('[QA] ') && !zeilen[j].startsWith('===')) {
+                                block.push(zeilen[j]);
+                                j++;
+                            }
+                            if (j < grenze || abschliessen) {
+                                appendQaBubble(block.join('\n'));
+                                qaVerarbeiteteZeilen = j;
+                                i = j;
+                                continue;
+                            }
+                            break; // Block evtl. noch unvollstaendig -- naechsten Chunk abwarten
+                        }
+                        qaVerarbeiteteZeilen = i + 1;
+                        i++;
+                    }
+                }
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -842,6 +909,9 @@
                     pre.textContent = rawText;
                     pre.scrollTop = pre.scrollHeight;
                     chatFeed.scrollTop = chatFeed.scrollHeight;
+                    if (chunkText.includes('[QA]') || chunkText.includes('=== QA-Korrekturlauf')) {
+                        verarbeiteQaZeilen(false);
+                    }
 
                     // Live-Schrittzahl aus den "── Schritt N" Markern von mc.py --
                     // nur im NEUEN Chunk suchen (nicht im gesamten rawText erneut),
@@ -873,6 +943,7 @@
                 rawText += '\nFehler: ' + err.message;
                 pre.textContent = rawText;
             } finally {
+                verarbeiteQaZeilen(true); // letzten, evtl. noch offenen QA-Block anzeigen
                 buildFinished = true;
                 stopButton.remove();
                 const stopped = stopRequested || rawText.includes('Bauauftrag gestoppt.');
@@ -950,13 +1021,14 @@
                         decision.summary,
                         decision.instruction,
                         decision.raw,
-                        () => starteBauauftrag(decision.instruction, decision.analyse === true),
+                        () => starteBauauftrag(decision.instruction, decision.analyse === true, decision.acceptance),
                         () => {
                             instructionInput.value = decision.instruction;
                             autoResizeTextarea();
                             instructionInput.focus();
                             setzePoDialogAktiv(true);
-                        }
+                        },
+                        decision.acceptance
                     );
                 } else if (decision.type === 'plan') {
                     setzePoDialogAktiv(false);

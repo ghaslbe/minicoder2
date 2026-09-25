@@ -7020,6 +7020,70 @@ Opt-in (`MC_TOOL_MODE=native`, `--tool-mode native` oder
 `/settings tool_mode native`) -- der Text-/Fence-Modus bleibt unveraendert
 Standard, nichts am bisherigen Verhalten aendert sich ungefragt.
 
+## 85. Vibelove: Akzeptanzkriterien + automatischer Coder<->Evaluator-Loop
+
+Bisheriger Vibelove-Ablauf: Nutzer-Wunsch -> Product-Owner-Miniagent
+(`po.py`) formuliert daraus eine Aufgabe -> Nutzer klickt "Jetzt bauen" ->
+mc.py baut -> "fertig" gilt, sobald mc.py selbst eine `finish`-Zeile
+ausgibt. Im Code-Review dieses Ablaufs faellt der Kernmangel auf: `po.py`
+denkt zwar VORHER nach, legt aber nirgends fest, WORAN das Ergebnis
+hinterher gemessen wird -- und nichts prueft das Ergebnis gegen die
+urspruengliche Absicht. mc.py's eigener `--check`-Modus fragt nur
+generisch "hast du wirklich getestet", nicht anhand konkreter, vorher
+fixierter Kriterien.
+
+Umgesetzt wurde die vom Nutzer selbst als Einstieg markierte Minimalversion
+eines groesseren Zielbilds (PO -> Freigabe -> Coder -> Evaluator ->
+Retry-Loop -> Versionierung) -- bewusst nur der Kern, ohne Spec-
+Versionierung, Change-Request-Fluss oder volle Zustandsautomat-
+Modellierung (die bleiben fuer spaeter):
+
+**1. `po.py`:** Der `PO_SYSTEM_PROMPT` verlangt bei einer `spec`-Entscheidung
+jetzt zwingend einen zusaetzlichen ```acceptance```-Fence-Block -- eine
+nummerierte Liste konkreter, pruefbarer Kriterien, abgeleitet NUR aus der
+eigenen `instruction` (kein Scope Creep). Neue `evaluate()`-Funktion mit
+eigenem `EVALUATOR_SYSTEM_PROMPT`: bekommt die Kriterien, einen
+Projekt-Snapshot und mc.py's eigenen Build-/Test-Output, urteilt aber
+NICHT binaer PASS/FAIL pro Kriterium, sondern kennt einen dritten Zustand
+`UNVERIFIED` -- wichtig fuer reine HTML/JS-Projekte ohne Backend, wo ein
+Kriterium wie "D-Pad steuert die Spielfigur" ohne echten Browser-Zugriff
+schlicht nicht seriös pruefbar ist. Ein Evaluator, der das trotzdem raet,
+waere schlimmer als gar keiner (falsches Vertrauen oder Nutzer grundlos
+blockiert) -- nur ein echtes FAIL loest den Retry aus, UNVERIFIED wird nur
+transparent mit angezeigt.
+
+**2. `server.py` (`/build`):** nimmt ein `acceptance`-Formularfeld entgegen,
+haengt es an den mc.py-Auftrag an (verbessert sofort auch mc.py's eigene
+Check-Nachfrage) und ruft nach jedem mc.py-Durchlauf `po.evaluate()` auf.
+Bei `FAIL` startet automatisch ein neuer mc.py-Lauf mit dem QA-Feedback als
+Anweisung auf demselben Projektverzeichnis (max. 3 Versuche, Konstante
+`MAX_EVAL_ITERATIONS`), danach `[QA] BLOCKIERT` statt stillschweigend als
+Erfolg zu gelten. Der bestehende Popen-Streaming-Code wurde dafuer in eine
+generatorbasierte `run_one_pass()`-Hilfsfunktion ausgelagert (Ergebnis via
+`return` in einem Generator, abrufbar ueber `yield from` -- Python-Detail,
+das den Rest der Streaming-Logik unveraendert liess). Ohne `acceptance`
+(z.B. bei mehrteiligen Plaenen mit mehreren `step-N`-Bloecken) verhaelt
+sich alles exakt wie vorher: ein Durchlauf, kein Loop -- volle
+Abwaertskompatibilitaet ohne Sonderfall-Code.
+
+**3. `index.html`:** Die PO-Vorschau-Bubble zeigt die Akzeptanzkriterien
+jetzt an, BEVOR "Jetzt bauen" geklickt wird. Waehrend des Baus erkennt das
+Frontend `[QA] ...`-Zeilen im gestreamten Output (blockweise, robust gegen
+Chunk-Grenzen im Stream) und zeigt sie als eigene farbige Bubbles im
+Chat -- gruen bei PASS, gelb bei FAIL/BLOCKIERT -- statt nur im
+aufklappbaren Rohtext-Terminal zu verschwinden.
+
+**Verifiziert:** alle 208 bestehenden Tests (`test_mc.py`,
+`test_vibelove.py`, `test_vibelove_terminal.py`) weiterhin gruen (keine
+neue Testdatei fuer `po.py` -- das braucht sinnvoll einen echten
+Modellaufruf, dafuer manuelle End-to-End-Verifikation). Live getestet mit
+`z-ai/glm-5.3-flash` ueber OpenRouter: Auftrag "Tetris-Klon mit Ton", der
+PO lieferte 12 konkrete Kriterien (u.a. "keine externen Ressourcen", "7-Bag-
+Generator erkennbar", "Highscore in localStorage nach Reload", aber auch
+ehrlich als nur im Browser pruefbar formulierte wie "Touch-Buttons loesen
+dieselben Aktionen aus") -- der Bauauftrag inkl. automatischem QA-Loop lief
+im Anschluss direkt durch.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

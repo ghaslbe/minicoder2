@@ -1151,11 +1151,16 @@ def _preflight_key_modell_fehler(base_url, model, api_key, timeout=10):
         return None
 
 
+MAX_EVAL_ITERATIONS = 3  # Coder<->Evaluator-Retries pro Bauauftrag (nur bei
+                          # vorhandenen Akzeptanzkriterien, s. build())
+
+
 @app.route('/build', methods=['POST'])
 def build():
     instruction = request.form.get('instruction', '')
     if not instruction:
         return "Keine Anweisung erhalten."
+    acceptance = request.form.get('acceptance', '').strip()
     global PO_HISTORY
     PO_HISTORY = []  # der Produktdialog fuer DIESE Aufgabe ist mit dem Bauauftrag abgeschlossen
 
@@ -1190,6 +1195,11 @@ def build():
         url_hint = f"\n\nHinweis: Die Anweisung enthält {len(found_urls)} URL(s):\n{url_list}\nBitte diese URLs ZUERST mit 'curl -sL' abrufen und die abgerufenen Inhalte als Vorlage für die Umsetzung nutzen."
         full_instruction += url_hint
 
+    if acceptance:
+        full_instruction += (
+            "\n\nAkzeptanzkriterien fuer diesen Auftrag (bei der Selbstpruefung "
+            "vor finish beachten):\n" + acceptance)
+
     print(f"Starte Bauprozess für: {instruction[:50]}...")
     
     # Laufzeit-Einstellungen verwenden (aus MC-Settings-Dict)
@@ -1209,9 +1219,10 @@ def build():
     stelle_sauberen_arbeitsbaum_sicher(aktives_projekt_dir)
     before_commit = project_head(aktives_projekt_dir)
 
-    # Befehl zusammenbauen
-    command = [
-        "python3", "-u", 
+    # Basis-Befehl (ohne die Aufgabe selbst -- die haengt run_one_pass() je
+    # Iteration an, damit ein QA-Korrekturlauf eine ANDERE Anweisung bekommt).
+    base_command = [
+        "python3", "-u",
         MC_PATH,
         "--dir", aktives_projekt_dir,
         "--yes",
@@ -1219,10 +1230,9 @@ def build():
         "--max-steps", str(MC_SETTINGS['max_steps']),
         "--base-url", base_url,
         "--model", model,
-        full_instruction
     ]
     if request.form.get('analyse') == 'true':
-        command.insert(3, '--analyse')
+        base_command.insert(3, '--analyse')
 
     try:
         from flask import stream_with_context, Response
@@ -1244,44 +1254,110 @@ def build():
             env['MC_API_KEY'] = MC_SETTINGS.get('api_key', '')
             if MC_SETTINGS.get('max_tokens'):
                 env['MC_MAX_TOKENS'] = str(MC_SETTINGS['max_tokens'])
-            proc = None
-            start_time = time.time()
-            timeout_duration = 900
+
+            def run_one_pass(cmd):
+                """Fuehrt EINEN mc.py-Subprozess aus, streamt live. Liefert
+                (per 'return', abrufbar ueber 'yield from') True, wenn der
+                Nutzer waehrenddessen gestoppt hat."""
+                global BUILD_PROCESS
+                proc = None
+                start_time = time.time()
+                timeout_duration = 900
+                gestoppt = False
+                try:
+                    proc = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        bufsize=0, env=env, start_new_session=True
+                    )
+                    BUILD_PROCESS = proc
+                    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                    yield emit('\nBauprozess gestartet.\n')
+                    while True:
+                        if BUILD_STOP.is_set():
+                            yield emit('\nBauauftrag gestoppt.\n')
+                            gestoppt = True
+                            break
+                        if time.time() - start_time > timeout_duration:
+                            yield emit("\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n")
+                            break
+                        ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                        if ready:
+                            chunk = os.read(proc.stdout.fileno(), 65536)
+                            if chunk:
+                                yield emit(decoder.decode(chunk))
+                            else:
+                                yield emit(decoder.decode(b'', final=True))
+                                break
+                        elif proc.poll() is not None:
+                            break
+                        else:
+                            time.sleep(0.1)
+                except Exception as e:
+                    yield emit(f"\nFehler während des Prozesses: {str(e)}")
+                finally:
+                    BUILD_PROCESS = None
+                    if proc is not None:
+                        terminate_build_process(proc)
+                    if proc is not None and proc.stdout:
+                        proc.stdout.close()
+                return gestoppt
+
+            # Coder<->Evaluator-Schleife: ohne Akzeptanzkriterien (z.B. ein
+            # per Skill/mehrteiligem Plan ausgeloester Bauauftrag) verhaelt
+            # sich das exakt wie vorher -- EIN Durchlauf, keine Bewertung.
+            current_instruction = full_instruction
+            gestoppt_gesamt = False
             try:
-                proc = subprocess.Popen(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    bufsize=0, env=env, start_new_session=True
-                )
-                BUILD_PROCESS = proc
-                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
-                yield emit('\nBauprozess gestartet.\n')
-                while True:
+                for iteration in range(1, MAX_EVAL_ITERATIONS + 1):
+                    if iteration > 1:
+                        yield emit(f"\n=== QA-Korrekturlauf {iteration}/{MAX_EVAL_ITERATIONS} ===\n")
+                    cmd = base_command + [current_instruction]
+                    gestoppt = yield from run_one_pass(cmd)
+                    # Zwischen-Absicherung VOR einer moeglichen naechsten
+                    # Iteration -- dieselbe Absicherung wie vor dem naechsten
+                    # Bauauftrag, s. Docstring von stelle_sauberen_arbeitsbaum_sicher.
+                    stelle_sauberen_arbeitsbaum_sicher(aktives_projekt_dir)
+                    if gestoppt:
+                        gestoppt_gesamt = True
+                        break
+                    if not acceptance:
+                        break  # kein Evaluator konfiguriert -- wie bisher nach einem Lauf fertig
                     if BUILD_STOP.is_set():
+                        gestoppt_gesamt = True
                         yield emit('\nBauauftrag gestoppt.\n')
                         break
-                    if time.time() - start_time > timeout_duration:
-                        yield emit("\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n")
+                    project_context = po.gather_project_context(aktives_projekt_dir)
+                    evaluation = po.evaluate(
+                        acceptance, project_context, "".join(output_lines),
+                        base_url, model, MC_SETTINGS.get('api_key', ''),
+                        max_tokens=MC_SETTINGS.get('max_tokens'))
+                    if evaluation['status'] == 'error':
+                        yield emit(f"\n[QA] Bewertung nicht moeglich "
+                                   f"({evaluation['error']}) — Ergebnis wird "
+                                   f"ohne QA-Pruefung uebernommen.\n")
                         break
-                    ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-                    if ready:
-                        chunk = os.read(proc.stdout.fileno(), 65536)
-                        if chunk:
-                            yield emit(decoder.decode(chunk))
-                        else:
-                            yield emit(decoder.decode(b'', final=True))
-                            break
-                    elif proc.poll() is not None:
+                    yield emit(f"\n[QA] Status: {evaluation['status']}\n"
+                               f"{evaluation['criteria']}\n")
+                    if evaluation['status'] == 'PASS':
                         break
-                    else:
-                        time.sleep(0.1)
+                    if iteration == MAX_EVAL_ITERATIONS:
+                        yield emit(f"\n[QA] BLOCKIERT nach {MAX_EVAL_ITERATIONS} "
+                                   f"Korrekturversuchen — noch offene Kriterien, "
+                                   f"siehe oben.\n")
+                        break
+                    yield emit("\n[QA] Nicht alle Kriterien erfuellt — starte "
+                               "automatischen Korrekturlauf.\n")
+                    current_instruction = (
+                        "Die zuletzt gebaute Version dieses Projekts hat NICHT "
+                        "alle Akzeptanzkriterien erfuellt. Ein QA-Review ergab:\n\n"
+                        + evaluation['feedback']
+                        + "\n\nBehebe GENAU das oben Beschriebene am BESTEHENDEN "
+                        "Projekt (nicht komplett neu anfangen). Es gelten "
+                        "weiterhin ALLE urspruenglichen Akzeptanzkriterien:\n"
+                        + acceptance)
             except Exception as e:
                 yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
-                BUILD_PROCESS = None
-                if proc is not None:
-                    terminate_build_process(proc)
-                if proc is not None and proc.stdout:
-                    proc.stdout.close()
                 BUILD_STATUS['laeuft'] = False
                 # Dieselbe Absicherung wie vor dem NAECHSTEN Bauauftrag, aber
                 # sofort statt erst verzoegert -- ein liegen gebliebener,
@@ -1294,7 +1370,7 @@ def build():
                 full_output = "".join(output_lines)
                 output = full_output
                 summary = ('Bauauftrag gestoppt. Zwischenstand gesichert.'
-                           if BUILD_STOP.is_set() else _extract_run_summary(full_output))
+                           if gestoppt_gesamt else _extract_run_summary(full_output))
                 schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model, before_commit)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""

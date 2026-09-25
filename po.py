@@ -67,6 +67,17 @@ If the work is ONE self-contained unit, finalize a single spec:
 plain text -- precise enough for a coding agent with NO memory of this
 conversation that only sees this text as its task>
 ```
+```acceptance
+<a numbered list of concrete, checkable acceptance criteria, German, plain
+text, ONE criterion per line -- derived ONLY from the instruction above,
+never adding new scope. Prefer criteria that can be checked from files,
+a build/test run, or an HTTP response (a file/route exists, a build exits
+0, an endpoint returns a given status). If a criterion can only really be
+judged by actually clicking/using it in a browser, phrase it that way
+honestly instead of pretending it is file-checkable -- an automated
+reviewer without browser access will mark those as unverified rather than
+guessing, that is expected and fine.>
+```
 
 If the work naturally splits into several separately-buildable steps (e.g.
 distinct features/layers that can each be built and finished on their own,
@@ -96,12 +107,15 @@ Rules:
   else goes inside it.
 - Prefer a single "spec" for anything reasonably small. Only use "plan" when
   the work genuinely has multiple independent, sequentially-buildable parts
-  -- splitting for its own sake creates overhead, not reliability."""
+  -- splitting for its own sake creates overhead, not reliability.
+- A "spec" decision is INVALID without the ```acceptance``` block -- always
+  include it, even for small tasks (a short list is fine)."""
 
 DECISION_RE = re.compile(r"```decision\s*(.*?)```", re.DOTALL)
 QUESTION_RE = re.compile(r"```question\s*\n?(.*?)```", re.DOTALL)
 SUMMARY_RE = re.compile(r"```summary\s*\n?(.*?)```", re.DOTALL)
 INSTRUCTION_RE = re.compile(r"```instruction\s*\n?(.*?)```", re.DOTALL)
+ACCEPTANCE_RE = re.compile(r"```acceptance\s*\n?(.*?)```", re.DOTALL)
 STEP_RE = re.compile(r"```step-(\d+)\s*\n?(.*?)```", re.DOTALL)
 
 
@@ -189,11 +203,16 @@ def refine(user_message, project_context, history, base_url, model, api_key, max
     if decision_type == "spec":
         sm = SUMMARY_RE.search(reply)
         im = INSTRUCTION_RE.search(reply)
+        am = ACCEPTANCE_RE.search(reply)
         if not sm or not im:
             return {"type": "error", "error": "Kein ```summary-/```instruction-Block gefunden.",
                     "raw": reply, "retryable": True}, history
+        if not am or not am.group(1).strip():
+            return {"type": "error", "error": "Kein ```acceptance-Block (Akzeptanzkriterien) gefunden.",
+                    "raw": reply, "retryable": True}, history
         return {"type": "spec", "summary": sm.group(1).strip(),
-                "instruction": im.group(1).strip(), "raw": reply}, history
+                "instruction": im.group(1).strip(),
+                "acceptance": am.group(1).strip(), "raw": reply}, history
 
     if decision_type == "plan":
         sm = SUMMARY_RE.search(reply)
@@ -238,6 +257,101 @@ def refine_retrying(user_message, project_context, history, base_url, model, api
             return decision, new_history
         last = (decision, new_history)
     return last
+
+
+EVALUATOR_SYSTEM_PROMPT = """You are a strict but fair QA reviewer checking a just-built
+result against a FIXED list of acceptance criteria. You do NOT invent new
+requirements beyond what is listed -- judging on anything not in the
+criteria list is out of scope and must not affect your verdict.
+
+You see the project's current files/notes and the tail of the coding
+agent's own build/test output (e.g. curl tests it ran, build commands it
+executed). You have NO way to click, run, or visually inspect anything
+yourself.
+
+For EACH criterion, decide exactly one of:
+- PASS: clearly satisfied based on what you can see (a file/route exists,
+  a build/test in the output succeeded, an endpoint returned the expected
+  status).
+- FAIL: clearly NOT satisfied based on concrete evidence you can see
+  (missing file, a failing build/test, wrong status code, code that
+  obviously cannot do what the criterion asks).
+- UNVERIFIED: you cannot tell from files/logs alone (e.g. it genuinely
+  needs actual clicking/playing in a browser). Do NOT guess PASS or FAIL
+  for these -- an honest UNVERIFIED is far better than a guess.
+
+Always reply in German, with a short line of reasoning first, then exactly
+these fenced blocks:
+```decision
+{"status": "PASS"}
+```
+(status is "PASS" only if EVERY criterion is PASS or UNVERIFIED -- ANY
+single FAIL makes the overall status "FAIL". UNVERIFIED criteria never by
+themselves cause FAIL.)
+```criteria
+<one line per criterion, format "<Nummer>. [PASS|FAIL|UNVERIFIED] <kurze
+Begruendung/Evidenz>", German, plain text>
+```
+```feedback
+<ONLY meaningful if status is FAIL: concrete, actionable instructions for
+the coding agent describing exactly what to fix, referencing the failing
+criteria by number. Leave this block EMPTY (just the fence, no text) if
+status is PASS.>
+```"""
+
+EVAL_CRITERIA_RE = re.compile(r"```criteria\s*\n?(.*?)```", re.DOTALL)
+EVAL_FEEDBACK_RE = re.compile(r"```feedback\s*\n?(.*?)```", re.DOTALL)
+
+
+def evaluate(acceptance, project_context, build_output, base_url, model, api_key, max_tokens=None):
+    """Prueft ein fertig gebautes Ergebnis gegen die vom Product Owner
+    festgelegten Akzeptanzkriterien -- unabhaengig von mc.py's eigener
+    Check-Nachfrage, die nur generisch fragt "hast du wirklich getestet",
+    nicht anhand konkreter, vorher fixierter Kriterien. Bekommt NUR die
+    Kriterien + einen Projekt-Snapshot + den Build-Output, erfindet keine
+    eigenen Anforderungen (derselbe Scope-Schutz wie beim PO: nur pruefen,
+    nicht neu spezifizieren -- s. EVALUATOR_SYSTEM_PROMPT).
+
+    Gibt ein Dict zurueck:
+      {'status': 'PASS'|'FAIL', 'criteria': str, 'feedback': str, 'raw': str}
+      oder bei einem Protokoll-/Netzwerkfehler:
+      {'status': 'error', 'error': str, 'raw': str}
+    Absichtlich OHNE automatisches Retry (anders als refine_retrying) --
+    der Aufrufer (vibelove) steckt bereits in einer eigenen Iterations-
+    schleife; ein Evaluator-Fehler soll dort als "nicht pruefbar" behandelt
+    werden, nicht den Build-Fortschritt blockieren."""
+    messages = [
+        {"role": "system", "content": EVALUATOR_SYSTEM_PROMPT},
+        {"role": "user", "content":
+            "ACCEPTANCE CRITERIA:\n" + acceptance
+            + "\n\nPROJECT STATE:\n" + project_context
+            + "\n\nBUILD/TEST OUTPUT (tail):\n" + build_output[-6000:]}
+    ]
+    try:
+        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:500]
+        return {"status": "error", "error": f"HTTP {e.code} vom Endpoint: {body}", "raw": ""}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "raw": ""}
+
+    dm = DECISION_RE.search(reply)
+    cm = EVAL_CRITERIA_RE.search(reply)
+    if not dm or not cm:
+        return {"status": "error",
+                "error": "Kein ```decision-/```criteria-Block gefunden.", "raw": reply}
+    try:
+        status = json.loads(dm.group(1)).get("status")
+    except json.JSONDecodeError:
+        return {"status": "error", "error": "Ungueltiges JSON im decision-Block.", "raw": reply}
+    if status not in ("PASS", "FAIL"):
+        return {"status": "error", "error": f"Unbekannter Status '{status}'.", "raw": reply}
+    fm = EVAL_FEEDBACK_RE.search(reply)
+    feedback = fm.group(1).strip() if fm else ""
+    if status == "FAIL" and not feedback:
+        return {"status": "error", "error": "FAIL-Status ohne feedback-Block.", "raw": reply}
+    return {"status": status, "criteria": cm.group(1).strip(),
+            "feedback": feedback, "raw": reply}
 
 
 def gather_project_context(project_dir, max_files=60):
