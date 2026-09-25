@@ -25,25 +25,33 @@
                 id="projektSelect"
                 class="flex-1 min-w-0 p-1 border border-gray-300 rounded text-xs bg-white"
             ></select>
-            <button type="button" id="neuesProjektBtn" title="Neues Projekt"
-                class="icon-btn">➕</button>
-            <button type="button" id="klonenProjektBtn" title="Aktives Projekt klonen (inkl. Git-Historie)"
-                class="icon-btn">📋</button>
-            <button type="button" id="loeschenProjektBtn" title="Aktives Projekt unwiderruflich löschen"
-                class="icon-btn">🗑️</button>
-            <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
-                title="Projekt läuft beim Wegwechseln auf einem eigenen Port weiter, statt beendet zu werden">
-                <input type="checkbox" id="keepRunningCheckbox" class="align-middle">
-                🔁
-            </label>
-            <button type="button" id="gitButton" title="Git-Remote"
-                class="icon-btn">🔗</button>
-            <a href="/download-zip" title="Projekt als ZIP herunterladen"
-                class="icon-btn no-underline">⬇️</a>
-            <button type="button" id="containerButton" title="Container-Setup generieren (Dockerfile)"
-                class="icon-btn">🐳</button>
-            <button type="button" id="resetButton" title="Kontext-Verlauf zurücksetzen (nicht Git)"
-                class="icon-btn">🔄</button>
+            <div class="relative">
+                <button type="button" id="projektAktionenBtn" title="Projekt-Aktionen"
+                    class="icon-btn">⋯</button>
+                <div id="projektAktionenMenu"
+                    class="hidden absolute left-0 top-full mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50 text-sm py-1">
+                    <button type="button" id="neuesProjektBtn"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2">➕ Neues Projekt</button>
+                    <button type="button" id="klonenProjektBtn"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2">📋 Projekt klonen</button>
+                    <button type="button" id="loeschenProjektBtn"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2 text-red-600">🗑️ Projekt löschen</button>
+                    <label class="w-full px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2 cursor-pointer"
+                        title="Projekt läuft beim Wegwechseln auf einem eigenen Port weiter, statt beendet zu werden">
+                        <input type="checkbox" id="keepRunningCheckbox" class="align-middle">
+                        🔁 Im Hintergrund weiterlaufen lassen
+                    </label>
+                    <div class="border-t border-gray-100 my-1"></div>
+                    <button type="button" id="gitButton"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2">🔗 Git-Remote</button>
+                    <a href="/download-zip"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2 no-underline text-gray-800">⬇️ Als ZIP herunterladen</a>
+                    <button type="button" id="containerButton"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2">🐳 Container-Setup generieren</button>
+                    <button type="button" id="resetButton"
+                        class="w-full text-left px-3 py-1.5 hover:bg-gray-100 flex items-center gap-2">🔄 Kontext-Verlauf zurücksetzen</button>
+                </div>
+            </div>
             <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
                 title="Modell für den nächsten Bauauftrag -- Auswahl aus den im aktiven Profil hinterlegten Modellen, gilt sofort">
                 Modell
@@ -1222,6 +1230,41 @@
 
     // ── Projekt-Verwaltung ─────────────────────────────────────────────
     const projektSelect = document.getElementById('projektSelect');
+
+    // Dropdown mit den Projekt-Aktionen (Klonen/Löschen/Keep-Running/Git/
+    // ZIP/Container/Reset) statt einer Reihe einzelner Icon-Buttons --
+    // öffnet per Klick, schließt bei Klick ausserhalb, Escape, oder sobald
+    // eine der enthaltenen Aktionen ausgelöst wurde (die Checkbox bleibt
+    // dabei bewusst offen -- ihr Zustand soll man direkt weiter sehen).
+    const projektAktionenBtn = document.getElementById('projektAktionenBtn');
+    const projektAktionenMenu = document.getElementById('projektAktionenMenu');
+    projektAktionenBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        projektAktionenMenu.classList.toggle('hidden');
+    });
+    document.addEventListener('click', function (e) {
+        if (!projektAktionenMenu.classList.contains('hidden')
+            && !projektAktionenMenu.contains(e.target) && e.target !== projektAktionenBtn) {
+            projektAktionenMenu.classList.add('hidden');
+        }
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') projektAktionenMenu.classList.add('hidden');
+    });
+    // Ein Klick INS Vorschau-iframe ist ein eigenes Dokument -- der obige
+    // 'click'-Listener auf dem Hauptdokument bekommt das nie mit. window-
+    // 'blur' feuert aber auch dann, wenn der Fokus dorthin wechselt.
+    window.addEventListener('blur', function () {
+        setTimeout(() => {
+            if (document.activeElement === document.getElementById('previewFrame')) {
+                projektAktionenMenu.classList.add('hidden');
+            }
+        }, 0);
+    });
+    projektAktionenMenu.querySelectorAll('button, a').forEach(el => {
+        el.addEventListener('click', () => projektAktionenMenu.classList.add('hidden'));
+    });
+
     const neuesProjektBtn = document.getElementById('neuesProjektBtn');
     const gitButton = document.getElementById('gitButton');
     const gitModal = document.getElementById('gitModal');
