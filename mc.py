@@ -30,7 +30,8 @@ Env-Variablen:
 
 Konfig-Datei (fuer den Alltag): ~/.mc.json bzw. MC_CONFIG=<pfad> — Schluessel
 base_url, model, api_key, headers, proxy, ca_bundle, check, analyse, fence,
-verbose, max_steps, keep_context. Rangfolge: CLI-Flag > Env > Konfig > Default.
+verbose, max_steps, keep_context, tool_mode, context_length.
+Rangfolge: CLI-Flag > Env > Konfig > Default.
 """
 
 import argparse
@@ -221,7 +222,7 @@ _LOADED_CTX_TOKENS = {}  # model -> geladene Kontext-Tokens (0 = nicht abfragbar
 # (KV-Cache) — deshalb wird NICHT mehr vor jedem Schritt gekuerzt, sondern
 # erst, wenn die Historie die Schwelle des GELADENEN Kontextfensters reisst.
 KEEP_CONTEXT = int(_setting("MC_KEEP_CONTEXT", "keep_context", 3))  # letzte N Schritte bleiben voll
-# Kontextfenster fuer /model-reset (explizites Neuladen bei LM Studio/Ollama).
+# Kontextfenster fuer /model-reset und Fallback-Budget bei Cloud-Endpunkten.
 # 0 = kein Wert wird mitgeschickt (Engine-eigener Default bleibt bestehen).
 # Hintergrund: JIT-Reload nach Entladen greift oft zu einem KLEINEN Default
 # (real beobachtet: 8192) statt der zuvor manuell gesetzten Fenstergroesse.
@@ -239,6 +240,7 @@ PRUNE_CTX_FRACTION = 0.7   # Kuerzung erst, wenn die Historie diesen Anteil des
 # MC_FENCE=0 schaltet zurueck). Betrifft nur, was der System-Prompt dem
 # Modell beibringt — der Parser versteht IMMER beide Formate.
 FENCE = _truthy(_setting("MC_FENCE", "fence", True))
+TOOL_MODE = str(_setting("MC_TOOL_MODE", "tool_mode", "text")).lower()
 
 # Manche Modelle (z.B. "Thinking"-Varianten wie gemma4 ueber vMLX) senden vor
 # der eigentlichen Antwort einen oft langen reasoning_content-Trace. mc.py
@@ -317,7 +319,7 @@ CHAT_SYSTEM_PROMPT = (
 
 # Token-/Kostenzaehler ueber die ganze Sitzung (Kosten nur, wenn der Endpoint sie
 # liefert, z.B. OpenRouter via usage.cost).
-USAGE = {"prompt": 0, "completion": 0, "cost": 0.0, "reqs": 0}
+USAGE = {"prompt": 0, "completion": 0, "cached": 0, "cost": 0.0, "reqs": 0}
 
 # Zeichenlaenge des reasoning_content-Traces der LETZTEN Antwort (0, wenn
 # keiner kam oder das Modell kein Reasoning sendet). Dient der Diagnose bei
@@ -541,8 +543,12 @@ def account_usage(u):
     USAGE["completion"] += u.get("completion_tokens", 0) or 0
     USAGE["cost"] += u.get("cost", 0.0) or 0.0
     USAGE["reqs"] += 1
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+    USAGE["cached"] = USAGE.get("cached", 0) + cached
     if VERBOSE:
         msg = f"Tokens: +{u.get('prompt_tokens',0)}/{u.get('completion_tokens',0)}"
+        if cached:
+            msg += f" (davon {cached} Prompt-Tokens aus Cache)"
         if u.get("cost"):
             msg += f" · +${u['cost']:.5f}"
         log(msg)
@@ -557,6 +563,8 @@ def print_usage_summary():
             f"(prompt {USAGE['prompt']} + completion {USAGE['completion']})")
     if USAGE["cost"] > 0:
         line += f" · Kosten: ${USAGE['cost']:.4f}"
+    if USAGE.get("cached"):
+        line += f" · Cache: {USAGE['cached']} Prompt-Tokens"
     print(f"{C.CYAN}{line}{C.RESET}")
 
 
@@ -657,9 +665,24 @@ class Spinner:
             sys.stdout.flush()
 
 
-def _chat_once(messages, model):
-    """Ein einzelner /chat/completions-Streaming-Aufruf. Gibt (text, finish_reason)
-    zurueck und streamt live mit."""
+class NativeReply:
+    """Structured response; never reinterpret tool arguments as action fences."""
+
+    def __init__(self, text="", calls=None, reasoning=None):
+        self.text = text
+        self.calls = calls or []
+        self.reasoning = reasoning or {}
+
+    def message(self):
+        message = {"role": "assistant", "content": self.text}
+        if self.calls:
+            message["tool_calls"] = self.calls
+            message.update(self.reasoning)
+        return message
+
+
+def _chat_once(messages, model, tools=None):
+    """Streaming-Aufruf: (Text oder NativeReply, finish_reason)."""
     global LAST_REASONING_CHARS, SUPPORTS_FREQUENCY_PENALTY
     url = f"{BASE_URL}/chat/completions"
     payload = {"model": model, "messages": _payload_messages(messages), "stream": True,
@@ -671,6 +694,12 @@ def _chat_once(messages, model):
                # OpenAI lehnt unbekannte Parameter mit HTTP 400 ab, waehrend
                # tolerantere Endpunkte es nur ignorierten. Entfernt.
                "stream_options": {"include_usage": True}}
+    if tools is not None:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    elif TOOL_MODE == "native" and any(m.get("tool_calls") for m in messages):
+        payload["tools"] = NATIVE_TOOLS
+        payload["tool_choice"] = "none"
     if SUPPORTS_FREQUENCY_PENALTY:
         # Milde Anti-Wiederholungs-Bremse: beobachtet wurde, dass lokale
         # Modelle mitten in EINER Antwort in eine Token-Wiederholung
@@ -703,6 +732,9 @@ def _chat_once(messages, model):
     LAST_REASONING_CHARS = 0
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
+    calls = {}
+    reasoning_parts = {}
+    reasoning_details = {}
     first = True
     usage = None
     finish_reason = None
@@ -746,6 +778,39 @@ def _chat_once(messages, model):
                     if choices[0].get("finish_reason"):
                         finish_reason = choices[0]["finish_reason"]
                     delta = choices[0].get("delta", {})
+                    if tools is not None:
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            if type(idx) is not int or idx < 0:
+                                raise NetRetryError("Ungueltiger Tool-Call-Index im Stream")
+                            slot = calls.setdefault(idx, {"id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""}})
+                            if tc.get("id") and not isinstance(tc["id"], str):
+                                raise NetRetryError("Ungueltige Tool-Call-ID im Stream")
+                            if tc.get("id"):
+                                slot["id"] += tc["id"]
+                            if tc.get("type"):
+                                slot["type"] = tc["type"]
+                            for key in ("name", "arguments"):
+                                fragment = (tc.get("function") or {}).get(key) or ""
+                                if not isinstance(fragment, str):
+                                    raise NetRetryError("Ungueltiges Tool-Fragment im Stream")
+                                slot["function"][key] += fragment
+                        for key in ("reasoning_content", "reasoning"):
+                            if delta.get(key):
+                                reasoning_parts[key] = reasoning_parts.get(key, "") + delta[key]
+                        for detail in delta.get("reasoning_details") or []:
+                            idx = detail.get("index", 0)
+                            slot = reasoning_details.setdefault(idx, {})
+                            for key, value in detail.items():
+                                if key in ("text", "summary", "data", "signature") and isinstance(value, str):
+                                    slot[key] = slot.get(key, "") + value
+                                else:
+                                    slot[key] = value
+                        if calls and spin.active:
+                            spin.label = "Modell erstellt Tool-Aufruf"
+                        if sum(len(c["function"]["arguments"]) for c in calls.values()) > MAX_REPLY_CHARS:
+                            raise NetRetryError("Tool-Antwort zu gross; keine Aktion ausgefuehrt")
                     # Feldname variiert je Endpoint -- "reasoning_content" ist
                     # verbreitet (z.B. vMLX/gemma4), manche liefern stattdessen
                     # nur "reasoning" (real beobachtet: Hetzner AI Inference
@@ -794,7 +859,7 @@ def _chat_once(messages, model):
             SUPPORTS_FREQUENCY_PENALTY = False
             print(f"{C.DIM}(frequency_penalty vom Endpoint abgelehnt -- "
                   f"wird fuer den Rest des Laufs weggelassen){C.RESET}")
-            return _chat_once(messages, model)
+            return _chat_once(messages, model, tools=tools) if tools is not None else _chat_once(messages, model)
         if e.code in (401, 403):
             # 401/403 sind bei OpenAI-kompatiblen Endpoints so gut wie immer
             # ein Schluessel-Problem (fehlend, falsch, abgelaufen, gesperrt)
@@ -817,8 +882,14 @@ def _chat_once(messages, model):
             retry_after = e.headers.get("Retry-After") if e.headers else None
             hinweis = f" (Retry-After: {retry_after}s)" if retry_after else ""
             raise NetRetryError(f"HTTP 429 Rate-Limit erreicht{hinweis}: {body[:200]}")
-        raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}")
+        hint = ("\nNative Tools muessen von Modell und Endpoint unterstuetzt werden; "
+                "alternativ --tool-mode text verwenden." if tools is not None and e.code in (400, 422) else "")
+        raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}{hint}")
     except NET_ERRORS as e:
+        if tools is not None:
+            # No side effects have happened yet. Retry the entire response,
+            # never concatenate partial JSON or replay already executed calls.
+            raise NetRetryError(net_error(getattr(e, "reason", e)))
         if parts:
             # Mitten im Stream abgerissen: das Vorhandene zurueckgeben —
             # die Truncation-Logik in chat_stream fordert die Fortsetzung an
@@ -837,6 +908,10 @@ def _chat_once(messages, model):
         raise NetRetryError(net_error(getattr(e, "reason", e)))
     finally:
         spin.__exit__()  # Spinner-Thread immer beenden (auch bei Fehler)
+    if tools is not None:
+        if reasoning_details:
+            reasoning_parts["reasoning_details"] = list(reasoning_details.values())
+        return NativeReply("".join(parts), [calls[i] for i in sorted(calls)], reasoning_parts), finish_reason
     return "".join(parts), finish_reason
 
 
@@ -875,9 +950,11 @@ class NetRetryError(Exception):
     (LM Studio laedt z.B. gerade ein Modell)."""
 
 
-def _chat_once_retry(messages, model, attempts=3):
+def _chat_once_retry(messages, model, attempts=3, tools=None):
     for attempt in range(1, attempts + 1):
         try:
+            if tools is not None:
+                return _chat_once(messages, model, tools=tools)
             return _chat_once(messages, model)
         except NetRetryError as e:
             if attempt == attempts:
@@ -1116,6 +1193,8 @@ def _payload_messages(messages):
     interne String-Zustand von messages[0] (Pruning, Kontobuch, --resume)
     bleibt ueberall sonst im Code unberuehrt, die Umformung passiert nur
     hier am Request-Rand."""
+    if TOOL_MODE == "text":
+        messages = _text_tool_history(messages)
     if not messages or messages[0].get("role") != "system" or _is_local_engine():
         return messages
     kopie = list(messages)
@@ -1584,6 +1663,45 @@ def extract_action(text):
     return actions[0] if actions else (None, None)
 
 
+def _pending_tool_calls(messages):
+    answered = set()
+    for msg in reversed(messages):
+        if msg.get("role") == "tool":
+            answered.add(msg.get("tool_call_id"))
+        elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+            return [call for call in msg["tool_calls"] if call["id"] not in answered]
+        else:
+            break
+    return []
+
+
+def _cancel_pending_tools(messages, reason=None):
+    for call in _pending_tool_calls(messages):
+        messages.append({"role": "tool", "tool_call_id": call["id"], "content": reason or
+            "NICHT AUSGEFUEHRT: vorherige Aktion fehlgeschlagen, Phase gewechselt "
+            "oder Lauf beendet. Bei Bedarf erneut anfordern."})
+
+
+def _text_tool_history(messages):
+    """Allow a native transcript to be reused by text-only chat templates."""
+    if not any(msg.get("tool_calls") or msg.get("role") == "tool" for msg in messages):
+        return messages
+    result = []
+    for msg in messages:
+        if msg.get("tool_calls"):
+            result.append({"role": "assistant", "content": (msg.get("content") or "")
+                           + "\nFruehere Tool-Aufrufe:\n" + json.dumps(msg["tool_calls"], ensure_ascii=False)})
+        elif msg.get("role") == "tool":
+            content = msg.get("content") or ""
+            if result and result[-1]["role"] == "user":
+                result[-1] = {"role": "user", "content": result[-1]["content"] + "\n" + content}
+            else:
+                result.append({"role": "user", "content": content})
+        else:
+            result.append(msg)
+    return result
+
+
 def _append_obs(messages, obs, pending_actions=None):
     """Haengt ein Aktions-/Fehler-Ergebnis als user-Nachricht an. Folgt auf
     eine 'assistant'-Nachricht: neue user-Nachricht. Folgt (bei buendelnden
@@ -1599,7 +1717,12 @@ def _append_obs(messages, obs, pending_actions=None):
     erkannten) Antwort ersetzt werden. Der EINE Erfolgspfad in run_agent
     ruft dies OHNE pending_actions auf und setzt pending_ok=True
     stattdessen, damit die Warteschlange (falls vorhanden) weiterlaufen darf."""
-    if messages and messages[-1]["role"] == "user":
+    calls = _pending_tool_calls(messages)
+    if calls:
+        messages.append({"role": "tool", "tool_call_id": calls[0]["id"], "content": obs})
+        if pending_actions is not None:
+            _cancel_pending_tools(messages)
+    elif messages and messages[-1]["role"] == "user":
         messages[-1]["content"] += "\n\n" + obs
     else:
         messages.append({"role": "user", "content": obs})
@@ -1656,10 +1779,11 @@ def prune_messages(messages, keep=None):
     dann auch bei --no-prune)."""
     if not PRUNE and keep is None:
         return
+    k = KEEP_CONTEXT if keep is None else keep
+    native_saved = _prune_native_messages(messages, k)
     idx = [i for i, msg in enumerate(messages)
            if (msg["role"] == "assistant" and "```action" in msg.get("content", ""))
            or (msg["role"] == "user" and RESULT_RE.match(msg.get("content", "")))]
-    k = KEEP_CONTEXT if keep is None else keep
     cutoff = len(idx) - 2 * max(k, 0)  # 1 Schritt = assistant + ergebnis
     saved = 0
     for j, i in enumerate(idx):
@@ -1676,7 +1800,58 @@ def prune_messages(messages, keep=None):
         saved += old_len - len(msg["content"])
     if saved > 0:
         log(f"Kontext beschnitten: {saved} Zeichen aus aelteren Schritten entfernt.")
-    return saved > 0
+    return saved > 0 or native_saved
+
+
+def _message_chars(message):
+    size = len(message.get("content") or "")
+    for field in ("tool_calls", "reasoning_details", "reasoning_content", "reasoning"):
+        if message.get(field):
+            size += len(json.dumps(message[field], ensure_ascii=False))
+    return size
+
+
+def _history_chars(messages):
+    size = sum(_message_chars(msg) for msg in messages)
+    if TOOL_MODE == "native":
+        size += len(json.dumps(NATIVE_TOOLS, ensure_ascii=False))
+    return size
+
+
+def _prune_native_messages(messages, keep):
+    groups = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        end = i + 1
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+        ids = {c["id"] for c in msg["tool_calls"]}
+        if ids == {m.get("tool_call_id") for m in messages[i + 1:end]}:
+            groups.append((i, end))
+    changed = False
+    old = groups[:max(0, len(groups) - max(keep, 0))]
+    for start, end in reversed(old):
+        group = messages[start:end]
+        lines = ["[Fruehere Tool-Runde zusammengefasst; Inhalte bei Bedarf erneut lesen]"]
+        results = {m["tool_call_id"]: m.get("content", "") for m in group[1:]}
+        for call in group[0]["tool_calls"]:
+            fn = call["function"]
+            try:
+                args = json.loads(fn["arguments"])
+                target = {key: args[key] for key in ("path", "paths", "pattern", "command") if key in args}
+                if isinstance(args.get("files"), list):
+                    target["paths"] = [f.get("path") for f in args["files"] if isinstance(f, dict)]
+            except (ValueError, TypeError, AttributeError):
+                target = {}
+            lines.append(fn["name"] + " " + json.dumps(target, ensure_ascii=False)[:400]
+                         + "\n" + results[call["id"]][:300])
+        summary = {"role": "assistant", "content": "\n".join(lines)}
+        if _message_chars(summary) < sum(_message_chars(m) for m in group):
+            # Replace complete call/result groups, never leave orphan tool IDs.
+            messages[start:end] = [summary]
+            changed = True
+    return changed
 
 
 def maybe_prune(messages, model):
@@ -1692,28 +1867,31 @@ def maybe_prune(messages, model):
     Deshalb: Historie unangetastet wachsen lassen, solange sie sicher ins
     GELADENE Kontextfenster passt, und erst beim Reissen der Schwelle EINMAL
     im Batch kuerzen — danach ist das Praefix wieder stabil und der Cache
-    baut sich einmalig neu auf. Ist das Fenster nicht abfragbar (kein
-    LM Studio), bleibt das bisherige Verhalten (jeden Schritt kuerzen):
-    dort ist Ueberlauf-Schutz wichtiger als Cache-Optimierung, und bei
-    Cloud-Endpoints sparen gekuerzte Prompts direkt Tokens/Kosten."""
+    baut sich einmalig neu auf. Cloud-Endpoints nutzen CONTEXT_LENGTH als
+    konservatives Fallback-Budget, mit Reserve fuer die Antwort. Unbekannte
+    lokale Fenster werden weiterhin sofort beschnitten, statt ein eventuell
+    groesseres konfiguriertes Fenster als tatsaechlich geladen anzunehmen."""
     if not PRUNE:
         return
     ctx = _loaded_ctx_tokens(model)
+    if not ctx and not _is_local_engine():
+        ctx = CONTEXT_LENGTH
     if not ctx:
         return bool(prune_messages(messages))
-    budget = int(ctx * CHARS_PER_TOKEN * PRUNE_CTX_FRACTION)
-    total = sum(len(m.get("content", "")) for m in messages)
+    reserve = MAX_TOKENS_PER_CALL if MAX_TOKENS_PER_CALL > 0 else int(ctx * (1 - PRUNE_CTX_FRACTION))
+    budget = int(max(1, min(ctx * PRUNE_CTX_FRACTION, ctx - reserve)) * CHARS_PER_TOKEN)
+    total = _history_chars(messages)
     if total <= budget:
         return False
     log(f"Historie {total} Zeichen > Schwelle {budget} "
         f"({int(PRUNE_CTX_FRACTION * 100)}% von {ctx} Token geladen) — kuerze im Batch.")
-    prune_messages(messages)
-    rest = sum(len(m.get("content", "")) for m in messages)
+    changed = bool(prune_messages(messages))
+    rest = _history_chars(messages)
     if rest > budget:
         # Auch nach normaler Kuerzung zu gross (z.B. wenige, riesige juengste
         # Schritte) -> Notfall-Stufe wie beim Leere-Antwort-Fall.
-        prune_messages(messages, keep=1)
-    return True
+        changed = bool(prune_messages(messages, keep=1)) or changed
+    return changed
 
 
 # --------------------------- Tool-Ausfuehrung ------------------------------
@@ -1995,23 +2173,36 @@ def do_explore(args):
         return False, "FEHLER: 'task' fehlt (der Erkundungs-Auftrag)."
     print(f"{C.CYAN}» explore{C.RESET} (isolierter Kontext): {auftrag[:100]}")
     ueberblick = "\n".join(project_overview()) or "(keine Dateien)"
-    msgs = [{"role": "system", "content": EXPLORE_PROMPT},
+    explore_prompt = EXPLORE_PROMPT
+    if TOOL_MODE == "native":
+        explore_prompt = ("Explore with read-only native tools. Reply in German. "
+                          "Broaden empty searches. Finish with the finish tool and "
+                          "a thorough summary including paths and concrete findings.")
+    msgs = [{"role": "system", "content": explore_prompt},
             {"role": "user", "content":
              f"Exploration task: {auftrag}\n\nExisting files:\n{ueberblick}"}]
     lese = {"read_file": do_read_file, "read_files": do_read_files,
             "list_dir": do_list_dir, "find": do_find, "grep": do_grep}
     for _ in range(EXPLORE_STEPS):
         try:
-            reply = chat_stream(msgs, CURRENT_MODEL)
+            if TOOL_MODE == "native":
+                native = native_chat_stream(msgs, CURRENT_MODEL, _native_tools(explore=True))
+                reply = native.text
+            else:
+                reply = chat_stream(msgs, CURRENT_MODEL)
         except (CtxOverflowError, NetRetryError, SystemExit) as e:
             return True, f"ERKUNDUNG abgebrochen ({e}). Erkunde selbst gezielt weiter."
-        msgs.append({"role": "assistant", "content": reply})
-        action, _raw = extract_action(reply)
+        if TOOL_MODE == "native":
+            msgs.append(native.message())
+            actions = _native_actions(native, _native_tools(explore=True))
+            action, _raw = actions[0] if actions else (None, None)
+        else:
+            msgs.append({"role": "assistant", "content": reply})
+            action, _raw = extract_action(reply)
         if action is None:
             return True, "ERKUNDUNGS-ERGEBNIS:\n" + reply.strip()[:4000]
         if "_parse_error" in action:
-            msgs.append({"role": "user", "content":
-                         "FEHLER: ungueltiges action-JSON. Bitte erneut."})
+            _append_obs(msgs, "FEHLER: ungueltige Argumente. Bitte erneut.", [])
             continue
         name = action.get("action")
         if name == "finish":
@@ -2019,12 +2210,11 @@ def do_explore(args):
                           + str(action.get("summary", "")).strip()[:4000])
         handler = lese.get(name)
         if not handler:
-            msgs.append({"role": "user", "content":
-                         f"FEHLER: '{name}' gibt es in der Erkundung nicht — "
-                         f"nur Lese-Aktionen und finish."})
+            _append_obs(msgs, f"FEHLER: '{name}' gibt es in der Erkundung nicht — "
+                        "nur Lese-Aktionen und finish.", [])
             continue
         ok, result = handler(action)
-        msgs.append({"role": "user", "content": truncate(str(result))})
+        _append_obs(msgs, truncate(str(result)), [])
     return True, ("ERKUNDUNG am Schrittlimit beendet — letzter Stand:\n"
                   + msgs[-1]["content"][:2000])
 
@@ -3300,6 +3490,125 @@ DISPATCH = {
 }
 
 
+def _tool_schema(name, description, properties, required=()):
+    return {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "properties": properties,
+                       "required": list(required), "additionalProperties": False}}}
+
+
+_STR = {"type": "string"}
+_BOOL = {"type": "boolean"}
+_PATH = {"type": "string", "minLength": 1}
+_FILE_ARGS = {"path": _PATH, "content": _STR, "overwrite": _BOOL}
+NATIVE_TOOLS = [
+    _tool_schema("read_file", "Read a file, optionally a 1-based line range.",
+                 {"path": _PATH, "from": {"type": "integer", "minimum": 1},
+                  "to": {"type": "integer", "minimum": 1}}, ("path",)),
+    _tool_schema("read_files", "Read up to five files.",
+                 {"paths": {"type": "array", "items": _PATH, "minItems": 1,
+                            "maxItems": MAX_READ_FILES_BATCH}}, ("paths",)),
+    _tool_schema("write_file", "Write a complete file. Read existing files first.",
+                 _FILE_ARGS, ("path", "content")),
+    _tool_schema("write_files", "Write up to three complete files.",
+                 {"files": {"type": "array", "minItems": 1, "maxItems": MAX_WRITE_FILES_BATCH,
+                            "items": {"type": "object", "properties": _FILE_ARGS,
+                                      "required": ["path", "content"], "additionalProperties": False}},
+                  "overwrite": _BOOL}, ("files",)),
+    _tool_schema("edit_file", "Replace exact, unique text in an existing file. Read it first.",
+                 {"path": _PATH, "old": {"type": "string", "minLength": 1},
+                  "new": _STR, "replace_all": _BOOL}, ("path", "old", "new")),
+    _tool_schema("list_dir", "List a directory.", {"path": _PATH}),
+    _tool_schema("find", "Find files by part of their name.",
+                 {"pattern": _PATH, "path": _PATH}, ("pattern",)),
+    _tool_schema("grep", "Search file contents by text or regex; returns file:line.",
+                 {"pattern": _PATH, "path": _PATH}, ("pattern",)),
+    _tool_schema("ask", "Ask the user to resolve a genuinely unclear requirement.",
+                 {"question": _PATH}, ("question",)),
+    _tool_schema("run", "Run a shell command. Use background for servers.",
+                 {"command": _PATH, "background": _BOOL,
+                  "timeout": {"type": "integer", "minimum": 1, "maximum": 300}}, ("command",)),
+    _tool_schema("explore", "Explore broadly with isolated read-only context.",
+                 {"task": _PATH}, ("task",)),
+    _tool_schema("plan", "End the analysis phase with concrete changes, one file per point.",
+                 {"punkte": {"type": "array", "items": _PATH, "minItems": 1}}, ("punkte",)),
+    _tool_schema("finish", "Finish after implementation and verification. Mention remaining issues.",
+                 {"summary": _STR}, ("summary",)),
+]
+READ_TOOLS = {"read_file", "read_files", "list_dir", "find", "grep"}
+
+
+def _native_tools(analyse=False, explore=False):
+    allowed = (READ_TOOLS | {"finish"} if explore else
+               READ_TOOLS | {"ask", "explore", "plan"} if analyse else
+               set(DISPATCH) | {"finish"})
+    return [t for t in NATIVE_TOOLS if t["function"]["name"] in allowed]
+
+
+def _validate_tool_args(value, schema, path="arguments"):
+    """Validate the small JSON Schema subset used by our tool definitions."""
+    kind = schema["type"]
+    types = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool}
+    if type(value) is not types[kind]:
+        raise ValueError(f"{path}: erwartet {kind}")
+    if kind == "object":
+        props = schema["properties"]
+        missing = set(schema.get("required", ())) - value.keys()
+        extra = value.keys() - props.keys()
+        if missing or extra:
+            raise ValueError(f"{path}: fehlend {sorted(missing)}, unbekannt {sorted(extra)}")
+        for key, item in value.items():
+            _validate_tool_args(item, props[key], f"{path}.{key}")
+    elif kind == "array":
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", sys.maxsize):
+            raise ValueError(f"{path}: ungueltige Anzahl Elemente")
+        for item in value:
+            _validate_tool_args(item, schema["items"], f"{path}[]")
+    elif kind == "string" and len(value) < schema.get("minLength", 0):
+        raise ValueError(f"{path}: leerer Wert")
+    elif kind == "integer" and not schema.get("minimum", -sys.maxsize) <= value <= schema.get("maximum", sys.maxsize):
+        raise ValueError(f"{path}: ausserhalb des erlaubten Bereichs")
+
+
+def _native_actions(reply, tools):
+    schemas = {t["function"]["name"]: t["function"]["parameters"] for t in tools}
+    actions = []
+    for call in reply.calls:
+        fn = call["function"]
+        try:
+            if fn["name"] not in schemas:
+                raise ValueError(f"Tool {fn['name']} ist in dieser Phase nicht erlaubt")
+            args = json.loads(fn["arguments"])
+            _validate_tool_args(args, schemas[fn["name"]])
+            action = {"action": fn["name"], **args}
+        except (ValueError, TypeError) as exc:
+            action = {"_parse_error": str(exc)}
+        actions.append((action, fn["name"] + ":" + fn["arguments"]))
+    return actions
+
+
+def native_chat_stream(messages, model, tools):
+    # Truncated calls are regenerated from the original history, never continued
+    # as plain text. Nothing from an incomplete response reaches the dispatcher.
+    for attempt in range(3):
+        request_messages = messages
+        if attempt:
+            request_messages = messages + [{"role": "user", "content":
+                "Die Tool-Antwort war unvollstaendig oder hatte ungueltige IDs. "
+                "Es wurde NICHTS daraus ausgefuehrt. Sende einen kleineren, "
+                "vollstaendigen Tool-Aufruf mit weniger Inhalt erneut."}]
+        reply, reason = _chat_once_retry(request_messages, model, tools=tools)
+        ids = [c["id"] for c in reply.calls]
+        valid = (all(ids) and len(set(ids)) == len(ids)
+                 and all(c["type"] == "function" and c["function"]["name"] for c in reply.calls))
+        if reason in ("stop", "tool_calls") and valid:
+            print()
+            return reply
+        print("\nUnvollstaendige native Antwort; keine Aktion ausgefuehrt.")
+    raise SystemExit("Native Tool-Antwort nach 3 Versuchen unvollstaendig. "
+                     "Token-Budget pruefen oder --tool-mode text verwenden.")
+
+
 # ------------------------------ System-Prompt ------------------------------
 
 SYSTEM_PROMPT_TEMPLATE = """You are a precise coding agent working in a shell environment.
@@ -3337,7 +3646,9 @@ Rules:
   the reply on work that never happens. One action, see its real result, then
   decide the next one.
 - JSON must be valid. @@CONTENT_RULE@@
-- Work in small steps. Read existing files before changing them.
+"""
+
+COMMON_AGENT_RULES = """- Work in small steps. Read existing files before changing them.
 - SMALL changes to existing files ALWAYS via edit_file (targeted replacement)
   instead of rewriting the whole file with write_file — this saves tokens and
   avoids truncated replies. "old" must match the current file content EXACTLY
@@ -3438,8 +3749,27 @@ Rules:
   load-order bug.
 - Once the task is done, emit a finish action.
 - Write clean, working code. Follow existing conventions.
+"""
 
-@@EXAMPLE@@"""
+SYSTEM_PROMPT_TEMPLATE += COMMON_AGENT_RULES + "\n@@EXAMPLE@@"
+
+NATIVE_SYSTEM_PROMPT = """You are a precise coding agent working in a shell environment.
+Always reply in German except inside code. Use the provided native functions
+to act, never action fences, XML calls, or prose pretending to execute tools.
+Arguments must match each function's JSON schema; file contents are JSON strings.
+Prefer one call, inspect its result, then proceed. Independent calls may be
+batched; they run sequentially and remaining calls are cancelled after an error.
+Read existing files before editing. Finish with the finish tool after checking
+your work. A finish call may be rejected with instructions to complete the task.
+When explicitly asked for a text-only plan or handover, reply in text instead.
+""" + COMMON_AGENT_RULES
+
+NATIVE_ANALYSE_PROMPT = """You are in the ANALYSIS PHASE for a change to existing code.
+Reply in German and use only the supplied native tools, never action fences.
+Read the affected files, then call plan with concrete changes (file + change).
+Writing and execution are unavailable until the plan has been accepted.
+An empty search does not prove absence: broaden the pattern and search again.
+"""
 
 
 # Die @@…@@-Platzhalter werden je nach Modus (JSON-Strings vs. Fence-Bloecke
@@ -3539,6 +3869,10 @@ def system_prompt(fence, analyse=False):
     Analyse-Phase (analyse=True) enthaelt das Protokoll BEWUSST keine
     Schreibaktionen: was nicht im Protokoll steht, kann ein kleines Modell
     auch nicht benutzen — Weglassen ist zuverlaessiger als Verbieten."""
+    if TOOL_MODE == "native":
+        if analyse:
+            return NATIVE_ANALYSE_PROMPT
+        return NATIVE_SYSTEM_PROMPT + ("\n" + CHECK_PROMPT if CHECK else "")
     if analyse:
         return ANALYSE_PROMPT
     sp = SYSTEM_PROMPT_TEMPLATE
@@ -4153,7 +4487,7 @@ def _send_size_info(messages, model):
     ueberschritten' direkt nachpruefen laesst statt geraten werden zu
     muessen. Kein Netzwerk-Aufruf (nur der bereits bekannte Cache-Wert),
     damit die Diagnose selbst keine zusaetzliche Verzoegerung verursacht."""
-    chars = sum(len(m.get("content", "") or "") for m in messages)
+    chars = _history_chars(messages)
     token_schaetzung = int(chars / CHARS_PER_TOKEN)
     info_txt = f"gesendet: ~{chars} Zeichen (~{token_schaetzung} Token geschaetzt)"
     bekannt = _LOADED_CTX_TOKENS.get(model)
@@ -4202,13 +4536,34 @@ def _load_transcript():
     try:
         with open(MC_VERLAUF, "r", encoding="utf-8") as f:
             alte = json.load(f)
-        return [m for m in alte if isinstance(m, dict)
-                and m.get("role") in ("user", "assistant") and m.get("content")]
+        result = []
+        for msg in alte:
+            if not isinstance(msg, dict) or msg.get("role") not in ("user", "assistant", "tool"):
+                continue
+            if msg["role"] != "tool":
+                _cancel_pending_tools(result, "Ausfuehrungsstatus nach Unterbrechung unbekannt. "
+                                      "Zustand pruefen, nicht blind wiederholen.")
+            elif msg.get("tool_call_id") not in {c["id"] for c in _pending_tool_calls(result)}:
+                continue
+            if msg.get("content") or msg.get("tool_calls") or msg["role"] == "tool":
+                result.append(msg)
+        _cancel_pending_tools(result, "Ausfuehrungsstatus nach Unterbrechung unbekannt. "
+                              "Zustand pruefen, nicht blind wiederholen.")
+        return result
     except (OSError, ValueError):
         return []
 
 
 def run_task(messages, model):
+    try:
+        return _run_task(messages, model)
+    finally:
+        _cancel_pending_tools(messages, "Lauf beendet oder unterbrochen. Falls kein Ergebnis "
+                              "vorliegt, Zustand vor erneutem Aufruf pruefen.")
+        _save_transcript(messages)
+
+
+def _run_task(messages, model):
     """Fuehrt die Agenten-Schleife aus, bis 'finish' oder das Schrittlimit erreicht ist."""
     global RAN_SINCE_WRITE, CLEAN_FINISH, CURRENT_MODEL, EXPLORED, HAS_CODE
     CLEAN_FINISH = False
@@ -4262,6 +4617,7 @@ def run_task(messages, model):
                            # jeder Fehler-/Gate-Pfad unten laesst pending_ok auf
                            # False, s. _append_obs-Aufrufe ohne pending_ok=True)
     for step in range(1, MAX_STEPS + 1):
+        _save_transcript(messages)
         if pending_actions and pending_ok:
             # Reale Beobachtung (mehrere Modelle unabhaengig voneinander,
             # v.a. Qwen-Familie): das Modell liefert oft MEHRERE Aktionen in
@@ -4282,6 +4638,7 @@ def run_task(messages, model):
                   f"derselben Antwort, noch {len(pending_actions)} danach) "
                   f"─────────────────────────────{C.RESET}")
         else:
+            _cancel_pending_tools(messages)
             if pending_actions:
                 # pending_ok ist False -> die letzte Aktion ist gescheitert/
                 # wurde abgelehnt. Die restlichen Bloecke derselben Antwort
@@ -4299,7 +4656,7 @@ def run_task(messages, model):
             # hintereinander vertragen manche Chat-Templates nicht).
             remaining = MAX_STEPS - step + 1
             if (not budget_warned and remaining <= 5
-                    and messages and messages[-1]["role"] == "user"):
+                    and messages and messages[-1]["role"] in ("user", "tool")):
                 budget_warned = True
                 messages[-1]["content"] += (
                     f"\n\n[BUDGET-HINWEIS VOM TOOL] Dir bleiben nur noch {remaining} "
@@ -4312,14 +4669,14 @@ def run_task(messages, model):
             # Analyse-Stupser: gegen endloses Herumlesen ohne Plan (einmalig, an
             # die letzte user-Nachricht angehaengt — keine doppelte user-Rolle).
             if (analyse_active and analyse_steps >= 10 and not analyse_nudged
-                    and messages and messages[-1]["role"] == "user"):
+                    and messages and messages[-1]["role"] in ("user", "tool")):
                 analyse_nudged = True
                 messages[-1]["content"] += (
                     "\n\n[HINWEIS VOM TOOL] Du bist seit 10 Schritten in der "
                     "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
                     "Aenderungsplan aus (plan-Aktion).")
             if (maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck
-                    and messages and messages[-1]["role"] == "user"):
+                    and messages and messages[-1]["role"] in ("user", "tool")):
                 # Kontobuch: die Kuerzung nimmt dem Modell die Erinnerung an die
                 # eigenen Dateizugriffe — deterministisch wieder einspielen
                 # (kostet fast nichts, kann nicht halluzinieren).
@@ -4334,7 +4691,12 @@ def run_task(messages, model):
             _usage_vor_schritt = USAGE["completion"]
             _schritt_start = time.time()
             try:
-                reply = chat_stream(messages, model)
+                if TOOL_MODE == "native":
+                    native_tools = _native_tools(analyse=analyse_active)
+                    native_reply = native_chat_stream(messages, model, native_tools)
+                    reply = native_reply.text
+                else:
+                    reply = chat_stream(messages, model)
             except CtxOverflowError as e:
                 # Selbstkalibrierung: der Endpoint hat den Ueberlauf gemeldet —
                 # gemeldete Fenstergroesse uebernehmen, hart kuerzen, weiter.
@@ -4370,7 +4732,7 @@ def run_task(messages, model):
                       f"{_schritt_dauer:.1f}s (~{_neue_tokens / _schritt_dauer:.1f} "
                       f"Tok/s){C.RESET}")
 
-            if not reply.strip():
+            if not reply.strip() and not (TOOL_MODE == "native" and native_reply.calls):
                 # LEERE Antwort hat ZWEI moegliche Ursachen, die sich nicht
                 # verwechseln lassen sollten: (a) das GELADENE Kontextfenster ist
                 # ueberschritten (klassischer Fall, Beschneiden hilft) -- oder
@@ -4419,10 +4781,14 @@ def run_task(messages, model):
                         messages[-1]["content"] += _ledger_block()
                 continue
             empty_replies = 0
-            war_unvollstaendig = reply.endswith(TRUNC_MARKER)
+            war_unvollstaendig = TOOL_MODE == "text" and reply.endswith(TRUNC_MARKER)
             if war_unvollstaendig:
                 reply = reply[: -len(TRUNC_MARKER)]
-            messages.append({"role": "assistant", "content": reply})
+            if TOOL_MODE == "native":
+                messages.append(native_reply.message())
+                _save_transcript(messages)
+            else:
+                messages.append({"role": "assistant", "content": reply})
 
             # Reale Beobachtung (mehrere Modelle unabhaengig voneinander,
             # v.a. Qwen-Familie): das Modell liefert oft MEHRERE ```action-
@@ -4430,11 +4796,12 @@ def run_task(messages, model):
             # abgeschnitten (war_unvollstaendig), zaehlt NUR der erste als
             # sicher -- der Rest koennte durch den Abbruch beschaedigt/
             # dupliziert sein.
-            all_actions = extract_actions(reply)
+            all_actions = (_native_actions(native_reply, native_tools) if TOOL_MODE == "native"
+                           else extract_actions(reply))
             if war_unvollstaendig:
                 all_actions = all_actions[:1]
             if len(all_actions) > 1:
-                print(f"{C.YELLOW}⚠ {len(all_actions)} action-Bloecke in dieser "
+                print(f"{C.YELLOW}⚠ {len(all_actions)} Aktionen in dieser "
                       f"Antwort erkannt — werden sequenziell ausgefuehrt (Abbruch "
                       f"beim ersten Fehler).{C.RESET}")
             pending_actions = list(all_actions[1:])
@@ -4444,6 +4811,11 @@ def run_task(messages, model):
                 action, raw = None, None
 
         if action is None:
+            if TOOL_MODE == "native" and (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
+                prose_end_nudged = True
+                _append_obs(messages, "Keine Funktion aufgerufen. Nutze das naechste native "
+                            "Tool oder finish, falls die Arbeit fertig ist.", pending_actions)
+                continue
             if reply.endswith(DEGEN_MARKER):
                 # Kollabierte Antwort ohne brauchbare Aktion: NICHT als
                 # "Textantwort = fertig" werten, sondern neu anfordern.
@@ -4510,7 +4882,11 @@ def run_task(messages, model):
 
         if "_parse_error" in action:
             parse_error_streak += 1
-            if parse_error_streak >= 4:
+            if TOOL_MODE == "native":
+                obs = (f"FEHLER: ungueltige Tool-Argumente ({action['_parse_error']}). "
+                       "Sende einen kleineren nativen Tool-Aufruf nach dem JSON-Schema. "
+                       "Keine action/content-Fences verwenden.")
+            elif parse_error_streak >= 4:
                 # Trotz Eskalationsstufe 2 wiederholt sich das Problem — in der
                 # Praxis beobachtet: zwischen den fehlgeschlagenen Versuchen
                 # lag eine unabhaengige, ERFOLGREICHE Aktion (z.B. ein read_file
@@ -4576,10 +4952,10 @@ def run_task(messages, model):
             _append_obs(messages, obs, pending_actions)
             continue
 
-        koerz_fehler = repair_and_coerce_action(action)
+        koerz_fehler = repair_and_coerce_action(action) if TOOL_MODE == "text" else None
         if koerz_fehler:
             print(f"{C.RED}{koerz_fehler.splitlines()[0][:120]}{C.RESET}")
-            messages.append({"role": "user", "content": koerz_fehler})
+            _append_obs(messages, koerz_fehler, pending_actions)
             continue
 
         name = action.get("action")
@@ -4600,9 +4976,9 @@ def run_task(messages, model):
         if name == "plan" and not analyse_active:
             # plan ausserhalb der Analyse-Phase: kein Fehler, sondern sanft
             # in die Umsetzung weiterleiten.
-            messages.append({"role": "user", "content":
+            _append_obs(messages,
                 "Plan notiert. Setze ihn jetzt direkt mit Aktionen um "
-                "(read_file/edit_file/write_file/run)."})
+                "(read_file/edit_file/write_file/run).", pending_actions)
             continue
         if analyse_active:
             analyse_steps += 1
@@ -4630,7 +5006,7 @@ def run_task(messages, model):
                     analyse_active = False
                     messages[0]["content"] = (system_prompt(FENCE)
                         + ("\n\n" + SYSTEM_CONTEXT if SYSTEM_CONTEXT else ""))
-                    messages.append({"role": "user", "content":
+                    _append_obs(messages,
                         "ANALYSE ABGESCHLOSSEN — dein Aenderungsplan:\n"
                         + nummeriert +
                         f"\nDer Plan liegt zusaetzlich in {MC_PLAN} — hake dort "
@@ -4639,7 +5015,7 @@ def run_task(messages, model):
                         "Schreibaktionen freigeschaltet. Setze die Punkte "
                         "NACHEINANDER um: kleine gezielte edit_file-Aenderungen "
                         "bevorzugen. Wenn alle Punkte umgesetzt (oder begruendet "
-                        "verworfen) sind, pruefe das Ergebnis und gib finish aus."})
+                        "verworfen) sind, pruefe das Ergebnis und gib finish aus.", pending_actions)
                     continue
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
                 _append_obs(messages, obs, pending_actions)
@@ -4804,6 +5180,8 @@ def run_task(messages, model):
                     pass
             summary = action.get("summary", "Fertig.")
             print(f"\n{C.GREEN}{C.BOLD}✓ {summary}{C.RESET}")
+            if TOOL_MODE == "native":
+                _append_obs(messages, "FINISH AKZEPTIERT: " + summary, pending_actions)
             _save_transcript(messages)
             return summary
 
@@ -4943,11 +5321,12 @@ def run_task(messages, model):
         obs = f"[Ergebnis von {name}]\n{result}"
         if valed:
             obs += "\n" + valed
-        _append_obs(messages, obs)
+        _append_obs(messages, obs, pending_actions if not ok or valed else None)
         pending_ok = True  # ERFOLGREICH -- ggf. wartende Bloecke derselben
                            # Antwort sind jetzt dran (s. Schleifenkopf oben)
 
     print(f"{C.RED}Schrittlimit ({MAX_STEPS}) erreicht.{C.RESET}")
+    _cancel_pending_tools(messages)
     # Erzwungene Uebergabe statt Abbruch mitten in einer Aktion: ein letzter
     # Request, der ausdruecklich KEINE Aktion mehr erlaubt. So endet auch ein
     # gescheiterter Lauf mit einem brauchbaren Zustandsbericht im Verlauf —
@@ -4972,6 +5351,7 @@ def _current_settings(model):
     /settings und die benannten Profile (/profil speichern|laden)."""
     return {"model": model, "base_url": BASE_URL, "check": CHECK,
             "analyse": ANALYSE, "fence": FENCE, "verbose": VERBOSE,
+            "tool_mode": TOOL_MODE,
             "prune": PRUNE, "max_steps": MAX_STEPS,
             "keep_context": KEEP_CONTEXT, "yes": AUTO_YES,
             "context_length": CONTEXT_LENGTH, "think": THINK,
@@ -4999,7 +5379,14 @@ def _apply_setting(key, wert):
     check stecken im Prompt-Text). 'model' behandelt der Aufrufer selbst."""
     global BASE_URL, CHECK, ANALYSE, FENCE, VERBOSE, PRUNE
     global MAX_STEPS, KEEP_CONTEXT, AUTO_YES, CONTEXT_LENGTH, THINK, API_KEY
+    global TOOL_MODE
     key = key.strip().lower()
+    if key == "tool_mode":
+        mode = str(wert).strip().lower()
+        if mode not in ("text", "native"):
+            return False, "FEHLER: tool_mode muss text oder native sein.", False
+        TOOL_MODE = mode
+        return True, f"tool_mode = {mode}", True
     if key == "base_url":
         BASE_URL = str(wert).rstrip("/")
         _LOADED_CTX_CACHE.clear()
@@ -5051,6 +5438,7 @@ def _apply_setting(key, wert):
 
 def main():
     global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE, THINK
+    global TOOL_MODE, CONTEXT_LENGTH
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -5085,6 +5473,11 @@ def main():
                          f"zu sprengen droht (schont den Prompt-Cache des Servers)")
     ap.add_argument("--no-prune", action="store_true",
                     help="Kontext-Beschneidung abschalten (volle Historie senden)")
+    ap.add_argument("--tool-mode", choices=("text", "native"), default=TOOL_MODE,
+                    help="Aktionsformat: text (Default) oder native Tool-Aufrufe")
+    ap.add_argument("--context-length", type=int, default=CONTEXT_LENGTH,
+                    help="Kontextbudget in Tokens fuer Cloud-Pruning und /model-reset; "
+                         "0 = kein Cloud-Fallback-Budget (sofortiges Pruning)")
     ap.add_argument("--fence", action="store_true",
                     help="Fence-Modus erzwingen (ist bereits der Default): Datei-"
                          "inhalte und edit_file-old/new als rohe ```-Bloecke statt "
@@ -5115,6 +5508,12 @@ def main():
                          "Tipp: --max-steps erhoehen, jede Fix-Runde kostet Schritte")
     ap.add_argument("--yes", action="store_true", help="Alle Aktionen ohne Rueckfrage ausfuehren")
     args = ap.parse_args()
+    if args.tool_mode not in ("text", "native"):
+        ap.error("tool_mode muss text oder native sein")
+    if args.context_length < 0:
+        ap.error("context_length darf nicht negativ sein")
+    TOOL_MODE = args.tool_mode
+    CONTEXT_LENGTH = args.context_length
     AUTO_YES = args.yes
     MAX_STEPS = args.max_steps
     VALIDATE = not args.no_validate
@@ -5214,7 +5613,9 @@ def main():
         info(f"Kontext-Beschneidung aktiv: gekuerzt wird erst bei Kontextdruck "
              f"(schont den Prompt-Cache des Servers); dann bleiben die letzten "
              f"{KEEP_CONTEXT} Schritte vollstaendig (--no-prune schaltet ab).")
-    if FENCE:
+    if TOOL_MODE == "native":
+        info("Native Tool-Aufrufe aktiv (JSON-Schemas, gleiche Ausfuehrungspruefungen).")
+    elif FENCE:
         info("Fence-Modus aktiv: Dateiinhalte als rohe ```content Bloecke "
              "(kein JSON-Escaping).")
     if ANALYSE:

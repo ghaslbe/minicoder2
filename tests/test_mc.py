@@ -27,6 +27,7 @@ mc.AUTO_YES = True  # sonst haengen Handler-Tests an confirm()/input()
 def _clean_state(tmp_path, monkeypatch):
     """Jeder Test: eigenes Arbeitsverzeichnis, leerer Aufgaben-Zustand."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mc, "TOOL_MODE", "text")
     mc.READ_FILES.clear()
     mc.OVERWRITE_REJECTS.clear()
     mc.WRITE_HISTORY.clear()
@@ -405,9 +406,9 @@ def test_maybe_prune_notfallstufe_wenn_normale_kuerzung_nicht_reicht(monkeypatch
 
 
 def test_maybe_prune_ohne_fensterinfo_wie_bisher(monkeypatch):
-    # Fenster nicht abfragbar (kein LM Studio) -> altes Verhalten:
-    # sofort kuerzen, Ueberlauf-Schutz vor Cache-Optimierung.
+    # Unbekanntes LOKALES Fenster: konfiguriert ist nicht zwingend geladen.
     monkeypatch.setitem(mc._LOADED_CTX_TOKENS, "m", 0)
+    monkeypatch.setattr(mc, "_is_local_engine", lambda: True)
     msgs = _historie(8)
     mc.maybe_prune(msgs, "m")
     assert len(msgs[1]["content"]) < 900
@@ -1738,13 +1739,9 @@ def test_payload_messages_ohne_system_prompt_unveraendert(monkeypatch):
 
 # ------------ Abbruch bei leerer Antwort raeumt den Verlauf auf -------------
 
-def test_run_task_warnt_bei_mehreren_action_bloecken_pro_antwort(monkeypatch):
-    # Regression: mehrere Modelle (unabhaengig voneinander) buendelten
-    # mehrere read_file-Aufrufe in EINER Antwort als mehrere ```action
-    # Bloecke -- extract_action() fuehrt nur den ERSTEN aus, der Rest wurde
-    # bisher LAUTLOS verworfen. Ohne Rueckmeldung wiederholte das Modell
-    # denselben Bloecke-Stapel Schritt fuer Schritt, ohne je Fortschritt zu
-    # machen (real beobachtet, mehrfach).
+def test_run_task_fuehrt_mehrere_action_bloecke_sequenziell_aus(monkeypatch):
+    # Mehrere Bloecke werden seit der Queue-Unterstuetzung nacheinander
+    # ausgefuehrt; Ergebnisse bleiben im Text-Modus eine user-Nachricht.
     with open("a.py", "w") as f:
         f.write("A = 1\n")
     with open("b.py", "w") as f:
@@ -1768,10 +1765,9 @@ def test_run_task_warnt_bei_mehreren_action_bloecken_pro_antwort(monkeypatch):
     treffer = [c for c in ergebnis_msgs if "[Ergebnis von read_file]" in c]
     assert treffer, "Ergebnis-Nachricht fuer read_file fehlt"
     obs = treffer[0]
-    assert "A = 1" in obs  # nur der ERSTE Block wurde ausgefuehrt
-    assert "B = 2" not in obs  # der zweite Block wurde NICHT ausgefuehrt
-    assert "ERSATZLOS VERWORFEN" in obs
-    assert "GENAU EINEN action-Block" in obs
+    assert "A = 1" in obs
+    assert "B = 2" in obs
+    assert "ERSATZLOS VERWORFEN" not in obs
 
 
 def test_run_task_kein_hinweis_bei_genau_einem_action_block(monkeypatch):

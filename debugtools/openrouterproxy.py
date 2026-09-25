@@ -6,8 +6,8 @@ beliebigen Upstream (OpenRouter, gemietete vLLM-Instanzen, LM Studio, ...)
 und protokolliert JEDE Anfrage + Antwort vollstaendig (inkl. System-Prompt,
 "tools"-Schema, Streaming-Antwort rekonstruiert) in eine Logdatei -- ohne
 den eigentlichen Traffic zu veraendern. Streaming (SSE) wird live
-durchgereicht, nicht gepuffert; das Logging passiert parallel im
-Hintergrund.
+durchgereicht; nach Antwortende schreibt der jeweilige Request-Thread
+das Log. Jede Client-Verbindung endet nach einer Antwort.
 
 Nutzung:
     python3 debugtools/openrouterproxy.py --port 8787 \\
@@ -25,13 +25,16 @@ rekonstruierter Body -- bei SSE alle "data:"-Zeilen zusammengefuegt).
 """
 
 import argparse
+import http.client
 import http.server
 import json
+import re
 import socketserver
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 
@@ -41,8 +44,8 @@ def _redact(headers):
     nur die LOGDATEI zeigt ihn nicht im Klartext."""
     out = {}
     for k, v in headers.items():
-        if k.lower() == "authorization" and len(v) > 14:
-            out[k] = v[:10] + "…" + v[-4:]
+        if k.lower() in {"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"}:
+            out[k] = "[redacted]"
         else:
             out[k] = v
     return out
@@ -92,17 +95,60 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     upstream = ""       # per make_handler gesetzt
     log_dir = None
     protocol_version = "HTTP/1.1"
+    upstream_timeout = 360
+
+    def _headers(self, headers):
+        excluded = {'host', 'content-length', 'transfer-encoding', 'connection',
+                    'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+                    'te', 'trailer', 'upgrade', 'expect'}
+        excluded.update(value.strip().lower() for value in headers.get('Connection', '').split(','))
+        return {key: value for key, value in headers.items() if key.lower() not in excluded}
+
+    def _body(self):
+        transfer = self.headers.get('Transfer-Encoding', '').lower()
+        if transfer:
+            if transfer != 'chunked':
+                raise ValueError('Unsupported Transfer-Encoding')
+            parts = []
+            while True:
+                line = self.rfile.readline(65537)
+                size = int(line.split(b';', 1)[0].strip(), 16)
+                if size < 0:
+                    raise ValueError('Invalid chunk size')
+                if size == 0:
+                    while True:
+                        trailer = self.rfile.readline(65537)
+                        if trailer == b'\r\n':
+                            return b''.join(parts)
+                        if not trailer or len(trailer) > 65536:
+                            raise ValueError('Invalid trailers')
+                part = self.rfile.read(size)
+                if len(part) != size or self.rfile.read(2) != b'\r\n':
+                    raise ValueError('Incomplete chunk')
+                parts.append(part)
+        length = int(self.headers.get('Content-Length', 0))
+        if length < 0:
+            raise ValueError('Invalid Content-Length')
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ValueError('Incomplete request body')
+        return body
 
     def log_message(self, fmt, *args):
         sys.stderr.write(f"[proxy] {self.address_string()} - {fmt % args}\n")
 
     def _handle(self, method):
         started = time.time()
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else b""
-
-        req_headers = {k: v for k, v in self.headers.items()
-                        if k.lower() not in ("host", "content-length")}
+        # urllib decodes upstream chunks. Delimit the downstream body by EOF,
+        # including error responses, instead of leaving an HTTP/1.1 client waiting.
+        self.close_connection = True
+        self.connection.settimeout(self.upstream_timeout)
+        try:
+            body = self._body()
+        except (ValueError, OSError):
+            self.send_error(400, 'Invalid request body')
+            return
+        req_headers = self._headers(self.headers)
         url = self.upstream.rstrip("/") + self.path
 
         req = urllib.request.Request(url, data=body or None, method=method,
@@ -113,41 +159,48 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             # ueber 5 Minuten produziert -- ein zu knapper Timeout wuerde
             # den Client mit einem 502 abschneiden, obwohl der Endpoint noch
             # arbeitet.
-            resp = urllib.request.urlopen(req, timeout=360)
+            resp = urllib.request.urlopen(req, timeout=self.upstream_timeout)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
             self.send_response(502)
             self.send_header("Content-Type", "text/plain")
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(f"Proxy-Fehler beim Weiterleiten an {url}: {e}".encode())
-            self._write_log(method, url, req_headers, body, None, None, str(e), started)
-            return
-
-        self.send_response(resp.status if hasattr(resp, "status") else resp.code)
-        skip = {"transfer-encoding", "connection"}
-        for k, v in resp.headers.items():
-            if k.lower() not in skip:
-                self.send_header(k, v)
-        self.end_headers()
-
-        chunks = []
-        while True:
-            chunk = resp.read(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
             try:
-                self.wfile.write(chunk)
+                self.wfile.write(f"Proxy-Fehler beim Weiterleiten an {url}: {e}".encode())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
-                break
-        raw = b"".join(chunks)
+                pass
+            self._write_log(method, url, req_headers, body, None, None, str(e), started, 502)
+            return
+
+        chunks = []
+        error = None
+        status = resp.status if hasattr(resp, 'status') else resp.code
         resp_headers = dict(resp.headers.items())
-        self._write_log(method, url, req_headers, body, resp_headers, raw, None, started)
+        try:
+            self.send_response(status)
+            for k, v in self._headers(resp.headers).items():
+                self.send_header(k, v)
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            while True:
+                chunk = resp.read1(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            error = str(exc)
+        finally:
+            resp.close()
+            self._write_log(method, url, req_headers, body, resp_headers,
+                            b''.join(chunks), error, started, status)
 
     def _write_log(self, method, url, req_headers, req_body, resp_headers,
-                    resp_body, error, started):
+                    resp_body, error, started, status=None):
         if self.log_dir is None:
             return
         duration = time.time() - started
@@ -158,6 +211,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "url": url,
             "request_headers": _redact(req_headers),
             "error": error,
+            "response_status": status,
         }
         try:
             entry["request_body"] = json.loads(req_body) if req_body else None
@@ -165,11 +219,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             entry["request_body_raw"] = req_body.decode("utf-8", "replace")[:4000]
 
         if resp_headers is not None:
-            entry["response_status_headers"] = resp_headers
+            entry["response_status_headers"] = _redact(resp_headers)
         if resp_body:
-            ctype = (resp_headers or {}).get("Content-Type", "")
+            ctype = next((v for k, v in (resp_headers or {}).items() if k.lower() == 'content-type'), '')
             if "text/event-stream" in ctype:
                 entry["response_sse"] = _reconstruct_sse_text(resp_body)
+                entry["response_sse_raw"] = resp_body.decode('utf-8', 'replace')
             else:
                 try:
                     entry["response_body"] = json.loads(resp_body)
@@ -177,9 +232,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     entry["response_body_raw"] = resp_body.decode("utf-8", "replace")[:4000]
 
         ts = time.strftime("%Y%m%d-%H%M%S")
-        safe_path = self.path.strip("/").replace("/", "_") or "root"
-        fname = self.log_dir / f"{ts}_{safe_path}.json"
-        fname.write_text(json.dumps(entry, indent=2, ensure_ascii=False))
+        safe_path = re.sub(r'[^a-zA-Z0-9_-]', '_', self.path.split('?', 1)[0])[:100] or 'root'
+        fname = self.log_dir / f"{ts}_{safe_path}_{uuid.uuid4().hex[:12]}.json"
+        try:
+            fname.write_text(json.dumps(entry, indent=2, ensure_ascii=False))
+        except OSError as exc:
+            sys.stderr.write(f'[proxy] Logging failed: {exc}\n')
+            return
         sys.stderr.write(f"[proxy] {method} {self.path} -> {fname.name} "
                           f"({duration:.1f}s)\n")
 
@@ -227,6 +286,8 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
 
 
 if __name__ == "__main__":

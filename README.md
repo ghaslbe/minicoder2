@@ -380,7 +380,7 @@ lästig), stehen die Einstellungen einmal in `~/.mc.json` — danach reicht
 
 Unterstützte Schlüssel: `base_url`, `model`, `api_key`, `headers` (Objekt oder
 String), `proxy`, `ca_bundle`, `check`, `fence`, `verbose`, `max_steps`,
-`keep_context`. Ein anderer Ort geht per `MC_CONFIG=<pfad>`. **Rangfolge
+`keep_context`, `tool_mode`, `context_length`. Ein anderer Ort geht per `MC_CONFIG=<pfad>`. **Rangfolge
 überall: CLI-Flag > Env-Variable > Konfig-Datei > eingebauter Default.**
 
 ### Umgebungsvariablen
@@ -398,6 +398,45 @@ String), `proxy`, `ca_bundle`, `check`, `fence`, `verbose`, `max_steps`,
 | `MC_MAX_STEPS`  | `40`                        | Max. Agenten-Schritte pro Aufgabe      |
 | `MC_KEEP_CONTEXT` | `3`                       | Letzte N Schritte voll im Kontext (Beschneidung) |
 | `MC_FENCE`      | `1` (an)                    | `0` = Fence-Modus abschalten (JSON-Strings) |
+| `MC_TOOL_MODE`  | `text`                      | `native` = strukturierte Tool-Aufrufe statt Action-Fences |
+| `MC_CONTEXT_LENGTH` | `32768`                 | Kontextbudget fuer Cloud-Pruning und `/model-reset` |
+
+### Native Tools und Prompt-Cache
+
+Der bisherige Text-/Fence-Modus bleibt Standard. Fuer Modelle mit nativen
+Tool-Aufrufen kann derselbe Agent optional strukturierte Funktionen verwenden:
+
+```bash
+python3 mc.py --tool-mode native --context-length 32768 --check --dir ./projekt "Deine Aufgabe"
+```
+
+Alternativ: `MC_TOOL_MODE=native`, `"tool_mode": "native"` in der Konfiguration
+oder interaktiv `/settings tool_mode native`. Zurueck mit `--tool-mode text`.
+`--fence` und `--no-fence` betreffen nur den Text-Modus. Modell und Endpoint
+muessen das Chat-Completions-Tool-Protokoll unterstuetzen; es gibt keinen
+stillen automatischen Wechsel des Modus bei einem API-Fehler.
+
+Beide Modi verwenden dieselben Werkzeuge, Freigaben, Schreibschutz- und
+Finish-Pruefungen. Native Argumente werden vor Ausfuehrung validiert.
+Mehrere Aufrufe laufen sequenziell; nach einem Fehler werden verbleibende
+Aufrufe als nicht ausgefuehrt beantwortet. Abgeschnittene native Antworten
+werden vollstaendig neu angefordert, niemals als halbe Schreibaktion ausgefuehrt.
+`--resume` bewahrt Aufruf-IDs und Ergebnisse; bei einer unterbrochenen Aktion
+wird das Modell aufgefordert, erst den tatsaechlichen Zustand zu pruefen.
+
+Bei Cloud-Endpunkten bleibt die Historie jetzt bis zum Kontextbudget stabil,
+statt bei jedem Schritt alte Nachrichten zu veraendern. Das ermoeglicht dem
+Anbieter Prompt-Cache-Treffer, garantiert sie aber nicht. `--context-length`
+muss zum Modell passen: Default 32768 Tokens, mit Reserve fuer die konfigurierte
+Antwortlaenge (`MC_MAX_TOKENS`, Default 4000). Ein gemeldetes kleineres Fenster
+hat Vorrang. `--context-length 0` aktiviert bei unbekanntem Cloud-Fenster die
+bisherige sofortige Kuerzung. Unbekannte lokale Fenster werden weiterhin
+vorsichtig sofort gekuerzt; `--no-prune` schaltet Kuerzung ganz ab.
+
+Alte native Aufrufe werden nur zusammen mit ihren Ergebnissen zusammengefasst.
+Tool-Argumente und Schemas zaehlen zum geschaetzten Kontextverbrauch.
+Die Abschlussstatistik zeigt vom Anbieter gemeldete Cache-Tokens; sie sind
+bereits in den Prompt-Tokens enthalten, keine zusaetzlichen Tokens.
 
 **Eigene HTTP-Header:** `MC_HEADERS` sendet zusätzliche Header bei jedem Request
 mit (Chat *und* `--list-models`). Mehrere durch `;` oder Zeilenumbruch trennen,
