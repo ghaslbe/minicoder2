@@ -16,6 +16,7 @@ import threading
 import uuid
 import socket
 import select
+import shutil
 import zipfile
 import urllib.request
 import urllib.error
@@ -101,7 +102,12 @@ MC_SETTINGS = {
     'base_url': DEFAULT_BASE_URL,
     'api_key': '',
     'max_steps': 200,
-    'max_tokens': 16000
+    'max_tokens': 16000,
+    # name -> {"keep_running": bool, "backend_port": int, "frontend_port": int}
+    # -- nur Projekte MIT keep_running bekommen ein eigenes, festes Port-Paar
+    # und laufen beim Wegwechseln weiter; alle anderen teilen sich weiterhin
+    # die globalen BACKEND_PORT/PORT_VITE wie bisher (s. _project_ports()).
+    'project_ports': {}
 }
 
 def save_settings():
@@ -149,7 +155,7 @@ def load_settings():
     try:
         with open(SETTINGS_FILE_PATH, 'r', encoding='utf-8') as f:
             saved = json.load(f)
-            for key in ('profiles', 'project_profiles'):
+            for key in ('profiles', 'project_profiles', 'project_ports'):
                 if isinstance(saved.get(key), dict):
                     MC_SETTINGS[key] = saved[key]
             for key in ('model', 'base_url', 'api_key', 'projekt'):
@@ -367,16 +373,18 @@ app.register_blueprint(TERMINALS.blueprint)
 
 STATIC_SERVER_MARKER = 'vibelove_static_preview_marker'
 
-def stop_vite_processes():
-    """Beendet alle laufenden Vite-/Statik-Vorschau-Prozesse dieses Projekts
-    (pkill + gemerktes Handle)."""
+def stop_vite_processes(port=None):
+    """Beendet den Vite-/Statik-Vorschau-Prozess auf 'port' (Default:
+    PORT_VITE). Portbasiert statt pkill-by-name: ein blanker
+    'pkill -f node_modules/.bin/vite' traefe JEDEN Vite-Prozess auf dem
+    System, auch den eines keep_running-Projekts, das gerade bewusst im
+    Hintergrund weiterlaeuft (s. _project_ports()) -- portbasiertes Beenden
+    (_kill_port(), unten definiert) trifft garantiert nur den einen."""
     global vite_process
-    try:
-        subprocess.run(['pkill', '-f', 'node_modules/.bin/vite'], capture_output=True)
-        subprocess.run(['pkill', '-f', STATIC_SERVER_MARKER], capture_output=True)
-    except Exception as e:
-        print(f'pkill vite: {e}')
-    if vite_process:
+    if port is None:
+        port = PORT_VITE
+    _kill_port(port)
+    if port == PORT_VITE and vite_process:
         try:
             os.killpg(os.getpgid(vite_process.pid), signal.SIGTERM)
         except Exception as e:
@@ -384,11 +392,16 @@ def stop_vite_processes():
         vite_process = None
 
 def switch_project(name, start_vite=True):
-    """Wechselt das aktive Projekt und startet Vite/Backend bei Bedarf neu."""
+    """Wechselt das aktive Projekt und startet Vite/Backend bei Bedarf neu.
+    Ein Projekt MIT keep_running wird beim Verlassen NICHT gestoppt (laeuft
+    auf seinem eigenen Port-Paar weiter) und beim Aktivieren nur gestartet,
+    falls es nicht schon laeuft (Ports gehoeren ihm exklusiv, s.
+    _project_ports())."""
     global CURRENT_PROJECT
     cleaned = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
     if not cleaned:
         raise ValueError('Ungültiger Projektname')
+    voriges_projekt = CURRENT_PROJECT
     CURRENT_PROJECT = cleaned
     MC_SETTINGS['projekt'] = CURRENT_PROJECT
     apply_project_profile()
@@ -396,15 +409,24 @@ def switch_project(name, start_vite=True):
     reset_history()
     if not start_vite:
         return
-    stop_vite_processes()
-    stop_backend_server()
+    voriger_eintrag = MC_SETTINGS.get('project_ports', {}).get(voriges_projekt)
+    voriges_bleibt = bool(voriger_eintrag and voriger_eintrag.get('keep_running'))
+    backend_port, frontend_port = _project_ports(CURRENT_PROJECT)
+    eigene_ports = (backend_port, frontend_port) != (BACKEND_PORT, PORT_VITE)
+    ziel_laeuft_schon = eigene_ports and is_port_in_use(backend_port) and is_port_in_use(frontend_port)
+    if not voriges_bleibt:
+        alter_backend_port, alter_frontend_port = _project_ports(voriges_projekt)
+        stop_vite_processes(alter_frontend_port)
+        stop_backend_server(alter_backend_port)
+    if ziel_laeuft_schon:
+        return  # eigenes Port-Paar laeuft bereits (z.B. von vorherigem keep_running) -- nichts zu tun
     # Kurz warten bis Vite-/Backend-Port freigegeben wurden (max ~5s)
     for _ in range(50):
-        if not is_port_in_use(PORT_VITE) and not is_port_in_use(BACKEND_PORT):
+        if not is_port_in_use(frontend_port) and not is_port_in_use(backend_port):
             break
         time.sleep(0.1)
-    start_backend_server()
-    start_vite_server()
+    start_backend_server(backend_port)
+    start_vite_server(frontend_port, backend_port)
 
 def extract_urls(text, max_urls=3):
     """Finde http(s)-URLs in einem Text und gib die ersten max_urls zurück."""
@@ -415,6 +437,34 @@ def extract_urls(text, max_urls=3):
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
+
+def _project_ports(name):
+    """Liefert (backend_port, frontend_port) fuer ein Projekt -- die eigenen,
+    reservierten Ports, falls keep_running aktiv ist, sonst die geteilten
+    globalen Konstanten (heutiges Verhalten, unveraendert fuer alle
+    Projekte ohne das Flag)."""
+    entry = MC_SETTINGS.get('project_ports', {}).get(name)
+    if entry and entry.get('keep_running'):
+        return entry['backend_port'], entry['frontend_port']
+    return BACKEND_PORT, PORT_VITE
+
+def _reserve_free_ports(start=5200):
+    """Sucht das naechste freie (backend_port, frontend_port)-Paar ab 'start'
+    aufwaerts -- frei heisst: aktuell nicht belegt (is_port_in_use) UND noch
+    keinem anderen Projekt in project_ports zugeteilt (ein Projekt kann
+    gerade gestoppt sein, sein Port bleibt trotzdem 'seins')."""
+    vergeben = set()
+    for entry in MC_SETTINGS.get('project_ports', {}).values():
+        vergeben.add(entry.get('backend_port'))
+        vergeben.add(entry.get('frontend_port'))
+    def naechster_freier(port):
+        while port in vergeben or is_port_in_use(port):
+            port += 1
+        vergeben.add(port)
+        return port
+    backend_port = naechster_freier(start)
+    frontend_port = naechster_freier(backend_port + 1)
+    return backend_port, frontend_port
 
 def _static_frontend_dir(proj):
     """Findet ein Verzeichnis mit einer index.html (frontend/ oder Wurzel) fuer
@@ -625,21 +675,21 @@ def _kill_port(port, sig=signal.SIGTERM):
     except Exception as e:
         print(f'_kill_port({port}): {e}')
 
-def stop_backend_server():
-    """Beendet einen laufenden Backend-Prozess: portbasiert (siehe _kill_port,
-    der zuverlaessige Weg) PLUS Marker-pkill/gemerktes Handle als Ergaenzung."""
+def stop_backend_server(port=None):
+    """Beendet den Backend-Prozess auf 'port' (Default: BACKEND_PORT),
+    portbasiert -- kein 'pkill -f BACKEND_MARKER' mehr, das traefe JEDES
+    vibelove-gestartete Backend systemweit, auch das eines keep_running-
+    Projekts auf einem ANDEREN Port (s. stop_vite_processes())."""
     global backend_process
-    try:
-        subprocess.run(['pkill', '-f', BACKEND_MARKER], capture_output=True)
-    except Exception as e:
-        print(f'pkill backend: {e}')
-    if backend_process:
+    if port is None:
+        port = BACKEND_PORT
+    if port == BACKEND_PORT and backend_process:
         try:
             os.killpg(os.getpgid(backend_process.pid), signal.SIGTERM)
         except Exception as e:
             print(f'Fehler beim Stoppen des gemerkten Backend-Prozesses: {e}')
         backend_process = None
-    _kill_port(BACKEND_PORT)
+    _kill_port(port)
 
 PREVIEW_LOCK = threading.Lock()
 PREVIEW_STATE = {'running': False, 'phase': 'idle', 'message': '', 'project': None}
@@ -677,38 +727,49 @@ def launch_preview(label, command, **kwargs):
     return proc
 
 
-def start_backend_server():
-    """Startet das Backend des AKTIVEN Projekts auf BACKEND_PORT, falls eines
-    per backend/vibelove-backend.json beschrieben ist. Analog zu
+def start_backend_server(port=None):
+    """Startet das Backend des AKTIVEN Projekts, falls eines per
+    backend/vibelove-backend.json beschrieben ist. Analog zu
     start_vite_server(), aber fuer den API-Teil eines Projekts -- ohne das
     bliebe ein waehrend --check gestarteter Backend-Prozess nur fuer die
     Dauer des mc.py-Laufs am Leben (kill_bg_procs beendet ihn danach) und
-    das fertige Frontend haette nach dem Bauauftrag nichts mehr zum Reden."""
+    das fertige Frontend haette nach dem Bauauftrag nichts mehr zum Reden.
+    port=None nutzt den Port des AKTIVEN Projekts (_project_ports()) --
+    normalerweise BACKEND_PORT, bei keep_running der eigene, feste Port."""
     global backend_process
-    if is_port_in_use(BACKEND_PORT):
+    if port is None:
+        port, _ = _project_ports(CURRENT_PROJECT)
+    if is_port_in_use(port):
         return
     manifest = _backend_manifest(projekt_dir(CURRENT_PROJECT))
     if not manifest:
         return
     backend_dir, command = manifest
-    print(f"Starte Backend fuer '{CURRENT_PROJECT}' auf Port {BACKEND_PORT}: {command}")
+    print(f"Starte Backend fuer '{CURRENT_PROJECT}' auf Port {port}: {command}")
     try:
-        backend_process = launch_preview('Backend',
+        proc = launch_preview('Backend',
             ["env", f"{BACKEND_MARKER}=1", "bash", "-c", command],
             cwd=backend_dir,
             start_new_session=True
         )
+        if port == BACKEND_PORT:
+            backend_process = proc
     except Exception as e:
         print(f"Fehler beim Starten des Backend-Servers: {e}")
 
 def ensure_backend_running():
+    """Sorgt dafuer, dass das Backend des AKTIVEN Projekts auf SEINEM Port
+    laeuft (normalerweise BACKEND_PORT, bei keep_running der eigene Port)."""
     global backend_process
-    if backend_process is not None and backend_process.poll() is None:
+    port, _ = _project_ports(CURRENT_PROJECT)
+    if port == BACKEND_PORT and backend_process is not None and backend_process.poll() is None:
         return
-    if is_port_in_use(BACKEND_PORT):
-        _kill_port(BACKEND_PORT)
+    if is_port_in_use(port):
+        if port != BACKEND_PORT:
+            return  # eigener Port laeuft bereits (z.B. von vorherigem keep_running) -- nichts zu tun
+        _kill_port(port)
         time.sleep(0.3)
-    start_backend_server()
+    start_backend_server(port)
 
 def _hat_dev_skript(package_json_pfad):
     """True nur wenn package.json einen 'dev'-Skript-Eintrag hat -- ein
@@ -725,9 +786,18 @@ def _hat_dev_skript(package_json_pfad):
     except (OSError, ValueError, TypeError):
         return False
 
-def start_vite_server():
+def start_vite_server(frontend_port=None, backend_port=None):
+    """port=None nutzt die Ports des AKTIVEN Projekts (_project_ports()) --
+    normalerweise PORT_VITE/BACKEND_PORT, bei keep_running die eigenen,
+    festen Ports."""
     global vite_process
-    if is_port_in_use(PORT_VITE):
+    if frontend_port is None or backend_port is None:
+        default_backend, default_frontend = _project_ports(CURRENT_PROJECT)
+        if frontend_port is None:
+            frontend_port = default_frontend
+        if backend_port is None:
+            backend_port = default_backend
+    if is_port_in_use(frontend_port):
         return
 
     # Verzeichnis des AKTIVEN Projekts nutzen
@@ -743,18 +813,20 @@ def start_vite_server():
             static_dir = _static_frontend_dir(proj)
             if static_dir:
                 hat_backend = _backend_manifest(proj) is not None
-                backend_port = BACKEND_PORT if hat_backend else 0
+                proxy_port = backend_port if hat_backend else 0
                 print(f"Kein package.json in '{CURRENT_PROJECT}' -- starte "
                       f"stattdessen einen Static-Server (mit Backend-Proxy: "
-                      f"{'ja, Port ' + str(backend_port) if backend_port else 'nein'}) "
-                      f"fuer die Vorschau auf Port {PORT_VITE}...")
+                      f"{'ja, Port ' + str(proxy_port) if proxy_port else 'nein'}) "
+                      f"fuer die Vorschau auf Port {frontend_port}...")
                 try:
-                    vite_process = launch_preview('Vorschau',
+                    proc = launch_preview('Vorschau',
                         ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
-                         STATIC_PREVIEW_SCRIPT, static_dir, str(PORT_VITE),
-                         str(backend_port), API_PREFIX],
+                         STATIC_PREVIEW_SCRIPT, static_dir, str(frontend_port),
+                         str(proxy_port), API_PREFIX],
                         start_new_session=True
                     )
+                    if frontend_port == PORT_VITE:
+                        vite_process = proc
                 except Exception as e:
                     print(f"Fehler beim Starten des Static-Servers: {e}")
                 return
@@ -768,28 +840,32 @@ def start_vite_server():
                 # welche unter API_PREFIX.
                 print(f"Kein Frontend, aber Backend-Manifest in "
                       f"'{CURRENT_PROJECT}' -- leite die gesamte Vorschau auf "
-                      f"Port {PORT_VITE} an das Backend (Port {BACKEND_PORT}) "
+                      f"Port {frontend_port} an das Backend (Port {backend_port}) "
                       f"weiter...")
                 try:
-                    vite_process = launch_preview('Vorschau',
+                    proc = launch_preview('Vorschau',
                         ["env", f"{STATIC_SERVER_MARKER}=1", "python3",
-                         STATIC_PREVIEW_SCRIPT, "", str(PORT_VITE),
-                         str(BACKEND_PORT), API_PREFIX],
+                         STATIC_PREVIEW_SCRIPT, "", str(frontend_port),
+                         str(backend_port), API_PREFIX],
                         start_new_session=True
                     )
+                    if frontend_port == PORT_VITE:
+                        vite_process = proc
                 except Exception as e:
                     print(f"Fehler beim Starten des Backend-Proxys: {e}")
                 return
             print(f"[vite] Kein package.json und keine index.html in '{CURRENT_PROJECT}' (frontend/ oder Wurzel) – keine Vorschau moeglich.")
             return
 
-    print(f"Starte Vite-Server auf Port {PORT_VITE}...")
+    print(f"Starte Vite-Server auf Port {frontend_port}...")
     try:
-        vite_process = launch_preview('Vite',
-            ["npm", "run", "dev", "--", "--port", str(PORT_VITE), "--host", "0.0.0.0", "--strictPort"],
+        proc = launch_preview('Vite',
+            ["npm", "run", "dev", "--", "--port", str(frontend_port), "--host", "0.0.0.0", "--strictPort"],
             cwd=front_dir,
             start_new_session=True
         )
+        if frontend_port == PORT_VITE:
+            vite_process = proc
     except Exception as e:
         print(f"Fehler beim Starten des Vite-Servers: {e}")
 
@@ -804,13 +880,18 @@ def stop_vite_server():
         vite_process = None
 
 def ensure_vite_running():
+    """Sorgt dafuer, dass die Vorschau des AKTIVEN Projekts auf SEINEM Port
+    laeuft (normalerweise PORT_VITE, bei keep_running der eigene Port)."""
     global vite_process
-    if vite_process is not None and vite_process.poll() is None:
+    backend_port, frontend_port = _project_ports(CURRENT_PROJECT)
+    if frontend_port == PORT_VITE and vite_process is not None and vite_process.poll() is None:
         return
-    if is_port_in_use(PORT_VITE):
-        _kill_port(PORT_VITE)
+    if is_port_in_use(frontend_port):
+        if frontend_port != PORT_VITE:
+            return  # eigener Port laeuft bereits (z.B. von vorherigem keep_running) -- nichts zu tun
+        _kill_port(frontend_port)
         time.sleep(0.3)
-    start_vite_server()
+    start_vite_server(frontend_port, backend_port)
 
 @app.route('/settings', methods=['GET'])
 def get_settings():
@@ -1177,12 +1258,14 @@ def build():
     else:
         full_instruction = instruction
 
-    # Der geforderte Zusatztext
+    # Der geforderte Zusatztext -- Backend-Port des AKTIVEN Projekts (normalerweise
+    # BACKEND_PORT, bei keep_running der eigene, feste Port, s. _project_ports()).
+    aktiver_backend_port, _ = _project_ports(CURRENT_PROJECT)
     suffix = ("\n\nLege ein NEUES Projektgeruest (npm create ...) IMMER in einen Unterordner wie frontend/ an, nie direkt ins Wurzelverzeichnis (dort liegt Git-Zubehoer, der Generator wuerde interaktiv haengen). Starte KEINEN dauerhaften Dev-Server im Hintergrund. Pruefe Frontend-Aenderungen ausschliesslich per 'npm run build' (muss exit 0 liefern). Falls du einen Server kurz zum Testen per curl brauchst, starte ihn, teste, und beende ihn danach wieder (kill), bevor du finish aufrufst."
               f"\n\nFalls diese Aufgabe einen EIGENEN Backend-/Serverprozess braucht (z.B. eine "
               f"Flask/Express-API -- auch wenn es KEIN separates Frontend gibt, etwa bei einer "
               f"serverseitig gerenderten App mit Templates): lege den Backend-Code in einen "
-              f"Unterordner backend/, lass ihn IMMER auf dem FESTEN Port {BACKEND_PORT} lauschen "
+              f"Unterordner backend/, lass ihn IMMER auf dem FESTEN Port {aktiver_backend_port} lauschen "
               f"(nicht konfigurierbar, nicht selbst waehlen), und lege "
               f"backend/{BACKEND_MANIFEST_NAME} mit dem Startbefehl an, z.B. "
               f'{{"command": "python3 app.py"}} -- nur so erkennt und startet die Live-Vorschau '
@@ -1386,7 +1469,10 @@ def build():
 
 @app.route('/projects', methods=['GET'])
 def list_projects():
-    """Alle Projekte (workspace + Unterverzeichnisse von projekte/) + aktives."""
+    """Alle Projekte (workspace + Unterverzeichnisse von projekte/) + aktives,
+    plus keep_running-Status und der Port des aktiven Projekts (fuer die
+    Preview-iframe-Adresse -- normalerweise PORT_VITE, bei keep_running der
+    eigene, feste Port)."""
     projekte = ['workspace']
     try:
         if os.path.isdir(PROJEKTE_ROOT):
@@ -1394,7 +1480,11 @@ def list_projects():
                                if os.path.isdir(os.path.join(PROJEKTE_ROOT, d)))
     except OSError:
         pass
-    return jsonify({'projekte': projekte, 'aktiv': CURRENT_PROJECT})
+    _, aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
+    keep_running = {name: bool(entry.get('keep_running'))
+                    for name, entry in MC_SETTINGS.get('project_ports', {}).items()}
+    return jsonify({'projekte': projekte, 'aktiv': CURRENT_PROJECT,
+                    'keep_running': keep_running, 'frontend_port': aktiver_frontend_port})
 
 
 @app.route('/projects', methods=['POST'])
@@ -1419,7 +1509,8 @@ def create_project():
     except Exception:
         pass
     switch_project(name)
-    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
+    _, _aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
+    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT, 'frontend_port': _aktiver_frontend_port})
 
 
 @app.route('/projects/aktiv', methods=['POST'])
@@ -1431,7 +1522,95 @@ def activate_project():
                     and not os.path.isdir(os.path.join(PROJEKTE_ROOT, name))):
         return jsonify({'ok': False, 'error': 'Projekt nicht gefunden'}), 404
     switch_project(name)
-    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT})
+    _, _aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
+    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT, 'frontend_port': _aktiver_frontend_port})
+
+
+@app.route('/projects/keep-running', methods=['POST'])
+def toggle_keep_running():
+    """Schaltet fuer ein Projekt um, ob es beim Wegwechseln weiterlaeuft.
+    True: reserviert bei Bedarf ein eigenes, festes Port-Paar (s.
+    _reserve_free_ports()) und startet sofort darauf, falls das Projekt
+    gerade aktiv ist. False: Eintrag entfernen -- laeuft das Projekt gerade
+    NICHT aktiv, aber noch auf seinen alten (jetzt verwaisten) Ports, wird
+    es gestoppt."""
+    data = request.get_json(silent=True) or {}
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
+    keep_running = bool(data.get('keep_running'))
+    if not name or (name != 'workspace'
+                    and not os.path.isdir(os.path.join(PROJEKTE_ROOT, name))):
+        return jsonify({'ok': False, 'error': 'Projekt nicht gefunden'}), 404
+    ports = MC_SETTINGS.setdefault('project_ports', {})
+    if keep_running:
+        entry = ports.get(name)
+        if not entry or not entry.get('backend_port'):
+            backend_port, frontend_port = _reserve_free_ports()
+            entry = {'backend_port': backend_port, 'frontend_port': frontend_port}
+        entry['keep_running'] = True
+        ports[name] = entry
+        save_settings()
+        if name == CURRENT_PROJECT:
+            start_backend_server(entry['backend_port'])
+            start_vite_server(entry['frontend_port'], entry['backend_port'])
+    else:
+        entry = ports.pop(name, None)
+        save_settings()
+        if entry and name != CURRENT_PROJECT:
+            stop_vite_processes(entry['frontend_port'])
+            stop_backend_server(entry['backend_port'])
+    return jsonify({'ok': True, 'keep_running': keep_running})
+
+
+@app.route('/projects/clone', methods=['POST'])
+def clone_project():
+    """Klont ein bestehendes Projekt (inkl. voller Git-Historie) unter neuem
+    Namen und macht die Kopie aktiv. Die Kopie startet immer im
+    Default-Zustand (kein keep_running/keine eigenen Ports, auch wenn die
+    Quelle welche hatte) -- der Nutzer kann das gezielt wieder anschalten."""
+    data = request.get_json(silent=True) or {}
+    source = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('source', '')))
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
+    if not name or name == 'workspace':
+        return jsonify({'ok': False, 'error': 'Ungueltiger Projektname'}), 400
+    if not source or (source != 'workspace'
+                       and not os.path.isdir(os.path.join(PROJEKTE_ROOT, source))):
+        return jsonify({'ok': False, 'error': 'Quellprojekt nicht gefunden'}), 404
+    dest_path = os.path.join(PROJEKTE_ROOT, name)
+    if os.path.exists(dest_path):
+        return jsonify({'ok': False, 'error': 'Projekt existiert bereits'}), 400
+    try:
+        shutil.copytree(projekt_dir(source), dest_path,
+                         ignore=shutil.ignore_patterns('node_modules', 'dist'))
+    except OSError as e:
+        return jsonify({'ok': False, 'error': f'Klonen fehlgeschlagen: {e}'}), 500
+    switch_project(name)
+    _, _aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
+    return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT, 'frontend_port': _aktiver_frontend_port})
+
+
+@app.route('/projects/delete', methods=['POST'])
+def delete_project():
+    """Loescht ein Projekt unwiderruflich. Nicht das aktive Projekt (erst
+    wegwechseln lassen) und nicht 'workspace'."""
+    data = request.get_json(silent=True) or {}
+    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
+    if not name or name == 'workspace':
+        return jsonify({'ok': False, 'error': "'workspace' kann nicht geloescht werden"}), 400
+    if name == CURRENT_PROJECT:
+        return jsonify({'ok': False, 'error': 'Aktives Projekt kann nicht geloescht werden -- erst wegwechseln'}), 400
+    project_path = os.path.join(PROJEKTE_ROOT, name)
+    if not os.path.isdir(project_path):
+        return jsonify({'ok': False, 'error': 'Projekt nicht gefunden'}), 404
+    entry = MC_SETTINGS.get('project_ports', {}).pop(name, None)
+    if entry:
+        stop_vite_processes(entry['frontend_port'])
+        stop_backend_server(entry['backend_port'])
+    try:
+        shutil.rmtree(project_path)
+    except OSError as e:
+        return jsonify({'ok': False, 'error': f'Loeschen fehlgeschlagen: {e}'}), 500
+    save_settings()
+    return jsonify({'ok': True})
 
 
 def aktives_projekt_hat_eigenes_git_repo():

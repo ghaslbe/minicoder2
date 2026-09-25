@@ -27,6 +27,15 @@
             ></select>
             <button type="button" id="neuesProjektBtn" title="Neues Projekt"
                 class="icon-btn">➕</button>
+            <button type="button" id="klonenProjektBtn" title="Aktives Projekt klonen (inkl. Git-Historie)"
+                class="icon-btn">📋</button>
+            <button type="button" id="loeschenProjektBtn" title="Aktives Projekt unwiderruflich löschen"
+                class="icon-btn">🗑️</button>
+            <label class="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap"
+                title="Projekt läuft beim Wegwechseln auf einem eigenen Port weiter, statt beendet zu werden">
+                <input type="checkbox" id="keepRunningCheckbox" class="align-middle">
+                🔁
+            </label>
             <button type="button" id="gitButton" title="Git-Remote"
                 class="icon-btn">🔗</button>
             <a href="/download-zip" title="Projekt als ZIP herunterladen"
@@ -1103,6 +1112,16 @@
         }
     }
 
+    // Bei keep_running-Projekten laeuft die Vorschau auf einem eigenen,
+    // vom aktiven Projekt abweichenden Port statt dem globalen Standard
+    // (s. server.py _project_ports()) -- vor reloadPreview() aufrufen, wenn
+    // sich der aktive Port geaendert haben koennte (Projektwechsel/-anlage).
+    function setzePreviewPort(port) {
+        if (!port) return;
+        const frame = document.getElementById('previewFrame');
+        if (frame) frame.dataset.previewPort = String(port);
+    }
+
     // Oeffnet dieselbe Vorschau-URL wie das iframe in einem eigenen Tab --
     // nuetzlich fuer Spiele/Apps, die Tastatur-Fokus, volle Fenstergroesse
     // oder DevTools ohne den umgebenden Chat/Toolbar-Rahmen brauchen.
@@ -1264,6 +1283,8 @@
         }
     });
 
+    let keepRunningStatus = {};
+
     async function ladeProjekte() {
         try {
             const res = await fetch('/projects');
@@ -1276,6 +1297,9 @@
                 if (p === daten.aktiv) opt.selected = true;
                 projektSelect.appendChild(opt);
             }
+            keepRunningStatus = daten.keep_running || {};
+            setzePreviewPort(daten.frontend_port);
+            if (keepRunningCheckbox) keepRunningCheckbox.checked = !!keepRunningStatus[daten.aktiv];
             loadChatLayout(daten.aktiv);
         } catch (e) {
             console.error('Projektliste nicht ladbar:', e);
@@ -1290,6 +1314,9 @@
             body: JSON.stringify({ name })
         });
         if (res.ok) {
+            const daten = await res.json();
+            setzePreviewPort(daten.frontend_port);
+            if (keepRunningCheckbox) keepRunningCheckbox.checked = !!keepRunningStatus[name];
             resetFileEditor();
             loadChatLayout(name);
             await ladeGitLogUndRenderChat();
@@ -1305,7 +1332,8 @@
     }
 
     function setProjectControlsBusy(busy) {
-        ['projektSelect', 'neuesProjektBtn', 'resetButton', 'containerButton', 'restartViteBtn'].forEach(id => {
+        ['projektSelect', 'neuesProjektBtn', 'klonenProjektBtn', 'loeschenProjektBtn',
+         'resetButton', 'containerButton', 'restartViteBtn'].forEach(id => {
             document.getElementById(id).disabled = busy;
         });
     }
@@ -1324,6 +1352,8 @@
             body: JSON.stringify({ name })
         });
         if (res.ok) {
+            const daten = await res.json();
+            setzePreviewPort(daten.frontend_port);
             resetFileEditor();
             await ladeProjekte();
             await ladeGitLogUndRenderChat();
@@ -1333,6 +1363,73 @@
             alert('Projekt konnte nicht angelegt werden.');
         }
     });
+
+    const klonenProjektBtn = document.getElementById('klonenProjektBtn');
+    const loeschenProjektBtn = document.getElementById('loeschenProjektBtn');
+    const keepRunningCheckbox = document.getElementById('keepRunningCheckbox');
+
+    klonenProjektBtn.addEventListener('click', async function () {
+        if (!mayLeaveEditor()) return;
+        const name = prompt(`Name der Kopie von "${layoutProject}" (Buchstaben/Zahlen/-/_):`);
+        if (!name) return;
+        const res = await fetch('/projects/clone', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: layoutProject, name })
+        });
+        if (res.ok) {
+            const daten = await res.json();
+            setzePreviewPort(daten.frontend_port);
+            resetFileEditor();
+            await ladeProjekte();
+            await ladeGitLogUndRenderChat();
+            reloadPreview();
+            ladeDateiListe();
+        } else {
+            const error = await res.json();
+            alert(error.error || 'Projekt konnte nicht geklont werden.');
+        }
+    });
+
+    loeschenProjektBtn.addEventListener('click', async function () {
+        if (layoutProject === 'workspace') {
+            alert('"workspace" kann nicht geloescht werden.');
+            return;
+        }
+        if (!confirm(`Projekt "${layoutProject}" wirklich unwiderruflich loeschen?`)) return;
+        // Erst wegwechseln (aktives Projekt darf server-seitig nicht geloescht werden).
+        const zuLoeschen = layoutProject;
+        await projektAktivieren('workspace');
+        const res = await fetch('/projects/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: zuLoeschen })
+        });
+        if (!res.ok) {
+            const error = await res.json();
+            alert(error.error || 'Projekt konnte nicht geloescht werden.');
+        }
+        await ladeProjekte();
+    });
+
+    if (keepRunningCheckbox) {
+        keepRunningCheckbox.addEventListener('change', async function () {
+            const checked = keepRunningCheckbox.checked;
+            const res = await fetch('/projects/keep-running', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: layoutProject, keep_running: checked })
+            });
+            if (res.ok) {
+                keepRunningStatus[layoutProject] = checked;
+                setTimeout(async () => { await ladeProjekte(); reloadPreview(); }, checked ? 1500 : 0);
+            } else {
+                keepRunningCheckbox.checked = !checked;
+                const error = await res.json();
+                alert(error.error || 'Konnte nicht umgeschaltet werden.');
+            }
+        });
+    }
 
     // ── Datei-Explorer ───────────────────────────────────────────────────
     const tabPreviewBtn = document.getElementById('tabPreviewBtn');
