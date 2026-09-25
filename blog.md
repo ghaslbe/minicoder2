@@ -6964,6 +6964,62 @@ Bloecke pro Antwort sequenziell statt nur den ersten auszufuehren) trifft
 den tatsaechlich beobachteten Mechanismus direkter und funktioniert
 unabhaengig davon, ob der Endpoint ein `tools`-Feld sauber unterstuetzt.
 
+## 84. Doch noch: natives `tools`-Schema als Opt-in, Cache-freundliches
+Pruning, und der eigentliche Grund fuer die haengenden Proxy-Laeufe
+
+Kurz nach Kapitel 83 zurueckgestellt, dann doch umgesetzt -- als separater,
+per Flag zuschaltbarer Modus statt Ersatz fuer den bisherigen Text-Parser.
+Drei Baustellen in einem Commit (`d864529`, 511 Zeilen mc.py, plus neue
+Tests, README-Doku und ein Proxy-Fix):
+
+**1. `--tool-mode native`** -- echtes OpenAI-kompatibles `tools`-Array
+plus `tool_calls` im Response-Stream, als Alternative zum bisherigen
+Fence-Text-Parsing (weiterhin Default). Technisch bemerkenswert:
+
+- Tool-Calls werden robust aus SSE-Fragmenten zusammengesetzt; bei
+  kaputten/doppelten IDs oder unvollstaendigem Stream wird die KOMPLETTE
+  Antwort neu angefordert statt Teilergebnisse auszufuehren -- dieselbe
+  Vorsicht, die der Text-Modus schon beim `war_unvollstaendig`-Fall zeigt.
+- Nutzt die in Kapitel 83 gebaute `pending_actions`/`pending_ok`-
+  Infrastruktur direkt weiter: mehrere Tool-Calls in einer Antwort laufen
+  sequenziell, Abbruch beim ersten Fehler, exakt dasselbe Prinzip wie beim
+  Text-Modus.
+- Eigene JSON-Schema-Validierung der Tool-Argumente VOR der Ausfuehrung.
+- Sauberes Cleanup ueber `_cancel_pending_tools()`: offene Tool-Calls
+  werden bei Fehler, Phasenwechsel, Lauf-Ende oder `--resume` explizit
+  als "nicht ausgefuehrt" beantwortet -- keine verwaisten Tool-Call-IDs,
+  die manche Provider mit einem harten 400 quittieren wuerden.
+
+**2. Cache-freundliches Pruning bei Cloud-Endpunkten** -- schliesst genau
+die in Kapitel 82 gefundene Luecke: mc.py kuerzte bisher bei jedem Schritt
+etwas an der Historie, was den Prompt-Cache-Praefix zerstoerte, den
+opencode/OpenRouter mit 443K Cache-Tokens nutzen konnte. Jetzt bleibt die
+Historie bis zu einem konfigurierbaren `--context-length`-Budget
+(Default 32768 Tokens) stabil, ein gemeldetes kleineres Fenster hat aber
+weiterhin Vorrang -- die 4000-Token-Realitaet der Instanzen aus Kapitel 81
+wuerde also nicht blind uebersteuert.
+
+**3. Der eigentliche Grund fuer die zwei haengenden opencode-Laeufe von
+heute Nachmittag** (Qwen3.8-27b-Capture und GLM-5.3-Flash, beide ueber den
+selbstgebauten Logging-Proxy, beide nach Minuten ohne jede Netzwerk-
+aktivitaet komplett eingefroren): ein echter Bug im Proxy selbst, nicht im
+Modell oder in opencode. `openrouterproxy.py` lief mit
+`protocol_version = "HTTP/1.1"`, was serverseitig Keep-Alive-Verbindungen
+aktiviert -- die Antwort wurde aber nie sauber delimitiert (kein
+`Content-Length`, kein `Connection: close`), sodass der HTTP-Client von
+opencode nach einer Antwort endlos auf weitere Daten derselben Verbindung
+wartete. Fix: `self.close_connection = True` je Verbindung, korrektes
+Chunked-Body-Parsing fuer eingehende Requests, Socket-Timeout statt nur
+`urlopen`-Timeout. Nebenbei auch die Redaction verschaerft (`Authorization`,
+`Proxy-Authorization`, `X-Api-Key`, `Cookie`, `Set-Cookie` jetzt komplett
+statt nur teilmaskiert).
+
+**Verifiziert:** alle 226 Tests (`test_mc.py`, `test_mc_native.py`,
+`test_openrouterproxy.py`) laufen gruen durch. Der native Modus ist reines
+Opt-in (`MC_TOOL_MODE=native`, `--tool-mode native` oder
+`/settings tool_mode native`) -- der Text-/Fence-Modus bleibt unveraendert
+Standard, nichts am bisherigen Verhalten aendert sich ungefragt.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
