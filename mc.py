@@ -295,6 +295,17 @@ PROVIDER_ORDER = [p.strip() for p in str(_setting("MC_PROVIDER", "provider", "")
 # Aufrufe an derselben Aufgabe unter einer Session zu buendeln). Endpunkte,
 # die das Feld nicht kennen, ignorieren es folgenlos wie die anderen Hinweise.
 SESSION_ID = str(_setting("MC_SESSION_ID", "session_id", "")) or f"mc-{uuid.uuid4().hex[:24]}"
+# Real beobachtet (gpt-5.6-luna direkt ueber api.openai.com): manche
+# Endpunkte ignorieren ein unbekanntes Feld NICHT folgenlos, sondern lehnen
+# es mit HTTP 400 "Unknown parameter" hart ab -- die Annahme oben ("Endpunkte,
+# die das Feld nicht kennen, ignorieren es folgenlos") stimmt dort nicht.
+# Gleiches Erkennungs-/Abschalt-Muster wie SUPPORTS_FREQUENCY_PENALTY unten.
+SUPPORTS_SESSION_ID = True
+# Dieselbe Art Inkompatibilitaet, diesmal beim Token-Budget-Feld selbst:
+# manche neueren Reasoning-Modelle (real beobachtet: gpt-6-luna direkt ueber
+# api.openai.com) lehnen 'max_tokens' komplett ab und verlangen
+# 'max_completion_tokens' -- automatisch erkannt und umgeschaltet.
+MAX_TOKENS_FIELD = "max_tokens"
 
 # Manche neueren Reasoning-Modelle (u.a. OpenAIs eigene "gpt-5.x"-Serie
 # direkt ueber api.openai.com, nicht ueber OpenRouter) lehnen klassische
@@ -683,7 +694,7 @@ class NativeReply:
 
 def _chat_once(messages, model, tools=None):
     """Streaming-Aufruf: (Text oder NativeReply, finish_reason)."""
-    global LAST_REASONING_CHARS, SUPPORTS_FREQUENCY_PENALTY
+    global LAST_REASONING_CHARS, SUPPORTS_FREQUENCY_PENALTY, SUPPORTS_SESSION_ID, MAX_TOKENS_FIELD
     url = f"{BASE_URL}/chat/completions"
     payload = {"model": model, "messages": _payload_messages(messages), "stream": True,
                # Token-/Kostenabrechnung anfordern (OpenAI-Standard-Feld, auch
@@ -720,9 +731,10 @@ def _chat_once(messages, model, tools=None):
         payload["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
     if PROVIDER_ORDER:
         payload["provider"] = {"order": PROVIDER_ORDER, "allow_fallbacks": False}
-    payload["session_id"] = SESSION_ID
+    if SUPPORTS_SESSION_ID:
+        payload["session_id"] = SESSION_ID
     if MAX_TOKENS_PER_CALL > 0:
-        payload["max_tokens"] = MAX_TOKENS_PER_CALL
+        payload[MAX_TOKENS_FIELD] = MAX_TOKENS_PER_CALL
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -859,6 +871,26 @@ def _chat_once(messages, model, tools=None):
             SUPPORTS_FREQUENCY_PENALTY = False
             print(f"{C.DIM}(frequency_penalty vom Endpoint abgelehnt -- "
                   f"wird fuer den Rest des Laufs weggelassen){C.RESET}")
+            return _chat_once(messages, model, tools=tools) if tools is not None else _chat_once(messages, model)
+        if (e.code == 400 and SUPPORTS_SESSION_ID
+                and "unknown_parameter" in body and "session_id" in body):
+            # Direkte OpenAI-API (real beobachtet: gpt-5.6-luna) lehnt das
+            # OpenRouter-spezifische session_id-Feld hart ab statt es zu
+            # ignorieren -- einmalig erkennen, global abschalten, derselbe
+            # Request sofort ohne das Feld wiederholen (s. SUPPORTS_SESSION_ID).
+            SUPPORTS_SESSION_ID = False
+            print(f"{C.DIM}(session_id vom Endpoint abgelehnt -- wird fuer "
+                  f"den Rest des Laufs weggelassen){C.RESET}")
+            return _chat_once(messages, model, tools=tools) if tools is not None else _chat_once(messages, model)
+        if (e.code == 400 and MAX_TOKENS_FIELD == "max_tokens"
+                and "unsupported_parameter" in body and "max_completion_tokens" in body):
+            # Ebenfalls real beobachtet (gpt-6-luna direkt ueber api.openai.com):
+            # 'max_tokens' wird hart abgelehnt, 'max_completion_tokens' verlangt.
+            # Einmalig erkennen, global umschalten, derselbe Request sofort
+            # mit dem anderen Feldnamen wiederholen.
+            MAX_TOKENS_FIELD = "max_completion_tokens"
+            print(f"{C.DIM}(max_tokens vom Endpoint abgelehnt -- verwende ab "
+                  f"jetzt max_completion_tokens){C.RESET}")
             return _chat_once(messages, model, tools=tools) if tools is not None else _chat_once(messages, model)
         if e.code in (401, 403):
             # 401/403 sind bei OpenAI-kompatiblen Endpoints so gut wie immer

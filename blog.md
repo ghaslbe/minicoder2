@@ -7076,13 +7076,90 @@ aufklappbaren Rohtext-Terminal zu verschwinden.
 **Verifiziert:** alle 208 bestehenden Tests (`test_mc.py`,
 `test_vibelove.py`, `test_vibelove_terminal.py`) weiterhin gruen (keine
 neue Testdatei fuer `po.py` -- das braucht sinnvoll einen echten
-Modellaufruf, dafuer manuelle End-to-End-Verifikation). Live getestet mit
+Modellaufruf, dafuer manuelle End-to-End-Verifikation). Erster Live-Test mit
 `z-ai/glm-5.3-flash` ueber OpenRouter: Auftrag "Tetris-Klon mit Ton", der
 PO lieferte 12 konkrete Kriterien (u.a. "keine externen Ressourcen", "7-Bag-
 Generator erkennbar", "Highscore in localStorage nach Reload", aber auch
 ehrlich als nur im Browser pruefbar formulierte wie "Touch-Buttons loesen
-dieselben Aktionen aus") -- der Bauauftrag inkl. automatischem QA-Loop lief
-im Anschluss direkt durch.
+dieselben Aktionen aus") -- der automatische QA-Loop lief korrekt durch alle
+drei Versuche, das eigentliche Bauergebnis war aber schlecht (siehe Kapitel 86).
+
+## 86. Ein Tetris-Klon, drei Modelle: GLM-5.3-flash, GPT-5.6-Luna,
+GPT-6-Luna -- und zwei neue mc.py-Kompatibilitaets-Bugs gefunden
+
+Direkt im Anschluss an Kapitel 85 der erste echte Praxistest des neuen
+Akzeptanzkriterien-Loops: derselbe Auftrag ("Tetris-Klon mit Ton, offline
+lauffaehige einzelne HTML-Datei") dreimal hintereinander mit unterschiedlichen
+Modellen durch Vibelove geschickt.
+
+**`z-ai/glm-5.3-flash` (OpenRouter) -- BLOCKIERT, 0/12 (Runde 1).** Erster
+Versuch: FAIL. Zweiter Korrekturversuch: der generierte JS-Code degenerierte
+in bizarre, verschachtelte `~`/`-`-Ausdruecke (offensichtlich kaputte, nicht
+funktionsfaehige Logik), mc.py's eigener Validator meldete zusaetzlich
+unbenutzte Funktionen. Dritter, letzter Versuch: **das Ergebnis wurde beim
+Reparieren noch schlechter** -- die finale Bewertung ergab 12 von 12
+Kriterien FAIL, die Datei bestand am Ende nur noch aus
+Platzhalter-Kommentaren. Bemerkenswert: mitten in Korrekturlauf 2 leakte
+auch GLM kurz dieselbe rohe `<tool_call>`-XML-Syntax, die wir bisher nur von
+Qwen-Modellen kannten -- ein weiterer Beleg, dass das Bündelungs-/Leak-Muster
+aus Kapitel 83 nicht auf eine Modellfamilie beschraenkt ist.
+
+**`openai/gpt-5.6-luna` (direkt ueber api.openai.com) -- kam nie zum
+Bauen.** Sowohl `po.py`'s PO-Dialog als auch mc.py selbst scheiterten sofort
+mit `HTTP 400: Unsupported parameter: 'max_tokens' is not supported with
+this model. Use 'max_completion_tokens' instead.` -- dieselbe Klasse
+Inkompatibilitaet, die mc.py fuer `frequency_penalty` bei anderen
+Reasoning-Modellen schon kennt (Kommentar im Code nennt explizit
+"OpenAIs eigene gpt-5.x-Serie"), hier aber noch nicht fuer das Token-Budget-
+Feld selbst abgefangen war. **Zwei Fixes noetig, an zwei Stellen:**
+- `po.py`s `_call_llm()`: erkennt den 400er jetzt, wiederholt automatisch mit
+  `max_completion_tokens` statt `max_tokens` (derselbe Request, kein
+  Zeitverlust).
+- `mc.py`s `_chat_once()`: identisches Muster, neue globale
+  `MAX_TOKENS_FIELD`-Variable (Default `"max_tokens"`), einmalig erkannt und
+  fuer den Rest des Laufs umgeschaltet -- exakt wie das bestehende
+  `SUPPORTS_FREQUENCY_PENALTY`-Vorbild.
+
+**`openai/gpt-6-luna` (direkt ueber api.openai.com) -- funktionierendes
+Spiel, aber ein zweiter, neuer mc.py-Bug im Weg.** Erster Versuch nach dem
+`max_tokens`-Fix: sofort wieder HTTP 400, diesmal `Unknown parameter:
+'session_id'` -- mc.py schickt dieses OpenRouter-spezifische Sticky-Routing-
+Feld standardmaessig IMMER mit, mit der (bisher unwidersprochenen) Annahme
+im Code-Kommentar: *"Endpunkte, die das Feld nicht kennen, ignorieren es
+folgenlos"*. Stimmt fuer die meisten Endpunkte, nicht fuer die direkte
+OpenAI-API mit diesem Modell. Gleicher Fix wie beim Token-Feld: neue globale
+`SUPPORTS_SESSION_ID`, einmalig erkannt und abgeschaltet.
+
+Nach beiden Fixes lief der Bau durch -- inhaltlich das mit Abstand
+staerkste Ergebnis des Abends: GPT-6-Luna baute sich sogar einen eigenen
+Node.js-DOM-Mock-Harness (eigene `Element`-Klasse mit `getContext()`,
+`classList`, `addEventListener` etc.), um die Spiellogik OHNE echten
+Browser automatisiert zu testen -- ein von sich aus gewaehlter, cleverer
+Ersatz fuer den fehlenden Playwright-Zugriff. Der Testharness stuerzte
+allerdings mitten im Lauf vor dem Pause-Abschnitt ab; das Schrittlimit (40)
+wurde erreicht, kein sauberes `finish`.
+
+**Der Evaluator bewertete das Ergebnis als PASS -- aber nur 2 von 12
+Kriterien waren echtes PASS, 10 liefen als UNVERIFIED.** Formal korrekt nach
+der eigenen Regel ("PASS, solange kein FAIL vorliegt"), aber in der Sache
+irrefuehrend: UNVERIFIED soll ehrliche Grenzen der Datei-/Log-basierten
+Pruefung abbilden ("das kann nur im Browser gesehen werden"), wurde hier
+aber faktisch zum Auffangbecken fuer einen abgebrochenen Selbsttest. Der
+manuelle Gegencheck (Server gestartet, im echten Chrome-Tab gespielt) zeigte:
+das Spiel funktioniert tatsaechlich einwandfrei -- Bewegung, Rotation, Hold
+(Stein korrekt gehalten/getauscht), Hard-Drop (Punktezahl sprang korrekt von
+0 auf 34), Next-Vorschau, keine Konsolenfehler. Der Evaluator war hier also
+zu VORSICHTIG, nicht zu nachlaessig -- das genaue Gegenteil des
+GLM-Problems oben.
+
+**Einordnung/Lehre fuer den Evaluator-Prompt (`EVALUATOR_SYSTEM_PROMPT` in
+`po.py`):** aktuell unterscheidet er nicht zwischen "das kann grundsaetzlich
+nur im Browser geprueft werden" (UNVERIFIED ist hier der ehrliche Normalfall)
+und "der Coder hat selbst einen automatisierten Test versucht, der ist aber
+abgestuerzt/unvollstaendig geblieben" (das ist ein schwaecheres Signal als
+ein echter, sauber durchgelaufener Test und sollte nicht ohne Weiteres als
+gleichwertiges UNVERIFIED durchgehen). Baustelle fuer den naechsten Schritt,
+noch nicht umgesetzt.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 

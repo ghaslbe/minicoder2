@@ -11,6 +11,7 @@ praezise, bereits durchdachte Aufgabe -- die Kreativitaet/Ideenarbeit passiert
 hier, VOR mc.py, nicht im Coding-Agenten selbst (der soll klein, zuverlaessig
 und woertlich bleiben)."""
 
+import io
 import json
 import os
 import re
@@ -138,19 +139,36 @@ def _extra_headers():
     return out
 
 
-def _call_llm(messages, base_url, model, api_key, timeout=90, max_tokens=None):
+def _call_llm(messages, base_url, model, api_key, timeout=90, max_tokens=None,
+              _token_field="max_tokens"):
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": False}
     if max_tokens is not None:
-        payload['max_tokens'] = max_tokens
+        payload[_token_field] = max_tokens
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     headers.update(_extra_headers())
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        obj = json.loads(resp.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            obj = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raw = e.read()  # NUR einmal lesbar -- Aufrufer (refine()/evaluate())
+                        # erwarten ihrerseits e.read(), deshalb unten bei
+                        # Nicht-Treffer ein NEUES HTTPError mit demselben,
+                        # wieder lesbarem Body weiterreichen statt e erneut zu werfen.
+        body = raw.decode("utf-8", "replace")
+        # Manche Reasoning-Modelle (real beobachtet: OpenAI direkt, gpt-5.6.x)
+        # lehnen 'max_tokens' komplett ab und verlangen 'max_completion_tokens'
+        # -- gleiches Symptom, das mc.py's _chat_once() fuer frequency_penalty
+        # schon kennt. Einmaliger automatischer Retry mit dem anderen Feldnamen.
+        if (e.code == 400 and _token_field == "max_tokens"
+                and "max_completion_tokens" in body):
+            return _call_llm(messages, base_url, model, api_key, timeout=timeout,
+                             max_tokens=max_tokens, _token_field="max_completion_tokens")
+        raise urllib.error.HTTPError(e.url, e.code, e.msg, e.headers, io.BytesIO(raw)) from e
     return obj["choices"][0]["message"]["content"]
 
 
