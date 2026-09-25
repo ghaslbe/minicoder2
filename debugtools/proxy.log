@@ -1,0 +1,22 @@
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] POST /chat/completions -> 20260925-124330_chat_completions.json (1.0s)
+[proxy] 127.0.0.1 - "GET /api/v0/models HTTP/1.1" 404 -
+[proxy] GET /api/v0/models -> 20260925-124406_api_v0_models.json (0.3s)
+[proxy] 127.0.0.1 - "GET /v1/models/qwen%2Fqwen3.8-27b/capabilities HTTP/1.1" 404 -
+[proxy] GET /v1/models/qwen%2Fqwen3.8-27b/capabilities -> 20260925-124406_v1_models_qwen%2Fqwen3.8-27b_capabilities.json (0.2s)
+[proxy] 127.0.0.1 - "GET /v1/models HTTP/1.1" 404 -
+[proxy] GET /v1/models -> 20260925-124407_v1_models.json (0.2s)
+[proxy] 127.0.0.1 - "GET /api/v0/models HTTP/1.1" 404 -
+[proxy] GET /api/v0/models -> 20260925-124407_api_v0_models.json (0.2s)
+[proxy] 127.0.0.1 - "GET /api/tags HTTP/1.1" 404 -
+[proxy] GET /api/tags -> 20260925-124407_api_tags.json (0.3s)
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] POST /chat/completions -> 20260925-124418_chat_completions.json (11.1s)
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] POST /chat/completions -> 20260925-124439_chat_completions.json (1.4s)
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] POST /chat/completions -> 20260925-124441_chat_completions.json (1.8s)
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] 127.0.0.1 - "POST /chat/completions HTTP/1.1" 200 -
+[proxy] POST /chat/completions -> 20260925-132134_chat_completions.json (9.7s)
+[proxy] POST /chat/completions -> 20260925-132431_chat_completions.json (184.8s)

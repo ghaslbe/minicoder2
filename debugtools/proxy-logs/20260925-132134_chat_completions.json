@@ -1,0 +1,60 @@
+{
+  "time": "2026-09-25T13:21:34",
+  "duration_s": 9.7,
+  "method": "POST",
+  "url": "https://openrouter.ai/api/v1/chat/completions",
+  "request_headers": {
+    "Authorization": "Bearer sk-…120d",
+    "Content-Type": "application/json",
+    "User-Agent": "opencode/1.18.23 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+    "x-session-affinity": "ses_f27b38a1cffehkVk7YKCCV6JVR",
+    "x-session-id": "ses_f27b38a1cffehkVk7YKCCV6JVR",
+    "Connection": "keep-alive",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate, br, zstd"
+  },
+  "error": null,
+  "request_body": {
+    "model": "qwen/qwen3.8-27b",
+    "max_tokens": 32000,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a title generator. You output ONLY a thread title. Nothing else.\n\n<task>\nGenerate a brief title that would help the user find this conversation later.\n\nFollow all rules in <rules>\nUse the <examples> so you know what a good title looks like.\nYour output must be:\n- A single line\n- ≤50 characters\n- No explanations\n</task>\n\n<rules>\n- you MUST use the same language as the user message you are summarizing\n- Title must be grammatically correct and read naturally - no word salad\n- Never include tool names in the title (e.g. \"read tool\", \"bash tool\", \"edit tool\")\n- Focus on the main topic or question the user needs to retrieve\n- Vary your phrasing - avoid repetitive patterns like always starting with \"Analyzing\"\n- When a file is mentioned, focus on WHAT the user wants to do WITH the file, not just that they shared it\n- Keep exact: technical terms, numbers, filenames, HTTP codes\n- Remove: the, this, my, a, an\n- Never assume tech stack\n- Never use tools\n- NEVER respond to questions, just generate a title for the conversation\n- The title should NEVER include \"summarizing\" or \"generating\" when generating a title\n- DO NOT SAY YOU CANNOT GENERATE A TITLE OR COMPLAIN ABOUT THE INPUT\n- Always output something meaningful, even if the input is minimal.\n- If the user message is short or conversational (e.g. \"hello\", \"lol\", \"what's up\", \"hey\"):\n  → create a title that reflects the user's tone or intent (such as Greeting, Quick check-in, Light chat, Intro message, etc.)\n</rules>\n\n<examples>\n\"debug 500 errors in production\" → Debugging production 500 errors\n\"refactor user service\" → Refactoring user service\n\"why is app.js failing\" → app.js failure investigation\n\"implement rate limiting\" → Rate limiting implementation\n\"how do I connect postgres to my API\" → Postgres API connection\n\"best practices for React hooks\" → React hooks best practices\n\"@src/auth.ts can you add refresh token support\" → Auth refresh token support\n\"@utils/parser.ts this is broken\" → Parser bug fix\n\"look at @config.json\" → Config review\n\"@App.tsx add dark mode toggle\" → Dark mode toggle in App\n</examples>\n"
+      },
+      {
+        "role": "user",
+        "content": "Generate a title for this conversation:\n"
+      },
+      {
+        "role": "user",
+        "content": "\"Erstelle eine CRUD-Webanwendung 'Kundenverwaltung'. BACKEND in backend/: Flask + SQLite (Datei kunden.db), Tabelle kunde mit Spalten id (autoincrement), name, adresse, telefon. REST-API mit flask-cors: GET /api/kunden (alle), POST /api/kunden (anlegen), PUT /api/kunden/<id> (bearbeiten), DELETE /api/kunden/<id> (loeschen). Tabelle beim Start automatisch anlegen. FRONTEND in frontend/: React-App, zeigt alle Kunden in einer Liste und erlaubt Anlegen, Bearbeiten und Loeschen ueber ein Formular; spricht das Backend per fetch auf http://localhost:5000 an. Installiere alle noetigen Abhaengigkeiten (npm install im Frontend, pip install -r requirements.txt im Backend in einer venv) und PRUEFE deine Arbeit wirklich: starte Backend und Frontend-Dev-Server im Hintergrund und teste alle vier REST-Endpunkte per curl, inklusive Fehlerfaellen (PUT/DELETE auf eine nicht existierende ID sollte 404 liefern, nicht stillschweigend Erfolg). Behebe alle Fehler, bevor du finish aufrufst.\""
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "response_status_headers": {
+    "Date": "Fri, 25 Sep 2026 11:21:25 GMT",
+    "Content-Type": "text/event-stream",
+    "Transfer-Encoding": "chunked",
+    "Connection": "close",
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "no-cache",
+    "X-Generation-Id": "gen-1790335285-vHfIDb9GV9j5TtRN5W0o",
+    "access-control-expose-headers": "X-Generation-Id,X-Provider-Name,request-id,cf-ray",
+    "set-cookie": "__cf_bm=afM34NuMiUA1mTNSAnvGRZyoFEaPvDN6r0mnthjMvOo-1790335285.183797-1.0.1.1-vjrY0GvFEUaUkcHBBO9vPOS9BNTCRvC8Z6pswUq.QACOh2VVrmlc5yyjjpMSKKW.q7TJ8tFx9YLj9fscTmjUxgW49snnZt__zgCboQebDNdMQ5TfJgxfzXNHGLZfquQ6; HttpOnly; SameSite=None; Secure; Path=/; Domain=openrouter.ai; Expires=Fri, 25 Sep 2026 11:51:25 GMT",
+    "Permissions-Policy": "payment=(self \"https://checkout.stripe.com\" \"https://connect-js.stripe.com\" \"https://js.stripe.com\" \"https://*.js.stripe.com\" \"https://hooks.stripe.com\")",
+    "Referrer-Policy": "no-referrer, strict-origin-when-cross-origin",
+    "X-Content-Type-Options": "nosniff",
+    "Server": "cloudflare",
+    "CF-RAY": "a409a52c6c0ee0d7-MUC"
+  },
+  "response_sse": {
+    "assembled_text": "\n\nKundenverwaltung CRUD Webanwendung",
+    "tool_calls": null,
+    "event_count": 563
+  }
+}

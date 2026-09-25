@@ -779,13 +779,18 @@ def _chat_once(messages, model):
         if ctx is not None:
             raise CtxOverflowError(ctx, body[:200])
         if (e.code == 400 and SUPPORTS_FREQUENCY_PENALTY
-                and "unsupported_parameter" in body and "frequency_penalty" in body):
+                and (("unsupported_parameter" in body and "frequency_penalty" in body)
+                     or "logits or output transformation" in body)):
             # Manche Reasoning-Modelle (real beobachtet: OpenAIs eigene
             # gpt-5.x-Serie direkt ueber api.openai.com) lehnen den
             # klassischen Sampling-Parameter komplett ab, statt ihn wie die
-            # meisten Endpunkte einfach zu ignorieren. Einmalig erkennen,
-            # global abschalten, derselbe Request wird sofort ohne das Feld
-            # wiederholt (kein Warten noetig -- kein Netzwerk-/Rate-Problem).
+            # meisten Endpunkte einfach zu ignorieren. Andere Endpoints (real
+            # beobachtet: incoai/Splash) nennen den Parameternamen dabei gar
+            # nicht, sondern lehnen ihn nur generisch als "logits or output
+            # transformation" ab -- zweites Textmuster, gleiche Behandlung.
+            # Einmalig erkennen, global abschalten, derselbe Request wird
+            # sofort ohne das Feld wiederholt (kein Warten noetig -- kein
+            # Netzwerk-/Rate-Problem).
             SUPPORTS_FREQUENCY_PENALTY = False
             print(f"{C.DIM}(frequency_penalty vom Endpoint abgelehnt -- "
                   f"wird fuer den Rest des Laufs weggelassen){C.RESET}")
@@ -1517,15 +1522,25 @@ def repair_and_coerce_action(action):
     return ""
 
 
-def extract_action(text):
-    """Findet den ersten ```action```-Block und parst das JSON daraus.
-    Fehlende Dateiinhalte werden aus ```content Bloecken NACH dem
-    action-Block ergaenzt (Fence-Modus) — beide Formate gehen immer.
-    Toleranz (real beobachtet): manche Modelle labeln den Block ```json
-    oder gar nicht — ein gefenctes JSON-Objekt MIT "action"-Feld zaehlt
-    deshalb ebenfalls, sonst endete der Lauf als vermeintliche Prosa."""
-    m = ACTION_RE.search(text)
-    if not m:
+def extract_actions(text):
+    """Wie extract_action() (s.u.), findet aber ALLE ```action-Bloecke im
+    Text statt nur den ersten, als Liste von (action, raw) in Textreihenfolge.
+    Jeder Block bekommt nur die ```content/```old/```new-Fences ZWISCHEN ihm
+    und dem naechsten action-Block zugeordnet (sonst wuerden sich mehrere
+    Bloecke dieselben Fences teilen).
+
+    Hintergrund (real beobachtet, v.a. Qwen-Familie): manche Modelle liefern
+    routinemaessig MEHRERE Aktionen in EINER Antwort — bis zu 23 Bloecke in
+    einem Fall —, weil sie den kompletten Ablauf 'im Kopf' durchspielen,
+    bevor ueberhaupt ein Tool-Ergebnis zurueckkam. Frueher fuehrte
+    extract_action() nur den ersten Block aus, der Rest wurde ERSATZLOS
+    VERWORFEN (nur ein Zaehler-Hinweis ohne Pfadangaben) — das Modell hielt
+    die verworfenen Bloecke faelschlich fuer erledigt (u.a. nie geschriebene
+    Dateien, nie ausgefuehrte curl-Tests trotz "getestet"-Behauptung im
+    finish). Die Hauptschleife fuehrt jetzt ALLE hier gelieferten Bloecke
+    sequenziell aus (Abbruch beim ersten Fehler)."""
+    matches = list(ACTION_RE.finditer(text))
+    if not matches:
         for fm in FENCED_JSON_RE.finditer(text):
             raw = fm.group(1).strip()
             try:
@@ -1536,18 +1551,60 @@ def extract_action(text):
                 err = _attach_fence_contents(obj, text[fm.end():])
                 if err:
                     obj["_fence_error"] = err
-                return obj, raw
-        return None, None
-    raw = m.group(1).strip()
-    try:
-        action = json.loads(raw, strict=False)
-    except json.JSONDecodeError as e:
-        return {"_parse_error": str(e), "_raw": raw}, raw
-    if isinstance(action, dict):
-        err = _attach_fence_contents(action, text[m.end():])
-        if err:
-            action["_fence_error"] = err
-    return action, raw
+                return [(obj, raw)]
+        return []
+    out = []
+    for i, m in enumerate(matches):
+        raw = m.group(1).strip()
+        tail_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        tail = text[m.end():tail_end]
+        try:
+            action = json.loads(raw, strict=False)
+        except json.JSONDecodeError as e:
+            out.append(({"_parse_error": str(e), "_raw": raw}, raw))
+            continue
+        if isinstance(action, dict):
+            err = _attach_fence_contents(action, tail)
+            if err:
+                action["_fence_error"] = err
+        out.append((action, raw))
+    return out
+
+
+def extract_action(text):
+    """Findet den ersten ```action```-Block und parst das JSON daraus.
+    Fehlende Dateiinhalte werden aus ```content Bloecken NACH dem
+    action-Block ergaenzt (Fence-Modus) — beide Formate gehen immer.
+    Toleranz (real beobachtet): manche Modelle labeln den Block ```json
+    oder gar nicht — ein gefenctes JSON-Objekt MIT "action"-Feld zaehlt
+    deshalb ebenfalls, sonst endete der Lauf als vermeintliche Prosa.
+    Kompatibilitaets-Wrapper um extract_actions() fuer Aufrufer, die nur
+    den ersten Block brauchen (z.B. der einfache Chat-Modus)."""
+    actions = extract_actions(text)
+    return actions[0] if actions else (None, None)
+
+
+def _append_obs(messages, obs, pending_actions=None):
+    """Haengt ein Aktions-/Fehler-Ergebnis als user-Nachricht an. Folgt auf
+    eine 'assistant'-Nachricht: neue user-Nachricht. Folgt (bei buendelnden
+    Antworten mit mehreren Aktionen pro Schritt, s. run_agent) bereits ein
+    Ergebnis DERSELBEN Antwort: an dieselbe user-Nachricht anhaengen statt
+    eine zweite user-Rolle in Folge zu erzeugen (manche Chat-Templates
+    vertragen das nicht, s. Budget-Hinweis weiter unten).
+
+    Wird pending_actions uebergeben, wird die Warteschlange GELEERT (in
+    place mutiert): Standardfall fuer Fehler-/Gate-Antworten, die frisches
+    Modell-Feedback brauchen -- ein abgelehnter/fehlgeschlagener Block darf
+    NICHT einfach durch den naechsten Block derselben (bereits als falsch
+    erkannten) Antwort ersetzt werden. Der EINE Erfolgspfad in run_agent
+    ruft dies OHNE pending_actions auf und setzt pending_ok=True
+    stattdessen, damit die Warteschlange (falls vorhanden) weiterlaufen darf."""
+    if messages and messages[-1]["role"] == "user":
+        messages[-1]["content"] += "\n\n" + obs
+    else:
+        messages.append({"role": "user", "content": obs})
+    if pending_actions is not None:
+        pending_actions.clear()
 
 
 # ------------------------- Kontext-Beschneidung -----------------------------
@@ -3264,6 +3321,12 @@ Available actions (field "action"):
   run         -> {"action":"run","command":"<shell command>"}  (optional: "background":true for long-running processes like dev servers, "timeout":<sec, max 300>)
   finish      -> {"action":"finish","summary":"<short summary>"}
 
+Do NOT use <tool_call> tags, XML-style function calls (e.g. <function=...>),
+or any other built-in tool-calling syntax you may have been trained on —
+even if it feels like the natural way to call a tool. This harness does NOT
+parse that format. ONLY the exact ```action fence format above is
+understood; anything else is silently discarded and wastes your turn.
+
 Rules:
 - If a requirement is GENUINELY unclear, use the ask action instead of guessing.
   For unambiguous tasks, get started directly.
@@ -4191,153 +4254,195 @@ def run_task(messages, model):
                                   + ("\n\n" + SYSTEM_CONTEXT if SYSTEM_CONTEXT else ""))
         info("Analyse-Phase aktiv: erst verstehen (nur Lese-Aktionen), dann "
              "Aenderungsplan, erst danach werden Schreibaktionen freigeschaltet.")
+    pending_actions = []   # weitere ```action-Bloecke aus einer buendelnden
+                           # Antwort, noch nicht ausgefuehrt (s.u.)
+    pending_ok = False     # True nur direkt NACH einer erfolgreich ausgefuehrten
+                           # Aktion -- steuert, ob die Warteschlange als naechstes
+                           # dran ist oder verworfen wird (Abbruch bei Fehler:
+                           # jeder Fehler-/Gate-Pfad unten laesst pending_ok auf
+                           # False, s. _append_obs-Aufrufe ohne pending_ok=True)
     for step in range(1, MAX_STEPS + 1):
-        # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
-        # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
-        # 15 Schritten fertig, dann 35 Schritte Verifikations-Perfektionismus
-        # bis zum harten Abbruch OHNE finish — ein sauberes finish nach dem
-        # Wichtigsten waere besser gewesen). Der Hinweis wird an die letzte
-        # user-Nachricht angehaengt statt als eigene Message (zwei user-Rollen
-        # hintereinander vertragen manche Chat-Templates nicht).
-        remaining = MAX_STEPS - step + 1
-        if (not budget_warned and remaining <= 5
-                and messages and messages[-1]["role"] == "user"):
-            budget_warned = True
-            messages[-1]["content"] += (
-                f"\n\n[BUDGET-HINWEIS VOM TOOL] Dir bleiben nur noch {remaining} "
-                f"Schritte, danach wird der Lauf HART abgebrochen (ohne finish, "
-                f"unfertig). Bringe die Aufgabe JETZT zum Abschluss: erledige nur "
-                f"noch das wichtigste Fehlende, fang nichts Neues mehr an, und "
-                f"gib dann finish mit einer ehrlichen Zusammenfassung aus (offen "
-                f"Gebliebenes darin benennen).")
-            print(f"{C.YELLOW}⚠ Budget-Hinweis: noch {remaining} Schritte.{C.RESET}")
-        # Analyse-Stupser: gegen endloses Herumlesen ohne Plan (einmalig, an
-        # die letzte user-Nachricht angehaengt — keine doppelte user-Rolle).
-        if (analyse_active and analyse_steps >= 10 and not analyse_nudged
-                and messages and messages[-1]["role"] == "user"):
-            analyse_nudged = True
-            messages[-1]["content"] += (
-                "\n\n[HINWEIS VOM TOOL] Du bist seit 10 Schritten in der "
-                "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
-                "Aenderungsplan aus (plan-Aktion).")
-        if (maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck
-                and messages and messages[-1]["role"] == "user"):
-            # Kontobuch: die Kuerzung nimmt dem Modell die Erinnerung an die
-            # eigenen Dateizugriffe — deterministisch wieder einspielen
-            # (kostet fast nichts, kann nicht halluzinieren).
-            messages[-1]["content"] += _ledger_block()
-        _save_transcript(messages)    # --resume: Stand nach jedem Schritt sichern
-        print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
-        # Kontextgroesse JEDES Schritts sichtbar machen (nicht nur bei
-        # Diagnosemeldungen) -- damit sich Verlauf und Kostentreiber einer
-        # ganzen Sitzung im mc_run.log nachvollziehen lassen, ohne raten zu
-        # muessen, ab welchem Schritt der Kontext gewachsen ist.
-        print(f"{C.DIM}{_send_size_info(messages, model)}{C.RESET}")
-        _usage_vor_schritt = USAGE["completion"]
-        _schritt_start = time.time()
-        try:
-            reply = chat_stream(messages, model)
-        except CtxOverflowError as e:
-            # Selbstkalibrierung: der Endpoint hat den Ueberlauf gemeldet —
-            # gemeldete Fenstergroesse uebernehmen, hart kuerzen, weiter.
-            ctx_overflows += 1
-            if e.tokens:
-                _LOADED_CTX_TOKENS[model] = e.tokens
-                _LOADED_CTX_CACHE.pop(model, None)
-                info(f"Endpoint meldet Kontextfenster: {e.tokens} Token — "
-                     f"Kuerzungs-Schwelle neu kalibriert.")
-            if ctx_overflows > 2:
-                print(f"{C.RED}Abbruch: {ctx_overflows}x Kontext-Ueberlauf trotz "
-                      f"harter Kuerzung — Modell mit groesserem Fenster laden "
-                      f"oder --keep-context senken. "
-                      f"({_send_size_info(messages, model)}){C.RESET}")
-                if messages and messages[-1]["role"] == "user":
-                    messages.pop()
-                return None
-            print(f"{C.YELLOW}⚠ Kontext-Ueberlauf vom Endpoint gemeldet — "
-                  f"beschneide aeltere Schritte hart und versuche es erneut … "
-                  f"({_send_size_info(messages, model)}){C.RESET}")
-            prune_messages(messages, keep=1)
-            continue
-
-        # Generierungs-Tempo pro Schritt (nicht nur kumulativ am Lauf-Ende) --
-        # ohne das laesst sich z.B. bei einem lokalen Modell-Vergleich (LM
-        # Studio, verschiedene Quantisierungen) nicht unterscheiden, ob eine
-        # lange Laufzeit an vielen Schritten oder an langsamer Generierung
-        # pro Schritt lag.
-        _schritt_dauer = time.time() - _schritt_start
-        _neue_tokens = USAGE["completion"] - _usage_vor_schritt
-        if _neue_tokens > 0 and _schritt_dauer > 0.05:
-            print(f"{C.DIM}{_neue_tokens} Tokens generiert in "
-                  f"{_schritt_dauer:.1f}s (~{_neue_tokens / _schritt_dauer:.1f} "
-                  f"Tok/s){C.RESET}")
-
-        if not reply.strip():
-            # LEERE Antwort hat ZWEI moegliche Ursachen, die sich nicht
-            # verwechseln lassen sollten: (a) das GELADENE Kontextfenster ist
-            # ueberschritten (klassischer Fall, Beschneiden hilft) -- oder
-            # (b) ein "Thinking"-Modell hat das Antwort-Token-Budget komplett
-            # beim Nachdenken (reasoning_content) aufgebraucht, BEVOR
-            # sichtbarer Text entstand (real beobachtet: 700 Reasoning-Chunks,
-            # 0 Content-Chunks, bei einem Prompt weit unter dem Kontext-Limit).
-            # LAST_REASONING_CHARS (von _chat_once gesetzt) unterscheidet
-            # beides -- Beschneiden wuerde bei (b) nichts bringen, das
-            # Output-Budget ist ein getrennter Topf vom Prompt.
-            reasoniert = LAST_REASONING_CHARS > 0
-            empty_replies += 1
-            if empty_replies > 2:
-                groesse = _send_size_info(messages, model)
-                if reasoniert:
-                    print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
-                          f"das Modell hat das Antwort-Token-Budget offenbar "
-                          f"jedesmal beim Nachdenken (reasoning) aufgebraucht, "
-                          f"bevor sichtbarer Text entstand. Kein Kontext-Problem: "
-                          f"/settings think false schaltet das Nachdenken ab. "
-                          f"({groesse}){C.RESET}")
-                else:
-                    print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
-                          f"das geladene Kontextfenster des Modells reicht fuer diese "
-                          f"Historie nicht. Modell mit groesserem Kontext laden oder "
-                          f"--keep-context verkleinern. ({groesse}){C.RESET}")
-                # Die letzte (unbeantwortete) user-Nachricht NICHT im Verlauf
-                # haengen lassen -- sonst sieht ein spaeterer Zug (auch nach
-                # /mode chat!) noch die alten Hinweise dieser gescheiterten
-                # Aufgabe und bezieht sich verwirrend darauf.
-                if messages and messages[-1]["role"] == "user":
-                    messages.pop()
-                return None
-            if reasoniert:
-                print(f"{C.YELLOW}⚠ Leere Antwort, aber {LAST_REASONING_CHARS} "
-                      f"Zeichen Reasoning gesehen — Budget wurde offenbar beim "
-                      f"Nachdenken aufgebraucht (kein Kontext-Problem). Versuche "
-                      f"es erneut …{C.RESET}")
-            else:
-                print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
-                      f"geladenen Modells ueberschritten) — beschneide aeltere "
-                      f"Schritte hart und versuche es erneut … "
+        if pending_actions and pending_ok:
+            # Reale Beobachtung (mehrere Modelle unabhaengig voneinander,
+            # v.a. Qwen-Familie): das Modell liefert oft MEHRERE Aktionen in
+            # einer Antwort, weil es den kompletten Ablauf 'im Kopf'
+            # durchspielt, bevor ueberhaupt ein Tool-Ergebnis zurueckkam
+            # (real beobachtet: bis zu 23 Bloecke in einer Antwort,
+            # darunter die komplette curl-Verifikation eines Backends).
+            # Frueher wurde nur der erste Block ausgefuehrt, der Rest
+            # ERSATZLOS VERWORFEN -- das Modell hielt die verworfenen
+            # Bloecke faelschlich fuer erledigt und meldete spaeter
+            # 'getestet', obwohl nichts davon je lief. Jetzt: alle Bloecke
+            # SEQUENZIELL ausfuehren, Abbruch beim ersten Fehler (dann
+            # bleibt pending_ok False und die Warteschlange wird unten
+            # verworfen, s. naechster Kommentar).
+            action, raw = pending_actions.pop(0)
+            war_unvollstaendig = False
+            print(f"\n{C.BLUE}── Schritt {step} (weitere Aktion aus "
+                  f"derselben Antwort, noch {len(pending_actions)} danach) "
+                  f"─────────────────────────────{C.RESET}")
+        else:
+            if pending_actions:
+                # pending_ok ist False -> die letzte Aktion ist gescheitert/
+                # wurde abgelehnt. Die restlichen Bloecke derselben Antwort
+                # NICHT blind nachschieben (sie setzen ja evtl. den
+                # gescheiterten Schritt voraus) -- verwerfen, das Modell
+                # bekommt gleich frisches Feedback und entscheidet neu.
+                pending_actions = []
+            pending_ok = False
+            # Schrittbudget-Hinweis: das Modell weiss sonst nicht, dass ihm die
+            # Schritte ausgehen (real beobachtet: die eigentliche Arbeit war nach
+            # 15 Schritten fertig, dann 35 Schritte Verifikations-Perfektionismus
+            # bis zum harten Abbruch OHNE finish — ein sauberes finish nach dem
+            # Wichtigsten waere besser gewesen). Der Hinweis wird an die letzte
+            # user-Nachricht angehaengt statt als eigene Message (zwei user-Rollen
+            # hintereinander vertragen manche Chat-Templates nicht).
+            remaining = MAX_STEPS - step + 1
+            if (not budget_warned and remaining <= 5
+                    and messages and messages[-1]["role"] == "user"):
+                budget_warned = True
+                messages[-1]["content"] += (
+                    f"\n\n[BUDGET-HINWEIS VOM TOOL] Dir bleiben nur noch {remaining} "
+                    f"Schritte, danach wird der Lauf HART abgebrochen (ohne finish, "
+                    f"unfertig). Bringe die Aufgabe JETZT zum Abschluss: erledige nur "
+                    f"noch das wichtigste Fehlende, fang nichts Neues mehr an, und "
+                    f"gib dann finish mit einer ehrlichen Zusammenfassung aus (offen "
+                    f"Gebliebenes darin benennen).")
+                print(f"{C.YELLOW}⚠ Budget-Hinweis: noch {remaining} Schritte.{C.RESET}")
+            # Analyse-Stupser: gegen endloses Herumlesen ohne Plan (einmalig, an
+            # die letzte user-Nachricht angehaengt — keine doppelte user-Rolle).
+            if (analyse_active and analyse_steps >= 10 and not analyse_nudged
+                    and messages and messages[-1]["role"] == "user"):
+                analyse_nudged = True
+                messages[-1]["content"] += (
+                    "\n\n[HINWEIS VOM TOOL] Du bist seit 10 Schritten in der "
+                    "Analyse-Phase. Wenn du genug verstanden hast, gib JETZT den "
+                    "Aenderungsplan aus (plan-Aktion).")
+            if (maybe_prune(messages, model)  # kuerzt nur bei Kontextdruck
+                    and messages and messages[-1]["role"] == "user"):
+                # Kontobuch: die Kuerzung nimmt dem Modell die Erinnerung an die
+                # eigenen Dateizugriffe — deterministisch wieder einspielen
+                # (kostet fast nichts, kann nicht halluzinieren).
+                messages[-1]["content"] += _ledger_block()
+            _save_transcript(messages)    # --resume: Stand nach jedem Schritt sichern
+            print(f"\n{C.BLUE}── Schritt {step} ─────────────────────────────{C.RESET}")
+            # Kontextgroesse JEDES Schritts sichtbar machen (nicht nur bei
+            # Diagnosemeldungen) -- damit sich Verlauf und Kostentreiber einer
+            # ganzen Sitzung im mc_run.log nachvollziehen lassen, ohne raten zu
+            # muessen, ab welchem Schritt der Kontext gewachsen ist.
+            print(f"{C.DIM}{_send_size_info(messages, model)}{C.RESET}")
+            _usage_vor_schritt = USAGE["completion"]
+            _schritt_start = time.time()
+            try:
+                reply = chat_stream(messages, model)
+            except CtxOverflowError as e:
+                # Selbstkalibrierung: der Endpoint hat den Ueberlauf gemeldet —
+                # gemeldete Fenstergroesse uebernehmen, hart kuerzen, weiter.
+                ctx_overflows += 1
+                if e.tokens:
+                    _LOADED_CTX_TOKENS[model] = e.tokens
+                    _LOADED_CTX_CACHE.pop(model, None)
+                    info(f"Endpoint meldet Kontextfenster: {e.tokens} Token — "
+                         f"Kuerzungs-Schwelle neu kalibriert.")
+                if ctx_overflows > 2:
+                    print(f"{C.RED}Abbruch: {ctx_overflows}x Kontext-Ueberlauf trotz "
+                          f"harter Kuerzung — Modell mit groesserem Fenster laden "
+                          f"oder --keep-context senken. "
+                          f"({_send_size_info(messages, model)}){C.RESET}")
+                    if messages and messages[-1]["role"] == "user":
+                        messages.pop()
+                    return None
+                print(f"{C.YELLOW}⚠ Kontext-Ueberlauf vom Endpoint gemeldet — "
+                      f"beschneide aeltere Schritte hart und versuche es erneut … "
                       f"({_send_size_info(messages, model)}){C.RESET}")
                 prune_messages(messages, keep=1)
-                if messages and messages[-1]["role"] == "user":
-                    messages[-1]["content"] += _ledger_block()
-            continue
-        empty_replies = 0
-        war_unvollstaendig = reply.endswith(TRUNC_MARKER)
-        if war_unvollstaendig:
-            reply = reply[: -len(TRUNC_MARKER)]
-        messages.append({"role": "assistant", "content": reply})
+                continue
 
-        # Reale Beobachtung (mehrere Modelle unabhaengig voneinander, z.B.
-        # beim Versuch, mehrere read_file-Aufrufe zu buendeln): der System-
-        # Prompt verlangt GENAU EINEN Block, extract_action() fuehrt aber nur
-        # den ERSTEN aus und ignoriert weitere Bloecke KOMPLETT LAUTLOS. Ohne
-        # Rueckmeldung haelt das Modell die uebrigen Bloecke faelschlich fuer
-        # noch offen und wiederholt denselben Bloecke-Stapel Schritt fuer
-        # Schritt erneut -- ein Fortschritt von nur einer Aktion pro Schritt
-        # bei mehrfachem Kontext-Overhead, das Schrittlimit ist so schnell
-        # erreicht, ohne dass das Modell je merkt, was schiefgeht.
-        ueberzaehlige_bloecke = max(0, len(ACTION_RE.findall(reply)) - 1)
+            # Generierungs-Tempo pro Schritt (nicht nur kumulativ am Lauf-Ende) --
+            # ohne das laesst sich z.B. bei einem lokalen Modell-Vergleich (LM
+            # Studio, verschiedene Quantisierungen) nicht unterscheiden, ob eine
+            # lange Laufzeit an vielen Schritten oder an langsamer Generierung
+            # pro Schritt lag.
+            _schritt_dauer = time.time() - _schritt_start
+            _neue_tokens = USAGE["completion"] - _usage_vor_schritt
+            if _neue_tokens > 0 and _schritt_dauer > 0.05:
+                print(f"{C.DIM}{_neue_tokens} Tokens generiert in "
+                      f"{_schritt_dauer:.1f}s (~{_neue_tokens / _schritt_dauer:.1f} "
+                      f"Tok/s){C.RESET}")
 
-        action, raw = extract_action(reply)
+            if not reply.strip():
+                # LEERE Antwort hat ZWEI moegliche Ursachen, die sich nicht
+                # verwechseln lassen sollten: (a) das GELADENE Kontextfenster ist
+                # ueberschritten (klassischer Fall, Beschneiden hilft) -- oder
+                # (b) ein "Thinking"-Modell hat das Antwort-Token-Budget komplett
+                # beim Nachdenken (reasoning_content) aufgebraucht, BEVOR
+                # sichtbarer Text entstand (real beobachtet: 700 Reasoning-Chunks,
+                # 0 Content-Chunks, bei einem Prompt weit unter dem Kontext-Limit).
+                # LAST_REASONING_CHARS (von _chat_once gesetzt) unterscheidet
+                # beides -- Beschneiden wuerde bei (b) nichts bringen, das
+                # Output-Budget ist ein getrennter Topf vom Prompt.
+                reasoniert = LAST_REASONING_CHARS > 0
+                empty_replies += 1
+                if empty_replies > 2:
+                    groesse = _send_size_info(messages, model)
+                    if reasoniert:
+                        print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
+                              f"das Modell hat das Antwort-Token-Budget offenbar "
+                              f"jedesmal beim Nachdenken (reasoning) aufgebraucht, "
+                              f"bevor sichtbarer Text entstand. Kein Kontext-Problem: "
+                              f"/settings think false schaltet das Nachdenken ab. "
+                              f"({groesse}){C.RESET}")
+                    else:
+                        print(f"{C.RED}Abbruch: {empty_replies}x leere Antwort in Folge — "
+                              f"das geladene Kontextfenster des Modells reicht fuer diese "
+                              f"Historie nicht. Modell mit groesserem Kontext laden oder "
+                              f"--keep-context verkleinern. ({groesse}){C.RESET}")
+                    # Die letzte (unbeantwortete) user-Nachricht NICHT im Verlauf
+                    # haengen lassen -- sonst sieht ein spaeterer Zug (auch nach
+                    # /mode chat!) noch die alten Hinweise dieser gescheiterten
+                    # Aufgabe und bezieht sich verwirrend darauf.
+                    if messages and messages[-1]["role"] == "user":
+                        messages.pop()
+                    return None
+                if reasoniert:
+                    print(f"{C.YELLOW}⚠ Leere Antwort, aber {LAST_REASONING_CHARS} "
+                          f"Zeichen Reasoning gesehen — Budget wurde offenbar beim "
+                          f"Nachdenken aufgebraucht (kein Kontext-Problem). Versuche "
+                          f"es erneut …{C.RESET}")
+                else:
+                    print(f"{C.YELLOW}⚠ Leere Antwort (vermutlich Kontextfenster des "
+                          f"geladenen Modells ueberschritten) — beschneide aeltere "
+                          f"Schritte hart und versuche es erneut … "
+                          f"({_send_size_info(messages, model)}){C.RESET}")
+                    prune_messages(messages, keep=1)
+                    if messages and messages[-1]["role"] == "user":
+                        messages[-1]["content"] += _ledger_block()
+                continue
+            empty_replies = 0
+            war_unvollstaendig = reply.endswith(TRUNC_MARKER)
+            if war_unvollstaendig:
+                reply = reply[: -len(TRUNC_MARKER)]
+            messages.append({"role": "assistant", "content": reply})
+
+            # Reale Beobachtung (mehrere Modelle unabhaengig voneinander,
+            # v.a. Qwen-Familie): das Modell liefert oft MEHRERE ```action-
+            # Bloecke in einer Antwort. Alle werden geparst; ist die Antwort
+            # abgeschnitten (war_unvollstaendig), zaehlt NUR der erste als
+            # sicher -- der Rest koennte durch den Abbruch beschaedigt/
+            # dupliziert sein.
+            all_actions = extract_actions(reply)
+            if war_unvollstaendig:
+                all_actions = all_actions[:1]
+            if len(all_actions) > 1:
+                print(f"{C.YELLOW}⚠ {len(all_actions)} action-Bloecke in dieser "
+                      f"Antwort erkannt — werden sequenziell ausgefuehrt (Abbruch "
+                      f"beim ersten Fehler).{C.RESET}")
+            pending_actions = list(all_actions[1:])
+            if all_actions:
+                action, raw = all_actions[0]
+            else:
+                action, raw = None, None
+
         if action is None:
             if reply.endswith(DEGEN_MARKER):
                 # Kollabierte Antwort ohne brauchbare Aktion: NICHT als
@@ -4352,7 +4457,7 @@ def run_task(messages, model):
                 # Kollabierten Text nicht komplett im Verlauf lassen.
                 messages[-1]["content"] = (reply[:800]
                                            + "\n…[Rest degeneriert, entfernt]")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Keine Aktion im Antworttext. Frueher galt das sofort als
             # "Textantwort = fertig" — ein UNBEWACHTER Ausgang, der das
@@ -4386,7 +4491,7 @@ def run_task(messages, model):
                        "und gib danach finish aus.")
                 print(f"{C.RED}⚠ Prosa-Ende abgelehnt: ungueltige Dateien "
                       f"offen ({prose_nudges}/3).{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             if (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
                 prose_end_nudged = True
@@ -4398,7 +4503,7 @@ def run_task(messages, model):
                        "Aktion als ```action Block aus (z.B. read_file).")
                 print(f"{C.YELLOW}⚠ Antwort ohne Aktion in einem Arbeits-Lauf "
                       f"— einmalige Rueckfrage statt stillem Ende.{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Keine Aktion -> Modell ist mit einer Textantwort fertig.
             return reply
@@ -4454,7 +4559,7 @@ def run_task(messages, model):
                 obs = (f"FEHLER: dein action-JSON war ungueltig ({action['_parse_error']}). "
                        f"Bitte gib einen einzelnen validen ```action``` Block aus.")
             print(f"{C.RED}{obs}{C.RESET}")
-            messages.append({"role": "user", "content": obs})
+            _append_obs(messages, obs, pending_actions)
             continue
         if action.get("action") in ("write_file", "write_files", "edit_file"):
             # Nur ein erfolgreicher SCHREIB-Versuch zeigt, dass das eigentliche
@@ -4468,7 +4573,7 @@ def run_task(messages, model):
         if "_fence_error" in action:
             obs = f"FEHLER: {action.pop('_fence_error')} Sende die Aktion bitte erneut."
             print(f"{C.RED}{obs}{C.RESET}")
-            messages.append({"role": "user", "content": obs})
+            _append_obs(messages, obs, pending_actions)
             continue
 
         koerz_fehler = repair_and_coerce_action(action)
@@ -4489,7 +4594,7 @@ def run_task(messages, model):
                    "Datei in mehreren edit_file-Schritten aufbauen.")
             print(f"{C.RED}⚠ Schreibaktion aus unvollstaendiger Antwort "
                   f"verweigert.{C.RESET}")
-            messages.append({"role": "user", "content": obs})
+            _append_obs(messages, obs, pending_actions)
             continue
 
         if name == "plan" and not analyse_active:
@@ -4537,7 +4642,7 @@ def run_task(messages, model):
                         "verworfen) sind, pruefe das Ergebnis und gib finish aus."})
                     continue
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             if name in ("write_file", "write_files", "edit_file", "run",
                         "finish"):
@@ -4547,7 +4652,7 @@ def run_task(messages, model):
                        '{"action":"plan","punkte":["<datei>: <aenderung>", '
                        '...]}. Danach werden Schreibaktionen freigeschaltet.')
                 print(f"{C.YELLOW}⚠ Analyse-Phase: {name} gesperrt.{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
 
         if name == "finish":
@@ -4581,7 +4686,7 @@ def run_task(messages, model):
                        f"max. {MAX_WRITE_FILES_BATCH} Dateien pro Block bzw. edit_file) "
                        "und gib erst dann wieder finish aus.")
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Check-Modus: finish erst nach echter Ausfuehrung. Ein Modell, das
             # nie gestartet/getestet hat, kann API-Halluzinationen und
@@ -4605,7 +4710,7 @@ def run_task(messages, model):
                            "und per curl testen (auch Fehlerfaelle wie unbekannte IDs), "
                            "4) Fehler beheben. Gib erst dann wieder finish aus.")
                 print(f"{C.RED}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Ohne Plan-Phase gibt es keine selbst genannten Pruefschritte, an
             # denen sich das Modell messen laesst — dann genuegte dem Gate
@@ -4626,7 +4731,7 @@ def run_task(messages, model):
                        "Endpunkt nie per curl getestet), fuehre sie JETZT aus und "
                        "behebe, was auffaellt. Danach gib erneut finish aus.")
                 print(f"{C.YELLOW}⚠ {obs.splitlines()[0][:120]}{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Plan-Nachfrage: das finish wird gegen den EIGENEN Aenderungsplan
             # aus der Analyse-Phase gehalten (einmalig) — dasselbe Prinzip wie
@@ -4643,7 +4748,7 @@ def run_task(messages, model):
                        "gib danach erneut finish aus; ist wirklich alles "
                        "erledigt, gib einfach erneut finish aus.")
                 print(f"{C.YELLOW}⚠ Plan-Nachfrage vor dem finish.{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Notizen-Nachfrage (einmalig, nur wenn Code geschrieben wurde und
             # die Projekt-Notizen NICHT angefasst wurden): die Selbstpflege-
@@ -4663,7 +4768,7 @@ def run_task(messages, model):
                        "halten) und gib danach erneut finish aus. Falls nein: "
                        "gib einfach erneut finish aus.")
                 print(f"{C.YELLOW}⚠ Notizen-Nachfrage vor dem finish.{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             # Diff-Selbstreview (einmalig): das eigene Gesamtwerk noch einmal
             # im Zusammenhang sehen, bevor 'fertig' gilt — faengt vergessene
@@ -4685,7 +4790,7 @@ def run_task(messages, model):
                            "es JETZT und gib danach finish aus; sonst gib "
                            "einfach erneut finish aus.")
                     print(f"{C.YELLOW}⚠ Diff-Selbstreview vor dem finish.{C.RESET}")
-                    messages.append({"role": "user", "content": obs})
+                    _append_obs(messages, obs, pending_actions)
                     continue
             if missing or still_bad:
                 print(f"{C.RED}Achtung: finish trotz offener Probleme akzeptiert "
@@ -4706,7 +4811,7 @@ def run_task(messages, model):
         if not handler:
             obs = f"FEHLER: unbekannte Aktion '{name}'."
             print(f"{C.RED}{obs}{C.RESET}")
-            messages.append({"role": "user", "content": obs})
+            _append_obs(messages, obs, pending_actions)
             continue
 
         # Schleifen-Erkennung fuer NUR-LESE-Aktionen: dieselbe Aktion direkt
@@ -4723,7 +4828,7 @@ def run_task(messages, model):
                        f"den NAECHSTEN Schritt (z.B. die konkrete Aenderung per "
                        f"edit_file).")
                 print(f"{C.YELLOW}⚠ Wiederholte Lese-Aktion abgefangen.{C.RESET}")
-                messages.append({"role": "user", "content": obs})
+                _append_obs(messages, obs, pending_actions)
                 continue
             last_ro_raw = raw
             # Allgemeinere Bremse als der Check oben: NICHT nur exakt dieselbe
@@ -4757,7 +4862,7 @@ def run_task(messages, model):
                            f"nicht weiterkommst.")
                     print(f"{C.RED}✗ Lese-Aktion blockiert — Hinweis wurde ignoriert."
                           f"{C.RESET}")
-                    messages.append({"role": "user", "content": obs})
+                    _append_obs(messages, obs, pending_actions)
                     continue
                 pending_read_streak_nudge = True
         elif name in ("write_file", "edit_file"):
@@ -4772,17 +4877,13 @@ def run_task(messages, model):
         ok, result = handler(action)
         marker = C.GREEN + "✓" if ok else C.RED + "✗"
         print(f"{marker}{C.RESET} {C.DIM}{result.splitlines()[0][:100]}{C.RESET}")
-        if ueberzaehlige_bloecke:
-            result += (f"\n[HINWEIS VOM TOOL] Deine Antwort enthielt "
-                       f"{ueberzaehlige_bloecke + 1} ```action Bloecke -- nur "
-                       f"der ERSTE wurde ausgefuehrt (s.o.), die uebrigen "
-                       f"{ueberzaehlige_bloecke} wurden ERSATZLOS VERWORFEN. "
-                       f"Sende ab jetzt GENAU EINEN action-Block pro Antwort "
-                       f"(read_files buendelt bis zu 5 Lesevorgaenge in EINEM "
-                       f"Block, falls du mehrere Dateien auf einmal brauchst).")
-            print(f"{C.YELLOW}⚠ {ueberzaehlige_bloecke} zusaetzliche(r) "
-                  f"action-Block/Bloecke verworfen — Hinweis angehaengt."
-                  f"{C.RESET}")
+        if not ok:
+            # Ein fehlgeschlagener Block aus einer buendelnden Antwort darf
+            # die NACHFOLGENDEN Bloecke derselben Antwort nicht blind
+            # mitziehen (die setzen evtl. den Erfolg dieses Schritts voraus)
+            # -- pending_ok bleibt False, die Warteschlange wird am
+            # Schleifenkopf verworfen (s. dortiger Kommentar).
+            pending_actions = []
         if pending_read_streak_nudge:
             result += (f"\n\n[HINWEIS VOM TOOL] Das waren {READ_ONLY_STREAK_LIMIT} lesende "
                        f"Aktionen in Folge (read_file/read_files/list_dir/find/grep) ohne "
@@ -4842,7 +4943,9 @@ def run_task(messages, model):
         obs = f"[Ergebnis von {name}]\n{result}"
         if valed:
             obs += "\n" + valed
-        messages.append({"role": "user", "content": obs})
+        _append_obs(messages, obs)
+        pending_ok = True  # ERFOLGREICH -- ggf. wartende Bloecke derselben
+                           # Antwort sind jetzt dran (s. Schleifenkopf oben)
 
     print(f"{C.RED}Schrittlimit ({MAX_STEPS}) erreicht.{C.RESET}")
     # Erzwungene Uebergabe statt Abbruch mitten in einer Aktion: ein letzter

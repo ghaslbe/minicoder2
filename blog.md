@@ -6738,15 +6738,131 @@ Sprachvermischung, das "Reasoning frisst das Antwortbudget"-Abbruchmuster):
 bei so einem kleinen effektiven Fenster muss der wachsende
 Gespraechsverlauf staendig aggressiv gekuerzt werden, wodurch das Modell
 den Ueberblick ueber Dateizustaende verliert. Nur der MoE-Lauf
-(`Qwen3-30B-A3B-NVFP4`, nur 3B aktive Parameter pro Token) kam sauber
-durch -- vermutlich, weil er durchgaengig kuerzere Antworten produzierte
-und dadurch seltener an die Kontextgrenze stiess.
+(`Qwen3-30B-A3B-NVFP4`, nur 3B aktive Parameter pro Token) kam beim ersten
+Versuch sauber durch.
 
 **Einordnung: eher ein Infrastruktur-/Deployment-Problem der drei
 gemieteten Instanzen als ein Problem der einzelnen Modelle** -- drei
 voellig unterschiedliche Modellfamilien (Qwen3.8-27B dense, Nemotron-
 Nano-9B, Gemma-4-26B) zeigten auf genau dieser Hardware dasselbe
 Zerfallsmuster, unabhaengig vom Modell.
+
+**Nachtrag -- zweiter Lauf mit `Qwen3-30B-A3B-NVFP4` relativiert das
+etwas:** Ein direkt anschliessender zweiter Versuch auf derselben Instanz
+B zeigte, dass auch das MoE-Modell nicht immun ist -- bei Schritt 15 riss
+es kurz in dieselbe Art Wiederholungsschleife ab (ein Codeblock rund 15x
+identisch wiederholt), erholte sich davon aber von selbst und lief danach
+weitere 17 Schritte sauber weiter (40 Antworten, 42.316 Tokens, 197,5
+Tok/s). Der Lauf endete letztlich nicht an einem Modellfehler, sondern an
+einem Verbindungsabbruch ("Remote end closed connection without
+response") -- vermutlich ein Aussetzer der Instanz oder der Netzwerkstrecke
+selbst. Der erste, saubere `finish`-Erfolg war also eher Glueck als
+Beweis voelliger Stabilitaet -- aber das MoE-Modell bleibt trotzdem mit
+Abstand das robusteste und schnellste (~180-220 Tok/s) der getesteten
+NVFP4-Modelle auf dieser Hardware.
+
+## 82. Root-Cause fuer die Qwen3.8-Formatfehler: ein Vergleichslauf mit
+opencode
+
+Ausgangsfrage: Qwen3.8-Modelle werden online oft gelobt, scheitern bei uns
+aber wiederholt an genau demselben Formatproblem -- rohes
+`<tool_call><function=...><parameter=...>`-Markup landet im sichtbaren
+Text statt als geparste Aktion zu laufen (siehe Kapitel 79-81). Um
+rauszufinden, ob das am Modell, an mc.py, oder an beidem liegt, wurde
+derselbe CRUD-Task mit demselben Modell (`qwen/qwen3.8-27b` ueber
+OpenRouter) einmal durch mc.py und einmal durch das etablierte Open-Source-
+Tool **opencode** (`sst/opencode`, hier bereits lokal installiert)
+laufen gelassen.
+
+**Recherche vorab:** Ein GitHub-Issue bei opencode
+([sst/opencode#1122](https://github.com/sst/opencode/issues/1122)) zeigt
+exakt dasselbe Symptom bei einem anderen Nutzer mit Qwen2.5-Coder ueber
+vLLM: Tool-Calls landeten als Text statt ausgefuehrt zu werden. Kernbefund
+aus der Recherche: **opencode parst gar keinen Tool-Call-Text selbst** --
+es verlaesst sich vollstaendig auf das native `tool_calls`-Feld der
+OpenAI-kompatiblen API. Die Uebersetzung von Qwens Rohformat in dieses
+Standardfeld ist Aufgabe des Servers/Gateways (bei selbst gehostetem vLLM
+ueber ein `--tool-call-parser`-Flag, bei OpenRouter durch deren eigene
+Normalisierung). Qwen3-Coder nutzt dafuer laut Recherche ein komplett
+eigenes, undokumentiertes XML-Format, das einen dedizierten Parser
+braucht.
+
+**Testaufbau:** Neuer opencode-Provider in `opencode.json` fuer
+`qwen/qwen3.8-27b` ueber OpenRouter (identischer Key, identisches Modell
+wie beim gescheiterten mc.py-Lauf aus Kapitel 79/81), CRUD-Prompt per
+`opencode run -m openrouter-qwen/qwen38-27b --auto`.
+
+**Ergebnis: sauberer, vollstaendiger Durchlauf ohne einen einzigen
+Formatfehler.** 27 Nachrichten, 35,1K Input- + 16,3K Output-Tokens (443K
+Cache-Read durch Prompt-Caching), ~$0,10 laut OpenRouter-Kontostand. 40
+Werkzeug-Aufrufe (21x bash, 8x write, 8x edit, 3x todowrite) -- alle
+korrekt ausgefuehrt, keiner als Rohtext geleakt.
+
+Bemerkenswert an der Code-Qualitaet selbst: Das Modell fand denselben
+Port-5000-Konflikt (macOS AirPlay/ControlCenter) wie viele andere Modelle
+zuvor, diagnostizierte aber als einziges bisher **die exakte Ursache**
+(`localhost` loest zu `::1`/IPv6 auf, wo AirPlay lauscht) und fixte
+gezielt mit explizitem `127.0.0.1` in Backend und Frontend -- statt wie
+die meisten anderen Modelle den Port zu wechseln oder ControlCenter zu
+killen. Ausserdem selbststaendig einen echten Python-Bug gefunden und
+behoben (`if not data` behandelt ein leeres, aber gueltiges JSON-Objekt
+`{}` faelschlich als "kein Body" -- Python-Falsy-Falle -- korrigiert zu
+`if data is None`).
+
+**Direkter Vergleich, exakt dasselbe Modell:**
+
+| | mc.py | opencode |
+|---|---|---|
+| Ergebnis | ✗ Abbruch nach 2x "ohne Aktion" (`<tool_call>`-Leck) | ✓ sauber fertig, alle Tests gruen |
+| Anfragen | 12 | 27 |
+| Tokens | 91.994 (Prompt 54.978 + Completion 37.016) | 35,1K In + 16,3K Out + 443K Cache |
+| Kosten | $0,1184 | ~$0,10 |
+| Werkzeug-Aufrufe erfolgreich | 0 (alle als Rohtext geleakt) | 40/40 |
+
+**Einordnung: Das Modell selbst ist nicht das Problem.** Sauberer Code,
+praezise Root-Cause-Diagnosen, gute Selbstkorrektur -- alles vorhanden,
+sobald der Uebersetzungsschritt zwischen Modell-Rohausgabe und
+strukturierter Aktion vom Provider/Server statt vom Client-Tool selbst
+uebernommen wird. mc.py parst bewusst Freitext (fence-Bloecke,
+urspruenglich um JSON-Escaping-Fehler bei grossen Dateiinhalten zu
+vermeiden) und sendet dabei kein `tools`-Schema an die API -- Qwen faellt
+darauf haeufig in sein antrainiertes natives Format zurueck, das mc.py
+nicht versteht.
+
+**Erster, guenstiger Gegenversuch: ein Prompt-Patch statt Architekturumbau.**
+Der System-Prompt von mc.py beschreibt zwar sehr praezise das gewuenschte
+Format (inkl. Beispielantwort), verbietet aber nirgends explizit das
+native `<tool_call>`-Format -- und mc.py sendet ohnehin kein `tools`-Feld,
+das dieses Verhalten ueberhaupt "scharf schalten" wuerde, was zeigt, wie
+tief der Reflex sitzt. Ergaenzt wurde eine explizite Verbotszeile direkt
+nach der Aktionsliste:
+
+> "Do NOT use `<tool_call>` tags, XML-style function calls
+> (e.g. `<function=...>`), or any other built-in tool-calling syntax you
+> may have been trained on -- even if it feels like the natural way to
+> call a tool. This harness does NOT parse that format. ONLY the exact
+> ` ```action ` fence format above is understood; anything else is
+> silently discarded and wastes your turn."
+
+**Ergebnis des Patch-Tests:** derselbe 40-Schritte-CRUD-Lauf, `qwen/qwen3.8-27b`
+via OpenRouter, sonst identisches Setup. Ueber alle 40 Schritte hinweg kein
+einziges `<tool_call>`-Leck mehr -- der Patch hat exakt das behoben, wofuer er
+gedacht war. Aufgetaucht ist dabei aber ein anderes, bis dahin unkatalogisiertes
+Verhalten: mehrfache Ausbrueche in einen ellenlangen, fast philosophischen
+deutschen Bewusstseinsstrom ("... Fehler zu machen ist menschlich, sie zu
+behalten waere schon fast maschinell gemein ...") -- jeweils ueber 40.000
+Zeichen und von mc.py's eigenem Runaway-Schutz zwangsabgebrochen, nicht vom
+Modell selbst beendet. Inhaltlich blieb das Modell dabei erstaunlich kompetent:
+es fand und umschiffte einen von einem transparenten Proxy verursachten
+localhost-Verbindungsfehler selbststaendig mit `--noproxy *`. Am Schrittlimit
+(40) stand keine formale `finish`-Bestaetigung, aber eine Uebergabe-Zusammenfassung,
+die Backend und alle vier Routen als getestet/OK auswies. Gesamtkosten des
+Laufs: 55 Requests, 440.776 Tokens (344.764 Prompt + 96.012 Completion), $0,2632.
+
+**Fazit:** Der Prompt-Patch loest gezielt das `<tool_call>`-Symptom -- er
+ist aber kein Ersatz fuer eine echte native `tool_calls`-Anbindung. Die
+zugrundeliegende Tendenz dieses Modells zu unkontrollierten Text-Exzessen
+bleibt bestehen und aeussert sich nur in einer anderen Form.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
