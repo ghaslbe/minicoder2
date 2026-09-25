@@ -6657,6 +6657,97 @@ nicht ueber OpenRouter), CRUD-Benchmark:
 Schnellstes bisher gemessenes Modell des ganzen Benchmarks, deutlich vor
 `deepseek-v4-flash-0731` ueber OpenRouter (152,9 Tok/s, Kapitel 77).
 
+## 79. CRUD-Benchmark-Daten: acht weitere Modelle (Bonsai, Qwen3.8-Varianten, Mimo, GPT-6-Luna, GLM-5.3)
+
+| Modell | Host/API | Antworten | Tokens (Summe) | reine Generierungszeit | echte Tok/s | Kosten | `finish` |
+|---|---|---:|---:|---:|---:|---:|---|
+| `ternary-bonsai-2-27b-mlx` (2bit) | .191 lokal (LM Studio) | — | — | — | — (Ladefehler) | $0 | nein |
+| `prism-ml/bonsai-27b` (2bit) | .191 lokal (LM Studio) | 56 | 10.290 | 770,5s (12,8 min) | 13,4 | $0 | nein |
+| `incoai/Qwen3.8-27B-Splash` | .191 lokal (Splash) | 14 | 43.051 | 5.105,2s (85,1 min) | 8,4 | $0 | nein |
+| `xiaomi/mimo-v2.6-flash` | OpenRouter | 51 | 12.812 | 463,7s (7,7 min) | 27,6 | $0,0099 | nein |
+| `qwen/qwen3.8-27b:free` | OpenRouter | 0 | 0 | 0s | — (HTTP 429) | $0 | nein |
+| `qwen/qwen3.8-27b` (bezahlt) | OpenRouter | 13 | 38.766 | 987,2s (16,5 min) | 39,3 | $0,1184 | nein |
+| `openai/gpt-6-luna` | OpenRouter | 58 | 24.128 | 349,5s (5,8 min) | **69,0** | $0,0396 | **ja** |
+| `z-ai/glm-5.3-flash` | OpenRouter | 40 | 40.375 | 920,3s (15,3 min) | 43,9 | **$0,0106** | **ja** |
+
+## 80. CRUD-Benchmark-Daten: vierzehn weitere Modelle (Anthropic, Google, DeepSeek, Grok, Kimi und mehr)
+
+| Modell | Host/API | Antworten | Tokens (Summe) | echte Tok/s | Kosten | `finish` |
+|---|---|---:|---:|---:|---:|---|
+| `anthropic/claude-sonnet-5` | OpenRouter | 40 | 16.795 | 69,1 | $0,7272 | **ja** |
+| `anthropic/claude-opus-5.5` | OpenRouter | 32 | 26.225 | **86,4** | $1,5695 | **ja** |
+| `deepseek/deepseek-v4.1-flash` | OpenRouter | 32 | 14.081 | 70,5 | **$0,0146** | **ja** |
+| `google/gemini-3.8-flash` | OpenRouter | 39 | 22.264 | 62,1 | $0,3318 | **ja** |
+| `openai/gpt-5.6-luna` | OpenRouter | 19 | 18.886 | **95,0** | $0,0479 | **ja** |
+| `moonshotai/kimi-k3` | OpenRouter | 23 | 7.035 | 46,5 | $0,9560 | **ja** |
+| `x-ai/grok-4.7` | OpenRouter | 36 | 17.111 | 65,0 | $0,3637 | **ja** |
+| `xiaomi/mimo-v2.6-pro-ultraspeed` | OpenRouter | 4 | 1.604 | 127,3 | $0,0215 | nein |
+| `poolside/laguna-s-2.1` | OpenRouter | 40 | 10.022 | 82,4 | $0,0148 | nein (Schrittlimit) |
+| `tencent/hy4-preview` | OpenRouter | 7 | 6.416 | 48,5 | unbekannt | nein (5 Formatfehler in Folge, manuell gestoppt) |
+| `openai/gpt-6-astra` | OpenRouter | 24 | 9.917 | 44,6 | unbekannt | nein (HTTP 402, Tageslimit) |
+| `qwen/qwen3.8-2.4t-a95b` | OpenRouter | 0 | 0 | — | unbekannt | nein (3 Versuche, nie produktiv) |
+| `stepfun/step-3.7-flash` | OpenRouter | 40 | 25.035 | 81,8 | $0,0603 | nein (Schrittlimit, Frontend-Regression) |
+| `nvidia/nemotron-3.5-lightning` | OpenRouter | 40 | 32.534 | 95,6 | $0,0437 | nein (Schrittlimit, Backend-Syntax nie valide) |
+
+Zusammen mit Kapitel 79: 9 von 19 Modellen mit sauberem `finish`. Teuerster
+Lauf: `anthropic/claude-opus-5.5` ($1,5695), guenstigster erfolgreicher Lauf:
+`deepseek/deepseek-v4.1-flash` ($0,0146) -- ueber 100x Preisunterschied fuer
+dieselbe Aufgabe.
+
+## 81. CRUD-Benchmark auf drei gemieteten NVFP4-Instanzen: derselbe
+Infrastrukturfehler bei drei verschiedenen Modellfamilien
+
+Drei gemietete GPU-Instanzen (A/US, B/US, C/Ungarn, alle vLLM 0.30.1,
+`max_model_len` lt. `/v1/models` je 16.384) im CRUD-Benchmark getestet --
+zwei Runden mit insgesamt vier verschiedenen Modellen.
+
+**Runde 1 -- alle drei mit identischem Modell `nvidia/Qwen3.8-27B-NVFP4`:**
+
+| Instanz | Antworten | Tokens (Summe) | echte Tok/s | `finish` |
+|---|---:|---:|---:|---|
+| A (US) | 11 | 26.551 | 65,9 | nein (manuell gestoppt: Wiederholungsschleife, wild wechselnde Gross-/Kleinschreibung, Klammerkette) |
+| B (US) | 27 | 88.563 | 65,9 | nein (manuell gestoppt: Formatfehler + selbstreferentielle Endlossaetze) |
+| C (Ungarn) | 28 | 47.780 | 66,5 | nein (automatischer Abbruch: 3x leere Antwort in Folge, Reasoning-Budget aufgebraucht) |
+
+**Runde 2 -- drei unterschiedliche Modelle auf denselben drei Instanzen:**
+
+| Instanz/Modell | Antworten | Tokens (Summe) | echte Tok/s | `finish` |
+|---|---:|---:|---:|---|
+| A: `nvidia/Qwen3.8-27B-NVFP4` (dense, 27B) | 32 | 61.188 | 64,4 | nein (automatischer Abbruch: 3x leere Antwort, `backend/db.py` blieb ungueltig) |
+| B: `nvidia/Qwen3-30B-A3B-NVFP4` (MoE, nur 3B aktiv) | 20 | 19.679 | **194,1** | **ja** |
+| C: `nvidia/NVIDIA-Nemotron-Nano-9B-v2-NVFP4` (Hybrid Mamba/Transformer) | 26 | 39.422 | 173,0 | nein (manuell gestoppt: Nonsens-Code, verschmolzene Variablennamen, wahllose Emojis) |
+
+**Danach auf Instanz C: `nvidia/Gemma-4-26B-A4B-NVFP4`** (dieselbe
+Gemma-4-26B-A4B-Familie, die als lokales Referenzmodell den ganzen Blog
+ueber diente) -- 8 Antworten, 23.583 Tokens, 158,3 Tok/s, manuell gestoppt:
+das Modell narrierte seinen eigenen Gedankenfluss unstrukturiert in den
+Code hinein ("Wait - if i keep doing this i will never finish..."),
+entschuldigte sich wiederholt auf Deutsch und Englisch fuer die eigene
+Instabilitaet, und kollabierte am Ende in eine Wiederholungsschleife
+("simplified version below without escapes:" dutzendfach) -- von mc.py's
+eigener Endlos-Ausgabe-Sicherung abgefangen.
+
+**Kernbefund: `bekanntes Fenster: 4000 Token` bei allen betroffenen
+Laeufen trotz beworbener 16.384.** mc.py's Kontext-Tracking wird reaktiv
+aus einem echten Kontext-Overflow-Fehler des Servers gesetzt (nicht aus
+einem Default) -- die Instanzen werfen also tatsaechlich bei ~4.000
+Tokens einen Overflow, obwohl `/v1/models` das Vierfache angibt. Diese
+Diskrepanz erklaert vermutlich den Grossteil der beobachteten
+Instabilitaet (Pfad-Halluzinationen, Wiederholungsschleifen,
+Sprachvermischung, das "Reasoning frisst das Antwortbudget"-Abbruchmuster):
+bei so einem kleinen effektiven Fenster muss der wachsende
+Gespraechsverlauf staendig aggressiv gekuerzt werden, wodurch das Modell
+den Ueberblick ueber Dateizustaende verliert. Nur der MoE-Lauf
+(`Qwen3-30B-A3B-NVFP4`, nur 3B aktive Parameter pro Token) kam sauber
+durch -- vermutlich, weil er durchgaengig kuerzere Antworten produzierte
+und dadurch seltener an die Kontextgrenze stiess.
+
+**Einordnung: eher ein Infrastruktur-/Deployment-Problem der drei
+gemieteten Instanzen als ein Problem der einzelnen Modelle** -- drei
+voellig unterschiedliche Modellfamilien (Qwen3.8-27B dense, Nemotron-
+Nano-9B, Gemma-4-26B) zeigten auf genau dieser Hardware dasselbe
+Zerfallsmuster, unabhaengig vom Modell.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
