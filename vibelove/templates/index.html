@@ -14,6 +14,7 @@
         <button type="button" data-view="build" title="Build" aria-label="Build" aria-current="page"><i data-lucide="hammer"></i><span>Build</span></button>
         <button type="button" data-view="setup" title="Setup" aria-label="Setup"><i data-lucide="settings"></i><span>Setup</span></button>
         <button type="button" data-view="skills" title="Skills" aria-label="Skills"><i data-lucide="hand-fist"></i><span>Skills</span></button>
+        <button type="button" data-view="hilfe" title="Hilfe" aria-label="Hilfe"><i data-lucide="help-circle"></i><span>Hilfe</span></button>
     </nav>
     <main id="buildView" class="app-view flex flex-1 min-w-0 h-full">
     <!-- LEFT: kompakte Toolbar + Chat-Verlauf -->
@@ -284,6 +285,11 @@
         .manage-command:disabled { opacity: .5; }
         .manage-status { min-height: 24px; font-size: 14px; overflow-wrap: anywhere; }
         @media (max-width: 700px) { .manage-view { padding: 16px; } .manage-columns { grid-template-columns: minmax(0, 1fr); } .manage-list { max-height: 180px; overflow: auto; } }
+        .hilfe-text { max-width: 720px; display: flex; flex-direction: column; gap: 8px; }
+        .hilfe-text h3 { font-size: 15px; font-weight: 650; margin-top: 12px; }
+        .hilfe-text p { font-size: 14px; line-height: 1.5; color: #374151; }
+        .hilfe-text code { background: #eef2f7; border-radius: 3px; padding: 1px 5px; font-size: 13px; }
+        .hilfe-text pre { background: #1e293b; color: #e2e8f0; border-radius: 6px; padding: 12px 14px; font-size: 12.5px; overflow-x: auto; white-space: pre; }
         #chatPanel { width: 50%; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden; }
         #chatPanel[hidden], #chatResizer[hidden] { display: none; }
         #chatPanel textarea { min-width: 0; }

@@ -39,6 +39,50 @@
         </form>
     </div>
 </section>
+<section id="hilfeView" class="app-view manage-view" hidden>
+    <header><h2>Hilfe</h2></header>
+    <div class="hilfe-text">
+        <h3>Ablauf</h3>
+        <p>Nachricht schreiben → der Product Owner macht daraus einen Vorschlag inkl. Akzeptanzkriterien
+        → „Jetzt bauen" → mc.py baut → ein automatischer QA-Lauf prüft das Ergebnis gegen die Kriterien
+        und lässt bei Fehlern automatisch (bis zu dreimal) nachbessern.</p>
+
+        <h3>Nur Backend, kein Frontend</h3>
+        <p>Es muss kein separates Frontend geben. Sag das im Chat direkt so ("nur eine REST-API, kein
+        Frontend"), dann baut mc.py ausschließlich einen <code>backend/</code>-Ordner mit
+        <code>vibelove-backend.json</code>. Die Vorschau leitet in dem Fall automatisch komplett an das
+        Backend weiter, statt einen Vite-Server zu erwarten.</p>
+
+        <h3>Projekte: klonen, löschen, im Hintergrund weiterlaufen lassen</h3>
+        <p>Über das <strong>⋯</strong>-Menü neben der Projektauswahl: ein Projekt klonen (inkl. voller
+        Git-Historie), löschen, oder per Häkchen <strong>🔁 Im Hintergrund weiterlaufen lassen</strong>
+        dafür sorgen, dass es beim Wegwechseln nicht beendet wird (bekommt dann einen eigenen, festen
+        Port statt sich den Standardport mit anderen Projekten zu teilen).</p>
+
+        <h3>HTTP-API (von aussen ansprechbar)</h3>
+        <p>Vibelove hat keine eigene, separat dokumentierte "externe API" — es sind dieselben Endpunkte,
+        die auch diese Oberfläche selbst benutzt. Zwei Beispiele:</p>
+        <pre># Projekt anlegen (wird gleich aktiv)
+curl -X POST http://&lt;host&gt;:5050/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name":"mein-projekt"}'
+
+# Bauen lassen (Product-Owner-Dialog optional, direkt eine Anweisung geben)
+curl -X POST http://&lt;host&gt;:5050/build \
+  --data-urlencode "instruction=Baue eine REST-API für ..." \
+  --data-urlencode "acceptance=1. ...&#10;2. ..."   # optional -- ohne das kein QA-Loop</pre>
+        <p><code>/build</code> liefert eine gestreamte Antwort (mc.py's Live-Ausgabe), kein einzelnes
+        JSON-Ergebnis am Ende.</p>
+        <p><strong>Achtung:</strong> Diese Endpunkte haben aktuell <strong>keine Authentifizierung</strong>
+        — jeder mit Netzwerkzugriff auf diesen Port kann Projekte anlegen, bauen und löschen. Für rein
+        lokale Nutzung unkritisch; wer Vibelove darüber hinaus erreichbar macht, sollte das vorher
+        absichern.</p>
+
+        <h3>Skills</h3>
+        <p>Unter „Skills" lassen sich wiederverwendbare Vorlagen anlegen (projektbezogen, für alle
+        Vibelove-Projekte, oder global) und im Chat per <code>/skillname</code> aufrufen.</p>
+    </div>
+</section>
 <div id="projectProfileModal" class="hidden fixed inset-0 bg-gray-900/50 flex items-center justify-center z-50">
     <form id="projectProfileForm" class="bg-white rounded-lg p-6 mx-4 w-full max-w-sm flex flex-col gap-4">
         <h2 class="text-lg font-bold">Modell für dieses Projekt</h2>
