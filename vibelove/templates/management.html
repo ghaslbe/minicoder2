@@ -60,23 +60,84 @@
         Port statt sich den Standardport mit anderen Projekten zu teilen).</p>
 
         <h3>HTTP-API (von aussen ansprechbar)</h3>
-        <p>Vibelove hat keine eigene, separat dokumentierte "externe API" — es sind dieselben Endpunkte,
-        die auch diese Oberfläche selbst benutzt. Zwei Beispiele:</p>
+        <p>Vibelove hat keine eigene, separat dokumentierte "externe API" — es sind exakt dieselben
+        JSON-Endpunkte, die auch diese Oberfläche selbst benutzt (alle unter <code>http://&lt;host&gt;:5050</code>,
+        Body/Response ist JSON ausser bei <code>/build</code>). Alle Aktionen beziehen sich immer auf das
+        aktuell aktive Projekt, ausser wo ein Projektname explizit als Parameter genannt ist.</p>
+        <p><strong>Achtung:</strong> Diese Endpunkte haben aktuell <strong>keine Authentifizierung</strong>
+        — jeder mit Netzwerkzugriff auf diesen Port kann Projekte anlegen, bauen, Dateien ändern und
+        löschen. Für rein lokale Nutzung unkritisch; wer Vibelove darüber hinaus erreichbar macht (der
+        Server bindet an <code>0.0.0.0</code>), sollte das vorher absichern.</p>
+
+        <p><strong>Schnellstart — Projekt anlegen und bauen lassen:</strong></p>
         <pre># Projekt anlegen (wird gleich aktiv)
 curl -X POST http://&lt;host&gt;:5050/projects \
   -H "Content-Type: application/json" \
   -d '{"name":"mein-projekt"}'
 
-# Bauen lassen (Product-Owner-Dialog optional, direkt eine Anweisung geben)
+# Bauen lassen (Product-Owner-Dialog optional, direkt eine Anweisung geben).
+# Antwort ist ein Text-Stream (mc.py's Live-Ausgabe), kein JSON am Ende --
+# alternativ nebenbei /build-status pollen.
 curl -X POST http://&lt;host&gt;:5050/build \
   --data-urlencode "instruction=Baue eine REST-API für ..." \
-  --data-urlencode "acceptance=1. ...&#10;2. ..."   # optional -- ohne das kein QA-Loop</pre>
-        <p><code>/build</code> liefert eine gestreamte Antwort (mc.py's Live-Ausgabe), kein einzelnes
-        JSON-Ergebnis am Ende.</p>
-        <p><strong>Achtung:</strong> Diese Endpunkte haben aktuell <strong>keine Authentifizierung</strong>
-        — jeder mit Netzwerkzugriff auf diesen Port kann Projekte anlegen, bauen und löschen. Für rein
-        lokale Nutzung unkritisch; wer Vibelove darüber hinaus erreichbar macht, sollte das vorher
-        absichern.</p>
+  --data-urlencode "acceptance=1. ...&#10;2. ..."   # optional -- ohne das kein QA-Loop
+
+# Laufenden Bau abbrechen / Zwischenstand pollen (falls man den Stream nicht mitliest)
+curl -X POST http://&lt;host&gt;:5050/build/stop
+curl http://&lt;host&gt;:5050/build-status</pre>
+
+        <p><strong>Projekte verwalten:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>GET /projects</code></td><td>Alle Projektnamen, aktives Projekt, keep_running-Status je Projekt, Vorschau-Port des aktiven Projekts.</td></tr>
+        <tr><td><code>POST /projects</code></td><td><code>{name}</code> — legt an, macht sofort aktiv (frisches Git-Repo).</td></tr>
+        <tr><td><code>POST /projects/aktiv</code></td><td><code>{name}</code> — wechselt das aktive Projekt.</td></tr>
+        <tr><td><code>POST /projects/clone</code></td><td><code>{source, name}</code> — Kopie inkl. voller Git-Historie, wird aktiv.</td></tr>
+        <tr><td><code>POST /projects/delete</code></td><td><code>{name}</code> — unwiderruflich; weder <code>workspace</code> noch das aktive Projekt.</td></tr>
+        <tr><td><code>POST /projects/keep-running</code></td><td><code>{name, keep_running}</code> — reserviert/gibt frei ein eigenes Port-Paar, s. oben.</td></tr>
+        <tr><td><code>GET /download-zip</code></td><td>Aktives Projekt als ZIP-Datei.</td></tr>
+        </table>
+
+        <p><strong>Bauauftrag / Product Owner:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>POST /refine</code></td><td><code>{message, mit_verlauf}</code> — ein Schritt des PO-Dialogs; Antwort ist <code>{type: question|spec|plan|error, ...}</code> (bei <code>spec</code> inkl. <code>instruction</code> + <code>acceptance</code>).</td></tr>
+        <tr><td><code>POST /refine/reset</code></td><td>Setzt den PO-Gesprächsverlauf zurück.</td></tr>
+        <tr><td><code>POST /build</code></td><td>s. Schnellstart oben.</td></tr>
+        <tr><td><code>POST /build/stop</code></td><td>Bricht den laufenden Bauauftrag ab.</td></tr>
+        <tr><td><code>GET /build-status</code></td><td><code>{laeuft, letzte_zeilen}</code> — Zwischenstand ohne den Stream mitzulesen.</td></tr>
+        <tr><td><code>GET /bauverlauf</code></td><td>Anweisung+Ergebnis je Bauschritt dieser Sitzung (Chat-Rekonstruktion).</td></tr>
+        </table>
+
+        <p><strong>Dateien:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>GET /projects/files</code></td><td>Alle Dateien des aktiven Projekts (Pfad + Größe).</td></tr>
+        <tr><td><code>GET /projects/file?path=...</code></td><td>Inhalt einer Datei (Text bis 2&nbsp;MB, sonst nur <code>binary:true</code>).</td></tr>
+        <tr><td><code>POST /projects/file</code></td><td><code>{project, path, content, revision}</code> — speichert (Revisions-Prüfung gegen gleichzeitige Änderungen).</td></tr>
+        <tr><td><code>POST /projects/upload</code></td><td>Multipart-Datei-Upload in ein Unterverzeichnis.</td></tr>
+        </table>
+
+        <p><strong>Git:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>GET</code>/<code>POST /projects/remote</code></td><td>Origin-URL lesen/setzen (leer = entfernen).</td></tr>
+        <tr><td><code>POST /projects/push</code></td><td>Pusht HEAD zu Origin.</td></tr>
+        <tr><td><code>GET /projects/git-log</code></td><td>Commit-Historie (Hash, Datum, Message, verwendetes Modell).</td></tr>
+        <tr><td><code>POST /projects/rollback</code></td><td><code>{commit}</code> — <code>git reset --hard</code> + <code>clean -fd</code> auf einen Commit.</td></tr>
+        </table>
+
+        <p><strong>Einstellungen / Modelle / Skills:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>GET</code>/<code>POST /settings</code></td><td>Aktives Modell, Endpunkt, Schrittlimit, Token-Limit (API-Key nur setzbar, nie auslesbar).</td></tr>
+        <tr><td><code>GET</code>/<code>POST /profiles</code></td><td>Modellprofile anlegen/ändern/löschen (Name, Modell, Endpunkt, Key, Limits, weitere Modelle zum Umschalten).</td></tr>
+        <tr><td><code>POST /projects/profile</code></td><td>Weist dem aktiven Projekt ein Profil zu.</td></tr>
+        <tr><td><code>GET</code>/<code>POST /skills</code></td><td>Vorlagen anlegen/ändern/löschen (projektbezogen, geteilt, oder global).</td></tr>
+        </table>
+
+        <p><strong>Vorschau / Sonstiges:</strong></p>
+        <table class="hilfe-api-table">
+        <tr><td><code>POST /restart-vite</code></td><td>Vorschau (Vite/Backend) des aktiven Projekts hart neu starten.</td></tr>
+        <tr><td><code>GET /preview-status</code></td><td>Phase + Log des Vorschau-Starts.</td></tr>
+        <tr><td><code>POST /reset</code></td><td>Nur den Chat-Kontext zurücksetzen (kein Git).</td></tr>
+        <tr><td><code>POST /generate-container</code></td><td>Erzeugt Dockerfile/Compose-Setup für das aktive Projekt.</td></tr>
+        </table>
 
         <h3>Skills</h3>
         <p>Unter „Skills" lassen sich wiederverwendbare Vorlagen anlegen (projektbezogen, für alle
