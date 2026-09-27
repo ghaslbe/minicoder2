@@ -7421,7 +7421,38 @@ Endpoint dieses verbreitete Feld mitschickt.
 **Referenzen:** getesteter M1/M2-Fork:
 [paperniuk/splash, Branch `apple7-m1-kernels`](https://github.com/paperniuk/splash/tree/apple7-m1-kernels)
 · offizielles Original: [incoai/splash](https://github.com/incoai/splash)
-· Modell: [incoai/Qwen3.8-27B-Splash](https://huggingface.co/incoai/Qwen3.8-27B-Splash).
+· Modell: [incoai/Qwen3.8-27B-Splash](https://huggingface.co/incoai/Qwen3.8-27B-Splash)
+· Server-Start: `./splash serve --model incoai/Qwen3.8-27B-Splash --max-context 48K --max-memory 24G`.
+
+### Und dann doch noch: der Standard-Benchmark sauber durchgelaufen
+
+Mit beiden Fixes (echte `tool_calls`-Struktur bei der Kuerzung, automatische
+48K-Erkennung) UND einem frischen Verlauf (kein `--resume` von der noch
+kontaminierten `mc_verlauf.json` -- ein --resume-Versuch dazwischen bewies
+das nochmal: die ALTEN Text-Zusammenfassungen von vor dem Fix reichen
+allein schon, damit das Modell sie weiter nachahmt, der Fix wirkt nur gegen
+NEU entstehende Kuerzungen) lief der komplette Standard-Benchmark
+(Personenverwaltung, React+Vite+Material-Web, volle Installation) diesmal
+durch: 47 Schritte, 44 Requests, 680632 Tokens (671308 Prompt + 9324
+Antwort, davon 565120 aus dem Cache), 3 Hintergrundprozesse (Backend,
+Vite-Dev-Server, ein Vite-Build) sauber beendet. Echte Verifikation statt
+Behauptung: alle vier REST-Endpunkte inkl. Fehlerfaelle per curl (400 bei
+fehlendem/leerem Namen, ungueltigem JSON, leerem Objekt; 404 bei
+unbekannter ID), `npx oxlint` (exit 0), `npx vite build` (234 Module,
+`dist/` erzeugt), CORS-Header im echten POST-Response bestaetigt. Die
+Kuerzungsschwelle loeste dabei rund ein Dutzend Mal aus (ab Schritt 29,
+durchgehend bis Schritt 52) -- kein einziges Mal tauchte die
+Text-Mimikry wieder auf.
+
+**Fazit des ganzen Nachschlags:** vom ersten Engine-Crash bis zum sauber
+verifizierten React-Frontend waren es am Ende fuenf zusammenhaengende,
+echte Ursachen (Kontextfenster zu gross fuer die Engine, `<tool_call>`-
+Degeneration ohne natives Tool-Calling, Reasoning frisst `max_tokens`,
+die kuerzungs-erzeugte Text-Mimikry, und die fehlende Kontext-Erkennung
+fuer einen unbekannten lokalen Endpoint) -- zwei davon liessen sich nur
+durch einen echten Patch in `mc.py` selbst loesen, nicht durch
+Parameter-Tuning. Der Splash-M1-Fork lieferte dabei durchgehend sauber:
+kein einziger der gefundenen Fehler lag am Server oder am Modell selbst.
 
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
