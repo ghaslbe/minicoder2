@@ -7383,6 +7383,46 @@ Beides sind bewusste Design-Trade-offs (Cache-Schonung bzw. Kontext-
 Isolation), keine Bugs -- kosten auf dieser Hardware aber sichtbar Zeit,
 wenn sie zusammentreffen.
 
+### Zwei echte mc.py-Fixes, live am selben Fork verifiziert
+
+Punkt 5 oben (Batch-Kuerzung imitiert sich selbst) wurde noch am selben Tag
+in `mc.py` behoben: `_prune_native_messages()` ersetzt eine aeltere
+Tool-Runde nicht mehr durch eine einzelne, nachahmbare Text-Nachricht,
+sondern erhaelt die echte `tool_calls`/`tool`-Nachrichtenstruktur und
+kuerzt nur deren Inhalt (`_compact_history_text`/`_compact_tool_arguments`).
+Verifikation: im naechsten Lauf gegen denselben Fork loeste die
+Kuerzungsschwelle ueber 15 mal in Folge aus (Schritt 3 bis weit ueber
+Schritt 28, bis dahin war der alte Lauf spaetestens bei Schritt 32/33
+gekippt) -- kein einziges Mal tauchte die imitierte Textantwort wieder auf,
+`status` blieb durchgehend `tool_calls`. Derselbe Umbau brachte zusaetzlich
+eine Pfad-Sandbox (`_project_path`/`_project_open`/`_project_walk`, schuetzt
+gegen Pfade und Symlinks ausserhalb des Projektverzeichnisses) und eine
+`RequestDiagnostics`-Klasse, die pro Request TTFT, Reasoning-Anteil und
+Cache-Trefferquote als JSON-Zeile loggt -- genau die Zahlen, mit denen
+die Cache-Beobachtungen oben ueberhaupt erst nachvollziehbar wurden.
+
+Ein zweiter, unabhaengiger Fund direkt danach: der Fork lief zwischenzeitlich
+mit auf 48K erhoehtem Kontextfenster weiter, aber `mc.py`s Kuerzungs-Log
+zeigte weiterhin "70% von 32768 Token geladen" -- der ALTE, zu kleine Wert.
+Ursache: `_loaded_ctx_tokens()` erkennt das geladene Kontextfenster nur ueber
+LM Studios `/api/v0/models` oder vMLXs `/v1/models/<id>/capabilities` --
+Splash bietet beides nicht (`owned_by: "splash"` passt in keine der
+bekannten Kategorien, beide Sonden-Endpunkte antworten 404). Ohne Treffer
+faellt `mc.py` auf die generische Cloud-Konstante `CONTEXT_LENGTH` (Default
+32768) zurueck, unabhaengig vom tatsaechlich konfigurierten `--max-context`
+des lokalen Servers. **Fix:** ein dritter, generischer Fallback in
+`_loaded_ctx_tokens()`, der schlicht die normale `/v1/models`-Antwort auf
+ein `context_length`- oder `max_model_len`-Feld prueft -- bei Splash real
+erprobt zuverlaessig (folgte dem `--max-context`-Wert nach einem
+Server-Neustart exakt), keine Sonder-Endpunkte noetig. Damit braucht auch
+kein manuelles `MC_CONTEXT_LENGTH` mehr gesetzt zu werden, wenn ein
+Endpoint dieses verbreitete Feld mitschickt.
+
+**Referenzen:** getesteter M1/M2-Fork:
+[paperniuk/splash, Branch `apple7-m1-kernels`](https://github.com/paperniuk/splash/tree/apple7-m1-kernels)
+· offizielles Original: [incoai/splash](https://github.com/incoai/splash)
+· Modell: [incoai/Qwen3.8-27B-Splash](https://huggingface.co/incoai/Qwen3.8-27B-Splash).
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
