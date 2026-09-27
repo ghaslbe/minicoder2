@@ -24,6 +24,50 @@ Keine externen Dependencies — nur die Python-Standardbibliothek.
 >   schaltet alle Rückfragen ab und ist entsprechend **gefährlich** — bewusst
 >   und nur in isolierten Umgebungen einsetzen.
 
+## Projektgrenzen und Diagnose
+
+Die Dateiwerkzeuge bleiben innerhalb des beim Start gewaehlten Projekts.
+Externe Pfade und Symlink-Ziele werden abgelehnt, mehrfach verlinkte Dateien
+nicht geoeffnet. Sichtbare Shell-Ausbrueche wie `../`, globale Installationen
+und typische Host-Eingriffe wie `defaults` oder `killall` werden blockiert.
+`--yes` bleibt autonom, ohne weitere Freigaben oder externe Abhaengigkeiten.
+
+Shell-Prozesse bekommen projektlokale Home-/Cache-/Temp-Verzeichnisse unter
+`.mc-runtime/` und keine erkennbaren API-Key-/Token-Umgebungsvariablen.
+Python-Pakete bitte lokal installieren: `python3 -m venv .venv`, dann
+`.venv/bin/python -m pip install ...`. Das private HOME kann vorhandene
+benutzerspezifische Tool-Konfigurationen unsichtbar machen.
+**Das ist keine Sandbox:** Skripte, Unterprozesse, verschleierte Befehle und
+gleichzeitige Dateiaenderungen koennen diese Schutzmassnahmen umgehen.
+
+Jeder mc-Chat-Request schreibt eine `[Request-Diagnose]`-JSON-Zeile ins Log:
+Request-ID, Gesamtdauer, erstes Datenereignis, erstes Reasoning, erste Antwort
+(inklusive Tool-Aufruf), laengste Datenpause und vom Anbieter gemeldete Tokens.
+`answer_tokens` sind Completion minus Reasoning, `cache_fraction` ist der
+Cache-Anteil am Prompt. Fehlende Angaben sind `null`, nicht null Tokens.
+Vor den ersten Daten sind Queue und Prompt-Verarbeitung nicht unterscheidbar;
+Keep-Alives sind kein Datenfortschritt. Auch fehlgeschlagene Versuche werden
+protokolliert; die Timeouts werden dadurch nicht pauschal erhoeht.
+
+Vibelove sichert vor jeder QA-Reparatur einen Git-Zwischenstand. Dieselben
+Python-/JSON-Syntaxpruefungen und vorhandenen `npm run build`-Pruefungen werden
+erneut ausgefuehrt. Neue Fehler, verlorene PASS-Kriterien, unklare Bewertungen
+oder fehlender belegbarer Fortschritt fuehren zur Wiederherstellung und zum
+Ende der Reparaturschleife. Jeder Evaluator sieht nur die Ausgabe des aktuellen
+Versuchs. Ohne verlaesslichen Git-Zwischenstand startet keine Reparatur.
+Die Sicherung umfasst Git-erfasste und nicht ignorierte Dateien, keine
+ignorierten Datenbanken, Abhaengigkeiten oder externen Seiteneffekte.
+Diese Checks ersetzen keine funktionalen Tests oder Browserpruefung; ein
+Evaluator-PASS bleibt eine Modellbewertung, kein Beweis der Fehlerfreiheit.
+
+Native Tool-Historie bleibt beim Kuerzen strukturiert: Aufrufe, IDs, Ergebnisse
+und Reasoning-Signaturen bleiben erhalten. Nur grosse Datei-Inhalte und
+Ausgabetexte werden gekuerzt. Die cachefreundliche Batch-Schwelle bleibt
+unveraendert; unterhalb der Schwelle wird der bisherige Verlauf nicht angefasst.
+Eine notwendige Kuerzung kann den Prefix-Cache ab der ersten Aenderung trotzdem
+entwerten. Arbeitslaeufe brauchen einen echten `finish`-Aufruf: wiederholte
+Prosa ohne Aktion endet ausdruecklich unvollstaendig, im Einmal-Modus mit Exit 1.
+
 ## Hintergrund: warum ein eigenes Protokoll?
 
 Nicht jeder Ollama-Endpoint unterstützt **natives OpenAI Tool-/Function-Calling** —

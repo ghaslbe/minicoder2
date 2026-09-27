@@ -233,7 +233,7 @@ def test_text_mode_does_not_send_tools(monkeypatch):
     assert "tools" not in sent[0] and "tool_choice" not in sent[0]
 
 
-def test_native_prune_replaces_complete_groups_only(native):
+def test_native_prune_preserves_complete_groups(native):
     messages = history()
     for i in range(5):
         messages.append(mc.NativeReply(calls=[call("write_file", {"path": f"{i}.py", "content": "x" * 2000}, str(i))]).message())
@@ -242,8 +242,67 @@ def test_native_prune_replaces_complete_groups_only(native):
     assert mc.prune_messages(messages, keep=2)
     assert messages[-4:] == recent
     assert_pairs(messages)
-    assert sum(bool(m.get("tool_calls")) for m in messages) == 2
-    assert "0.py" in messages[2]["content"]
+    assert sum(bool(m.get("tool_calls")) for m in messages) == 5
+    args = json.loads(messages[2]['tool_calls'][0]['function']['arguments'])
+    assert args['path'] == '0.py'
+    assert len(args['content']) == 600
+    assert len(messages[3]['content']) == 600
+    before = copy.deepcopy(messages)
+    assert not mc.prune_messages(messages, keep=2)
+    assert messages == before
+
+
+def test_native_prune_keeps_multi_calls_signatures_and_pending(native):
+    reply = mc.NativeReply(calls=[
+        call('write_files', {'files': [{'path': 'x', 'content': 'a' * 4000}]}, 'a'),
+        call('edit_file', {'path': 'y', 'old': 'b' * 4000, 'new': 'c' * 4000}, 'b')],
+        reasoning={'reasoning_details': [{'signature': 'opaque', 'data': 'signed'}]})
+    messages = history() + [reply.message(),
+        {'role': 'tool', 'tool_call_id': 'a', 'content': 'ok'},
+        {'role': 'tool', 'tool_call_id': 'b', 'content': 'failed'},
+        mc.NativeReply(calls=[call('write_file', {'path': 'pending', 'content': 'd' * 4000})]).message()]
+    pending = copy.deepcopy(messages[-1])
+    assert mc.prune_messages(messages, keep=0)
+    assert messages[2]['reasoning_details'] == reply.reasoning['reasoning_details']
+    assert [c['id'] for c in messages[2]['tool_calls']] == ['a', 'b']
+    assert messages[-1] == pending
+    for c in messages[2]['tool_calls']:
+        json.loads(c['function']['arguments'])
+
+
+def test_native_prose_never_finishes_work(native, monkeypatch, capsys):
+    result, _, seen = run_replies(monkeypatch, [
+        mc.NativeReply(text='[Fruehere Tool-Runde zusammengefasst]'),
+        mc.NativeReply(text='write_file fertig')])
+    assert result is None
+    assert not mc.CLEAN_FINISH
+    assert len(seen) == 2
+    assert 'UNVOLLSTAENDIG' in capsys.readouterr().out
+
+
+def test_native_prose_can_recover_with_real_finish(native, monkeypatch):
+    result, _, _ = run_replies(monkeypatch, [mc.NativeReply(text='Nur Text')])
+    assert result == 'done'
+    assert mc.CLEAN_FINISH
+
+
+def test_native_cache_prefix_stays_stable_below_threshold(native, monkeypatch):
+    monkeypatch.setattr(mc, '_loaded_ctx_tokens', lambda model: 60000)
+    monkeypatch.setattr(mc, 'MAX_TOKENS_PER_CALL', 1000)
+    monkeypatch.setattr(mc, 'KEEP_CONTEXT', 2)
+    messages = history()
+    for i in range(8):
+        messages.extend([mc.NativeReply(calls=[call('write_file',
+            {'path': str(i), 'content': 'x' * 20000}, str(i))]).message(),
+            {'role': 'tool', 'tool_call_id': str(i), 'content': 'y' * 10000}])
+    assert mc.maybe_prune(messages, 'm')
+    stable = copy.deepcopy(messages)
+    assert not mc.maybe_prune(messages, 'm')
+    assert messages == stable
+    messages.extend([mc.NativeReply(calls=[call('list_dir', {}, 'next')]).message(),
+                     {'role': 'tool', 'tool_call_id': 'next', 'content': 'files'}])
+    assert not mc.maybe_prune(messages, 'm')
+    assert messages[:len(stable)] == stable
 
 
 def test_native_resume_preserves_pairs_and_closes_interrupted_call(native, monkeypatch, tmp_path):

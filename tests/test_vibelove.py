@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -58,6 +59,50 @@ def test_failed_process_start_releases_build(server, monkeypatch):
     response.close()
     assert not server.PROJECT_OPERATION_LOCK.locked()
     assert not server.BUILD_STATUS['laeuft']
+
+
+def test_qa_build_restores_better_checkpoint(server, monkeypatch, tmp_path):
+    root = tmp_path / 'qa-project'
+    root.mkdir()
+    subprocess.run(['git', 'init', str(root)], check=True, capture_output=True)
+    (root / 'app.py').write_text('value = 1\n')
+    server.repair_guard.checkpoint(str(root))
+    monkeypatch.setattr(server, 'projekt_dir', lambda name: str(root))
+    original_popen = subprocess.Popen
+    calls = []
+
+    def launch(cmd, **kwargs):
+        if server.MC_PATH in cmd:
+            calls.append(cmd)
+            code = 'value = 2\n' if len(calls) == 1 else 'value = ('
+            script = ('from pathlib import Path; '
+                      f'Path({str(root / "app.py")!r}).write_text({code!r}); '
+                      f'print("PASS_OUTPUT_{len(calls)}")')
+            cmd = [sys.executable, '-u', '-c', script]
+        return original_popen(cmd, **kwargs)
+
+    outputs = []
+
+    def evaluate(acceptance, context, output, *args, **kwargs):
+        outputs.append(output)
+        fixed = len(outputs) == 2
+        return {'status': 'PASS' if fixed else 'FAIL',
+                'criteria': '1. [PASS] Exists\n2. [' + ('PASS' if fixed else 'FAIL') + '] Feature',
+                'feedback': 'Fix feature'}
+
+    monkeypatch.setattr(server.subprocess, 'Popen', launch)
+    monkeypatch.setattr(server.po, 'evaluate', evaluate)
+    response = server.app.test_client().post('/build', data={
+        'instruction': 'Add feature', 'acceptance': '1. Exists\n2. Feature'}, buffered=True)
+    try:
+        assert len(calls) == 2
+        assert (root / 'app.py').read_text() == 'value = 2\n'
+        assert 'Besserer Zwischenstand wiederhergestellt' in response.data.decode()
+        assert 'PASS_OUTPUT_1' in outputs[0]
+        assert 'PASS_OUTPUT_1' not in outputs[1]
+        assert 'PASS_OUTPUT_2' in outputs[1]
+    finally:
+        response.close()
 
 
 def test_stop_build_while_waiting_for_output(server, monkeypatch):

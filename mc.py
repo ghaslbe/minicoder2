@@ -43,6 +43,8 @@ import json
 import os
 import re
 import shutil
+import shlex
+import stat
 import subprocess
 import sys
 import threading
@@ -119,6 +121,7 @@ INSECURE = False                                     # TLS-Pruefung abschalten (
 VERBOSE = _truthy(_setting("MC_VERBOSE", "verbose", False))  # passive Logausgaben
 
 MAX_STEPS = int(_setting("MC_MAX_STEPS", "max_steps", 40))  # Sicherheitslimit pro Aufgabe
+PROJECT_ROOT = None  # Fixed once in main, after --dir; never controlled by the model.
 MAX_OUTPUT_CHARS = 8000  # Trunkierung von Tool-Ausgaben an das Modell
 _SPILL_N = 0             # Zaehler fuer Spill-Dateien gekuerzter Ausgaben
 
@@ -413,13 +416,19 @@ def _ensure_log_gitignored():
         return
     gi_path = ".gitignore"
     try:
-        existing = open(gi_path, "r", encoding="utf-8").read() if os.path.isfile(gi_path) else ""
-        if "*.log" in existing.split() or MC_LOG in existing.split():
+        existing = ""
+        if os.path.isfile(gi_path):
+            with _project_open(gi_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+        missing = [] if "*.log" in existing.split() or MC_LOG in existing.split() else [MC_LOG]
+        if ".mc-runtime/" not in existing.split():
+            missing.append(".mc-runtime/")
+        if not missing:
             return
-        with open(gi_path, "a", encoding="utf-8") as f:
+        with _project_open(gi_path, "a", encoding="utf-8") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
-            f.write(f"{MC_LOG}\n")
+            f.write("\n".join(missing) + "\n")
     except OSError:
         pass  # best effort -- ein Fehlschlag hier darf den Lauf nicht stoppen
 
@@ -431,7 +440,7 @@ def _start_run_log():
     darf den Lauf selbst nicht verhindern."""
     _ensure_log_gitignored()
     try:
-        log_file = open(MC_LOG, "a", encoding="utf-8")
+        log_file = _project_open(MC_LOG, "a", encoding="utf-8")
         log_file.write(f"\n{'=' * 70}\n{time.strftime('%Y-%m-%dT%H:%M:%S')}\n{'=' * 70}\n")
         sys.stdout = _Tee(sys.stdout, log_file)
         sys.stderr = _Tee(sys.stderr, log_file)
@@ -676,6 +685,51 @@ class Spinner:
             sys.stdout.flush()
 
 
+class RequestDiagnostics:
+    """Client observations, never an inferred provider-side processing phase."""
+    def __init__(self, model):
+        self.started = time.monotonic()
+        self.last = None
+        self.first_data = self.first_reasoning = self.first_answer = None
+        self.longest_pause = 0.0
+        self.model = model
+        self.request_id = uuid.uuid4().hex[:12]
+        self.done = False
+
+    def event(self, delta):
+        now = time.monotonic()
+        if self.first_data is None:
+            self.first_data = now - self.started
+        if self.last is not None:
+            self.longest_pause = max(self.longest_pause, now - self.last)
+        self.last = now
+        if self.first_reasoning is None and any(delta.get(k) for k in
+                ("reasoning", "reasoning_content", "reasoning_details")):
+            self.first_reasoning = now - self.started
+        if self.first_answer is None and (delta.get("content") or delta.get("tool_calls")):
+            self.first_answer = now - self.started
+
+    def finish(self, usage, status):
+        if self.done:
+            return
+        self.done = True
+        now = time.monotonic()
+        if self.last is not None:
+            self.longest_pause = max(self.longest_pause, now - self.last)
+        usage = usage or {}
+        completion = usage.get("completion_tokens")
+        reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        prompt = usage.get("prompt_tokens")
+        record = dict(request_id=self.request_id, model=self.model, status=status, duration_s=round(now-self.started, 3),
+                      first_data_s=self.first_data, first_reasoning_s=self.first_reasoning,
+                      first_answer_s=self.first_answer, longest_pause_s=round(self.longest_pause, 3),
+                      prompt_tokens=prompt, completion_tokens=completion, reasoning_tokens=reasoning,
+                      answer_tokens=max(0, completion-reasoning) if completion is not None and reasoning is not None else None,
+                      cached_tokens=cached, cache_fraction=cached/prompt if cached is not None and prompt else None)
+        print("\n[Request-Diagnose] " + json.dumps(record, ensure_ascii=True), flush=True)
+
+
 class NativeReply:
     """Structured response; never reinterpret tool arguments as action fences."""
 
@@ -750,13 +804,15 @@ def _chat_once(messages, model, tools=None):
     first = True
     usage = None
     finish_reason = None
-    spin = Spinner("Modell denkt")
+    diagnosis = RequestDiagnostics(model)
+    diagnostic_status = "aborted"
+    spin = Spinner("Warte auf erste Daten (Queue/Prompt unbekannt)")
     spin.__enter__()  # Warte-Spinner bis zum ersten Token
     try:
         log(f"verbinde mit {url} …")
         with build_opener().open(req, timeout=300) as resp:
             log(f"verbunden (HTTP {resp.status}), frage Modell '{model}', warte auf Antwort …")
-            last_progress = time.time()
+            last_progress = time.monotonic()
             for raw in resp:
                 # Manche Endpoints (z.B. OpenRouter) schicken bei langen Laeufen
                 # periodische SSE-Keep-Alive-Kommentarzeilen (kein "data:"), rein
@@ -769,7 +825,7 @@ def _chat_once(messages, model, tools=None):
                 # von echten SSE-Datenereignissen (nicht Keep-Alives) gemessener
                 # Stillstands-Timeout faengt das ab und nutzt die bestehende
                 # Retry-/Fortsetzungs-Logik (ueber NET_ERRORS/TimeoutError).
-                if time.time() - last_progress > STALL_TIMEOUT:
+                if time.monotonic() - last_progress > STALL_TIMEOUT:
                     raise TimeoutError(
                         f"kein echtes SSE-Datenereignis seit {STALL_TIMEOUT}s "
                         f"(Verbindung lebt evtl. noch per Keep-Alive)")
@@ -783,9 +839,10 @@ def _chat_once(messages, model, tools=None):
                     obj = json.loads(chunk)
                 except json.JSONDecodeError:
                     continue
-                last_progress = time.time()
+                last_progress = time.monotonic()
                 # Der Usage-Chunk hat oft leere/keine choices -> sicher zugreifen.
                 choices = obj.get("choices") or []
+                diagnosis.event((choices[0].get("delta") or {}) if choices else {})
                 if choices:
                     if choices[0].get("finish_reason"):
                         finish_reason = choices[0]["finish_reason"]
@@ -850,7 +907,9 @@ def _chat_once(messages, model, tools=None):
                     usage = obj["usage"]
         if usage:
             account_usage(usage)
+        diagnostic_status = finish_reason or "eof_without_finish"
     except urllib.error.HTTPError as e:
+        diagnosis.finish(usage, f"http_{e.code}")
         body = e.read().decode("utf-8", "replace")[:500]
         ctx = _parse_ctx_overflow(body)
         if ctx is not None:
@@ -918,6 +977,7 @@ def _chat_once(messages, model, tools=None):
                 "alternativ --tool-mode text verwenden." if tools is not None and e.code in (400, 422) else "")
         raise SystemExit(f"\n{C.RED}HTTP {e.code} vom Endpoint:{C.RESET} {body[:300]}{hint}")
     except NET_ERRORS as e:
+        diagnostic_status = "network_error_or_stall"
         if tools is not None:
             # No side effects have happened yet. Retry the entire response,
             # never concatenate partial JSON or replay already executed calls.
@@ -940,6 +1000,7 @@ def _chat_once(messages, model, tools=None):
         raise NetRetryError(net_error(getattr(e, "reason", e)))
     finally:
         spin.__exit__()  # Spinner-Thread immer beenden (auch bei Fehler)
+        diagnosis.finish(usage, diagnostic_status)
     if tools is not None:
         if reasoning_details:
             reasoning_parts["reasoning_details"] = list(reasoning_details.values())
@@ -1865,25 +1926,41 @@ def _prune_native_messages(messages, keep):
     old = groups[:max(0, len(groups) - max(keep, 0))]
     for start, end in reversed(old):
         group = messages[start:end]
-        lines = ["[Fruehere Tool-Runde zusammengefasst; Inhalte bei Bedarf erneut lesen]"]
-        results = {m["tool_call_id"]: m.get("content", "") for m in group[1:]}
+        before = sum(_message_chars(m) for m in group)
         for call in group[0]["tool_calls"]:
             fn = call["function"]
             try:
                 args = json.loads(fn["arguments"])
-                target = {key: args[key] for key in ("path", "paths", "pattern", "command") if key in args}
-                if isinstance(args.get("files"), list):
-                    target["paths"] = [f.get("path") for f in args["files"] if isinstance(f, dict)]
+                compact = _compact_tool_arguments(args)
+                if compact != args:
+                    fn["arguments"] = json.dumps(compact, ensure_ascii=False)
             except (ValueError, TypeError, AttributeError):
-                target = {}
-            lines.append(fn["name"] + " " + json.dumps(target, ensure_ascii=False)[:400]
-                         + "\n" + results[call["id"]][:300])
-        summary = {"role": "assistant", "content": "\n".join(lines)}
-        if _message_chars(summary) < sum(_message_chars(m) for m in group):
-            # Replace complete call/result groups, never leave orphan tool IDs.
-            messages[start:end] = [summary]
-            changed = True
+                pass
+        # Preserve protocol roles, IDs and provider reasoning/signatures exactly.
+        for msg in group:
+            if isinstance(msg.get("content"), str):
+                msg["content"] = _compact_history_text(msg["content"])
+        changed |= sum(_message_chars(m) for m in group) < before
     return changed
+
+
+def _compact_history_text(text, limit=600):
+    if len(text) <= limit:
+        return text
+    marker = "\n[Inhalt gekuerzt; bei Bedarf erneut lesen]\n"
+    head = (limit - len(marker)) * 2 // 3
+    tail = limit - len(marker) - head
+    return text[:head] + marker + text[-tail:]
+
+
+def _compact_tool_arguments(value):
+    if isinstance(value, dict):
+        return {key: (_compact_history_text(item) if key in ("content", "old", "new")
+                      and isinstance(item, str) else _compact_tool_arguments(item))
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_tool_arguments(item) for item in value]
+    return value
 
 
 def maybe_prune(messages, model):
@@ -1947,9 +2024,9 @@ def truncate(s):
     try:
         global _SPILL_N
         _SPILL_N += 1
-        spill = os.path.join(tempfile.gettempdir(),
+        spill = os.path.join(_run_environment()["TMPDIR"],
                              f"mc_spill_{os.getpid()}_{_SPILL_N}.txt")
-        with open(spill, "w", encoding="utf-8") as f:
+        with _project_open(spill, "w", encoding="utf-8") as f:
             f.write(s)
         hint = (f"\n[Vollstaendige Ausgabe ({len(s)} Zeichen) gespeichert unter "
                 f"{spill} — bei Bedarf dort mit read_file (from/to) oder grep "
@@ -2145,6 +2222,52 @@ def user_reject_msg():
 READFILE_MAX_CHARS = 24000
 
 
+def _project_root():
+    return PROJECT_ROOT or os.path.realpath(os.getcwd())
+
+
+def _project_path(path):
+    """Check both the lexical path and its symlink target against the project."""
+    if not isinstance(path, (str, os.PathLike)) or not os.fspath(path) or "\0" in os.fspath(path):
+        raise PermissionError("ABGELEHNT: ungueltiger Projektpfad")
+    root = _project_root()
+    raw = os.path.join(os.getcwd(), os.fspath(path))
+    try:
+        resolved = os.path.realpath(raw)
+        if any(os.path.commonpath([root, p]) != root for p in (os.path.abspath(raw), resolved)):
+            raise ValueError("outside project")
+    except (ValueError, OSError):
+        raise PermissionError(f"ABGELEHNT: Pfad ausserhalb des Projekts: {path}") from None
+    return resolved
+
+
+def _project_path_error(*paths):
+    try:
+        for path in paths:
+            _project_path(path)
+    except PermissionError as exc:
+        return str(exc)
+    return ""
+
+
+def _project_open(path, mode="r", **kwargs):
+    path = _project_path(path)
+    if os.path.exists(path):
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
+            raise PermissionError("ABGELEHNT: keine regulaere Projektdatei oder mehrfach verlinkt")
+    return open(path, mode, **kwargs)
+
+
+def _project_walk(root):
+    if _project_path_error(root):
+        return
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [name for name in dirs if not _project_path_error(os.path.join(directory, name))]
+        files[:] = [name for name in files if not _project_path_error(os.path.join(directory, name))]
+        yield directory, dirs, files
+
+
 def do_read_files(args):
     """Mehrere Dateien in EINEM Schritt lesen — das Lese-Gegenstueck zu
     write_files. Lesen kann nichts kaputtmachen, und jeder gesparte Umlauf
@@ -2161,6 +2284,9 @@ def do_read_files(args):
         return False, (f"FEHLER: {len(paths)} Dateien in einem read_files — "
                        f"maximal {MAX_READ_FILES_BATCH}. Teile auf oder nutze "
                        f"explore fuer breite Erkundungen.")
+    error = _project_path_error(*paths)
+    if error:
+        return False, error
     teile, fehler = [], 0
     for p in paths:
         ok, res = do_read_file({"path": p})
@@ -2277,7 +2403,7 @@ def do_read_file(args):
     EXPLORED = True
     path = args.get("path", "")
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with _project_open(path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
     except Exception as e:
         return False, f"FEHLER beim Lesen von {path}: {e}" + _closest_paths_hint(path)
@@ -2321,7 +2447,7 @@ def _project_has_code(root="."):
     if HAS_CODE is not None:
         return HAS_CODE
     HAS_CODE = False
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = [d for d in dirnames
                        if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
@@ -2461,6 +2587,9 @@ def _check_repetition(path, new_content):
 
 def do_write_file(args):
     path = args.get("path", "")
+    error = _project_path_error(path)
+    if error:
+        return False, error
     content = args.get("content", "")
     nb = _new_file_gate([path])
     if nb:
@@ -2473,7 +2602,7 @@ def do_write_file(args):
     alt_inhalt = ""
     if os.path.isfile(path):
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with _project_open(path, "r", encoding="utf-8", errors="replace") as f:
                 alt_inhalt = f.read()
         except OSError:
             pass
@@ -2488,7 +2617,7 @@ def do_write_file(args):
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with _project_open(path, "w", encoding="utf-8") as f:
             f.write(content)
         if alt_inhalt:
             warn += _loss_warning(path, alt_inhalt, content)
@@ -2517,6 +2646,9 @@ def do_write_files(args):
     if bad:
         return False, ("FEHLER: jeder files-Eintrag braucht ein 'path'-Feld, "
                        "ungueltig: " + ", ".join(bad))
+    error = _project_path_error(*(f["path"] for f in files))
+    if error:
+        return False, error
     ohne_inhalt = [f["path"] for f in files if "content" not in f]
     if ohne_inhalt:
         return False, ("FEHLER: fuer diese Datei(en) fehlt der Inhalt "
@@ -2559,7 +2691,7 @@ def do_write_files(args):
             d = os.path.dirname(path)
             if d:
                 os.makedirs(d, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
+            with _project_open(path, "w", encoding="utf-8") as fh:
                 fh.write(content)
             written.append(path)
             if warn:
@@ -2690,7 +2822,7 @@ def _projekt_frontend_texte(root=".", max_dateien=200):
     """Sammelt Frontend-Quelltexte des Projekts: (jsx/html/js-Texte,
     css-Texte inkl. <style>-Bloecke) — gedeckelt gegen Riesenprojekte."""
     jsx, css, n = [], [], 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = [d for d in dirnames
                        if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
@@ -2701,7 +2833,7 @@ def _projekt_frontend_texte(root=".", max_dateien=200):
             if n > max_dateien:
                 return jsx, css
             try:
-                with open(os.path.join(dirpath, fn), encoding="utf-8",
+                with _project_open(os.path.join(dirpath, fn), encoding="utf-8",
                           errors="replace") as f:
                     text = f.read()
             except OSError:
@@ -2907,6 +3039,9 @@ def do_edit_file(args):
     neuen — es wandert nur die Aenderung ueber die Leitung, nicht die ganze Datei.
     'old' muss EINDEUTIG vorkommen (sonst Fehler), ausser replace_all=true."""
     path = args.get("path", "")
+    error = _project_path_error(path)
+    if error:
+        return False, error
     old = args.get("old", "")
     new = args.get("new", "")
     replace_all = bool(args.get("replace_all", False))
@@ -2916,7 +3051,7 @@ def do_edit_file(args):
                        "old/new nicht als JSON-Strings an, sondern als rohe "
                        "```old und ```new Bloecke direkt nach dem action-Block.")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with _project_open(path, "r", encoding="utf-8") as f:
             content = f.read()
     except Exception as e:
         return False, f"FEHLER beim Lesen von {path}: {e}"
@@ -2975,7 +3110,7 @@ def do_edit_file(args):
         return False, user_reject_msg()
     try:
         updated = content.replace(old, new) if replace_all else content.replace(old, new, 1)
-        with open(path, "w", encoding="utf-8") as f:
+        with _project_open(path, "w", encoding="utf-8") as f:
             f.write(updated)
         return True, (f"OK, {count if replace_all else 1} Stelle(n) in {path} ersetzt "
                       f"(Datei jetzt {len(updated)} Zeichen)."
@@ -2992,6 +3127,9 @@ def do_list_dir(args):
     global EXPLORED
     EXPLORED = True
     path = args.get("path", ".")
+    error = _project_path_error(path)
+    if error:
+        return False, error
     try:
         entries = []
         for name in sorted(os.listdir(path)):
@@ -3039,11 +3177,14 @@ def do_find(args):
     EXPLORED = True
     pattern = args.get("pattern") or args.get("name") or ""
     root = args.get("path", ".")
+    error = _project_path_error(root)
+    if error:
+        return False, error
     if not pattern:
         return False, "FEHLER: 'pattern' fehlt."
     npat = _norm(pattern)
     matches = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in sorted(filenames):
             if pattern.lower() in fn.lower() or (npat and npat in _norm(fn)):
@@ -3068,6 +3209,9 @@ def do_grep(args):
     EXPLORED = True
     pattern = args.get("pattern", "")
     root = args.get("path", ".")
+    error = _project_path_error(root)
+    if error:
+        return False, error
     if not pattern:
         return False, "FEHLER: 'pattern' fehlt."
     try:
@@ -3075,7 +3219,7 @@ def do_grep(args):
     except re.error:
         rx = None  # ungueltige Regex -> einfache Textsuche
     matches, limit = [], 50
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in sorted(filenames):
             full = os.path.join(dirpath, fn)
@@ -3084,7 +3228,7 @@ def do_grep(args):
             try:
                 if os.path.getsize(full) > 2_000_000:
                     continue
-                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                with _project_open(full, "r", encoding="utf-8", errors="replace") as f:
                     for no, line in enumerate(f, 1):
                         hit = rx.search(line) if rx else (pattern.lower() in line.lower())
                         if hit:
@@ -3109,7 +3253,7 @@ def do_grep(args):
 def project_overview(root=".", max_entries=200):
     """Kompakter rekursiver Dateiueberblick fuer den Startkontext des Agenten."""
     paths = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = sorted(d for d in dirnames
                              if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         rel = os.path.relpath(dirpath, root)
@@ -3139,7 +3283,7 @@ def repo_brief(root="."):
             cmds.append("python3 -m pytest")
     if hat("package.json"):
         try:
-            with open(os.path.join(root, "package.json"), encoding="utf-8") as f:
+            with _project_open(os.path.join(root, "package.json"), encoding="utf-8") as f:
                 pkg = json.load(f)
         except Exception:
             pkg = {}
@@ -3166,11 +3310,10 @@ def repo_brief(root="."):
     if cmds:
         zeilen.append("Real vorhandene Kommandos: " + " | ".join(cmds))
     try:
-        r = subprocess.run(["git", "log", "--oneline", "-5"], cwd=root,
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0 and r.stdout.strip():
+        rc, output = _git("log", "--oneline", "-5", timeout=10)
+        if rc == 0 and output.strip():
             zeilen.append("Letzte Commits:\n  "
-                          + "\n  ".join(r.stdout.strip().splitlines()))
+                          + "\n  ".join(output.strip().splitlines()))
     except Exception:
         pass
     return zeilen
@@ -3186,7 +3329,7 @@ JS_DEF_RE = re.compile(
 def _outline_py(path):
     """Top-Level-Klassen/Funktionen (+Routen-Dekoratoren) einer Python-Datei."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with _project_open(path, "r", encoding="utf-8", errors="replace") as f:
             src = f.read()
         tree = ast.parse(src)
     except Exception:
@@ -3213,7 +3356,7 @@ def _outline_py(path):
 def _outline_js(path):
     """Funktionen/Klassen/Routen einer JS/TS-Datei (Regex-Naeherung)."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with _project_open(path, "r", encoding="utf-8", errors="replace") as f:
             src = f.read()
     except Exception:
         return []
@@ -3233,7 +3376,7 @@ def code_outline(root=".", max_files=30):
     das nur DATEINAMEN sieht, kennt den Bestand nicht — erst die Struktur
     macht 'verstehen vor aendern' billig genug, dass kleine Modelle es tun."""
     out = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in _project_walk(root):
         dirnames[:] = sorted(d for d in dirnames
                              if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         for fn in sorted(filenames):
@@ -3385,6 +3528,100 @@ def _addr_in_use_hint(output):
     return hint
 
 
+HOST_COMMANDS = {"sudo", "su", "doas", "defaults", "launchctl", "systemctl",
+                 "systemsetup", "networksetup", "scutil", "nvram", "osascript",
+                 "killall", "pkill", "taskkill", "shutdown", "reboot", "mount",
+                 "umount", "diskutil", "crontab", "chsh", "dscl", "reg",
+                 "brew", "apt", "apt-get", "dnf", "yum"}
+
+
+def _local_venv_python(path):
+    """Allow execution of a venv interpreter, even when it links to system Python."""
+    lexical = os.path.abspath(path)
+    venv = os.path.dirname(os.path.dirname(lexical))
+    return (os.path.basename(path).startswith("python")
+            and not _project_path_error(venv)
+            and not _project_path_error(os.path.join(venv, "pyvenv.cfg"))
+            and os.path.isfile(os.path.join(venv, "pyvenv.cfg"))
+            and os.path.isfile(path) and os.access(path, os.X_OK))
+
+
+def _shell_guard(command):
+    """Best-effort checks for visible hazards, NOT a shell security boundary."""
+    if not isinstance(command, str) or not command.strip():
+        return "ABGELEHNT: leeres oder ungueltiges Kommando"
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return "ABGELEHNT: Shell-Kommando mit unvollstaendigen Anfuehrungszeichen"
+    executable = True
+    for i, token in enumerate(tokens):
+        if token in (";", "&&", "||", "|", "&", "(", ")"):
+            executable = True
+            continue
+        name = os.path.basename(token).lower()
+        if name in HOST_COMMANDS:
+            return f"ABGELEHNT: Host-/Systemeingriff mit '{name}' ist nicht erlaubt"
+        if name == "kill":
+            targets = []
+            for value in tokens[i + 1:]:
+                if value in (";", "&&", "||", "|", "&"):
+                    break
+                targets.append(value)
+            if targets and targets[0].startswith("-"):
+                targets = targets[1:]
+            own = {str(p.pid) for p in BG_PROCS if p.poll() is None}
+            if not targets or any(t.lstrip("-") not in own for t in targets):
+                return "ABGELEHNT: kill darf nur von mc gestartete Hintergrundprozesse beenden"
+        if token in ("--global", "--system", "--user", "--break-system-packages"):
+            return "ABGELEHNT: globale Installation/Konfiguration; nutze eine projektlokale Umgebung"
+        if token == "-g" and any(os.path.basename(t) in ("npm", "pnpm", "yarn") for t in tokens[:i]):
+            return "ABGELEHNT: globale Paketinstallation"
+        value = token.split("=", 1)[-1] if "=" in token else token
+        value = os.path.expanduser(os.path.expandvars(value))
+        if value.startswith(("http://", "https://")):
+            executable = False
+            continue
+        if re.search(r"(^|[/\\\s'\"])\.\.([/\\]|$)", value):
+            return "ABGELEHNT: '..'-Pfade in Shell-Kommandos; nutze Pfade ab dem Projektverzeichnis"
+        if value not in (os.devnull, "/dev/urandom", "/dev/stdout", "/dev/stderr"):
+            path_like = value.startswith(("/", "~", ".")) or os.path.lexists(value) or "/" in value
+            runtime_executable = (executable and os.path.isabs(value)
+                                  and value.startswith(("/usr/", "/bin/", "/sbin/", "/opt/homebrew/"))
+                                  and os.path.isfile(value) and os.access(value, os.X_OK))
+            if path_like and not runtime_executable and not (executable and _local_venv_python(value)):
+                error = _project_path_error(value)
+                if error:
+                    return error
+        if "=" not in token and token not in ("env", "command", "exec"):
+            executable = False
+    # Plain pip may point at mc's own environment, outside the project.
+    if "install" in tokens and any(os.path.basename(t) in ("pip", "pip3") for t in tokens):
+        local_python = any(_local_venv_python(t) for t in tokens)
+        if not local_python:
+            return "ABGELEHNT: pip install nur projektlokal; erst python3 -m venv .venv, dann .venv/bin/python -m pip install ..."
+    return ""
+
+
+def _run_environment():
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("MC_")
+           and not re.search(r"(^|_)(API_?KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)(_|$)", k, re.I)
+           and k not in ("BASH_ENV", "ENV", "ZDOTDIR", "SSH_AUTH_SOCK", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH")}
+    runtime = _project_path(os.path.join(_project_root(), ".mc-runtime"))
+    for name in ("home", "tmp", "cache"):
+        os.makedirs(_project_path(os.path.join(runtime, name)), exist_ok=True)
+    env.update(HOME=os.path.join(runtime, "home"),
+               TMPDIR=os.path.join(runtime, "tmp"), TMP=os.path.join(runtime, "tmp"),
+               TEMP=os.path.join(runtime, "tmp"), XDG_CACHE_HOME=os.path.join(runtime, "cache"),
+               npm_config_cache=os.path.join(runtime, "cache", "npm"),
+               PIP_CACHE_DIR=os.path.join(runtime, "cache", "pip"),
+               PIP_REQUIRE_VIRTUALENV="true")
+    return env
+
+
 def do_run(args):
     cmd = args.get("command", "")
     bg = bool(args.get("background"))
@@ -3394,9 +3631,16 @@ def do_run(args):
         timeout = 120
     tag = " (hintergrund)" if bg else ""
     print(f"{C.YELLOW}» run{tag}{C.RESET} {C.BOLD}{cmd}{C.RESET}")
-    if DANGEROUS_RUN.search(cmd):
+    if isinstance(cmd, str) and DANGEROUS_RUN.search(cmd):
         return False, ("ABGELEHNT: das Kommando sieht destruktiv aus (sudo/rm auf "
                        "Wurzelpfade/etc.). Waehle ein harmloses, projektlokales Kommando.")
+    error = _shell_guard(cmd)
+    if error:
+        return False, error
+    try:
+        environment = _run_environment()
+    except OSError as exc:
+        return False, f"ABGELEHNT: projektlokale Laufzeitumgebung nicht nutzbar: {exc}"
     conflict = _generator_conflict(cmd)
     if conflict:
         print(f"{C.RED}✗ Generator-Konflikt erkannt{C.RESET}")
@@ -3407,10 +3651,10 @@ def do_run(args):
         # Dauerlaeufer (Dev-Server): starten, kurz warten, erste Ausgabe zeigen.
         # Der Prozess laeuft weiter; alle BG-Prozesse werden am Ende beendet.
         import tempfile
-        logf = tempfile.NamedTemporaryFile(prefix="mc_bg_", suffix=".log",
+        logf = tempfile.NamedTemporaryFile(prefix="mc_bg_", suffix=".log", dir=environment["TMPDIR"],
                                            delete=False, mode="w")
         kwargs = dict(shell=True, stdout=logf, stderr=subprocess.STDOUT,
-                      stdin=subprocess.DEVNULL)
+                      stdin=subprocess.DEVNULL, cwd=_project_root(), env=environment)
         if sys.platform == "win32":
             # start_new_session ist POSIX-only; unter Windows braucht der
             # spaetere Kill des ganzen Prozessbaums eine eigene Prozessgruppe.
@@ -3421,6 +3665,8 @@ def do_run(args):
             proc = subprocess.Popen(cmd, **kwargs)
         except Exception as e:
             return False, f"FEHLER beim Start: {e}"
+        finally:
+            logf.close()
         BG_PROCS.append(proc)
         time.sleep(3)
         try:
@@ -3453,7 +3699,7 @@ def do_run(args):
         # statt still bis zum Timeout auf eine Eingabe zu warten.
         proc = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL
+            stdin=subprocess.DEVNULL, cwd=_project_root(), env=environment
         )
         out = proc.stdout + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
         out = out.strip() or "(keine Ausgabe)"
@@ -3473,7 +3719,7 @@ def do_run(args):
             body = summarize_large_fetch(out, CURRENT_MODEL)
         else:
             body = truncate(out)
-        return True, f"exit={proc.returncode}\n{body}" + warn
+        return proc.returncode == 0, f"exit={proc.returncode}\n{body}" + warn
     except subprocess.TimeoutExpired:
         return False, (f"FEHLER: Kommando-Timeout ({timeout}s). Moegliche Ursachen: "
                        "(1) es ist ein Dauerlaeufer (Dev-Server) — dann mit "
@@ -3680,7 +3926,9 @@ Rules:
 - JSON must be valid. @@CONTENT_RULE@@
 """
 
-COMMON_AGENT_RULES = """- Work in small steps. Read existing files before changing them.
+COMMON_AGENT_RULES = """- Stay inside the project directory. Never change host settings or unrelated processes.
+- Shell commands start at the project root. Use project-local virtual environments; never install globally.
+- Work in small steps. Read existing files before changing them.
 - SMALL changes to existing files ALWAYS via edit_file (targeted replacement)
   instead of rewriting the whole file with write_file — this saves tokens and
   avoids truncated replies. "old" must match the current file content EXACTLY
@@ -4018,11 +4266,13 @@ def _resolve_project_file(p):
     der Prompt nannte 'src/App.jsx' relativ zum Frontend-Ordner, die Datei
     liegt unter 'frontend/src/App.jsx' — der Finish-Check meldete faelschlich
     'fehlt'). Eindeutiger Treffer -> aufgeloester Pfad, sonst None."""
+    if _project_path_error(p):
+        return None
     if os.path.isfile(p):
         return p
     target = p.replace("\\", "/").lstrip("./")
     hits = []
-    for dirpath, dirnames, filenames in os.walk("."):
+    for dirpath, dirnames, filenames in _project_walk("."):
         dirnames[:] = [d for d in dirnames
                        if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d))]
         for fn in filenames:
@@ -4047,7 +4297,7 @@ def existing_project_dirs(max_depth=2):
     """Findet Verzeichnisse (inkl. '.'), die einen Projekt-Marker enthalten —
     flach gehalten (max. 2 Ebenen), es geht nur um den Startueberblick."""
     found = []
-    for dirpath, dirnames, filenames in os.walk("."):
+    for dirpath, dirnames, filenames in _project_walk("."):
         dirnames[:] = sorted(d for d in dirnames
                              if d not in IGNORE_DIRS and not d.startswith(".") and not _is_venv_dir(os.path.join(dirpath, d)))
         if dirpath.count(os.sep) >= max_depth:
@@ -4064,7 +4314,7 @@ def _write_plan_file(punkte):
     ueberlebt so Kontext-Kuerzungen und sogar Abbrueche: ein Folgelauf liest
     ihn ueber task_hints wieder ein und macht beim offenen Punkt weiter."""
     try:
-        with open(MC_PLAN, "w", encoding="utf-8") as f:
+        with _project_open(MC_PLAN, "w", encoding="utf-8") as f:
             f.write("# Aenderungsplan (mc)\n\n" + "\n".join(
                 f"- [ ] {i}. {p}" for i, p in enumerate(punkte, 1)) + "\n")
         return True
@@ -4106,7 +4356,7 @@ def task_hints(task):
     # nur deterministisch eingelesen.
     if os.path.isfile(MC_NOTES):
         try:
-            with open(MC_NOTES, "r", encoding="utf-8", errors="replace") as f:
+            with _project_open(MC_NOTES, "r", encoding="utf-8", errors="replace") as f:
                 notes = f.read().strip()
             if notes:
                 hints.append(f"Project notes from {MC_NOTES} (decisions "
@@ -4117,7 +4367,7 @@ def task_hints(task):
     # Open change plan from an earlier (aborted) run.
     if os.path.isfile(MC_PLAN):
         try:
-            with open(MC_PLAN, "r", encoding="utf-8", errors="replace") as f:
+            with _project_open(MC_PLAN, "r", encoding="utf-8", errors="replace") as f:
                 plan_inhalt = f.read().strip()
             if "- [ ]" in plan_inhalt:
                 hints.append(
@@ -4203,7 +4453,15 @@ def qa_task_hint(task):
 def _git(*args, timeout=15):
     """Fuehrt ein git-Kommando aus, gibt (returncode, stdout) zurueck."""
     try:
-        p = subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)
+        root = _project_root()
+        gitdir = os.path.join(root, ".git")
+        if _project_path_error(gitdir) or os.path.isfile(gitdir):
+            return 127, "externes Git-Verzeichnis nicht erlaubt"
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(root)
+        p = subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull,
+                            "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false", *args],
+                           cwd=root, env=env, capture_output=True, text=True, timeout=timeout)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return 127, ""
@@ -4233,6 +4491,7 @@ dist/
 build/
 .DS_Store
 *.log
+.mc-runtime/
 """
 
 
@@ -4247,7 +4506,7 @@ def git_auto_init():
     if rc != 0:
         return False, f"git init fehlgeschlagen: {out.strip()[:150]}"
     if not os.path.exists(".gitignore"):
-        with open(".gitignore", "w", encoding="utf-8") as f:
+        with _project_open(".gitignore", "w", encoding="utf-8") as f:
             f.write(DEFAULT_GITIGNORE)
     _git("add", "-A")
     rc, out = _git("commit", "-m", "mc: Ausgangszustand vor erstem Lauf")
@@ -4266,10 +4525,10 @@ def _find_js_checker(path):
         for name in ("esbuild", "oxlint"):
             for suffix in ("", ".cmd"):
                 cand = os.path.join(d, "node_modules", ".bin", name + suffix)
-                if os.path.isfile(cand):
+                if not _project_path_error(cand) and os.path.isfile(cand):
                     return cand
         parent = os.path.dirname(d)
-        if parent == d:
+        if parent == d or _project_path_error(parent):
             break
         d = parent
     return ""
@@ -4305,22 +4564,24 @@ def _check_js_syntax(js_text, near_path):
     geprueft wurde). .mjs-Endung fuer node, damit import/export (ESM)
     korrekt geparst wird -- als .js faellt node sonst auf CommonJS zurueck
     und meldet bei jedem import-Statement einen falschen Fehler."""
+    if _project_path_error(near_path):
+        return "bad", "Pfad ausserhalb des Projekts"
     checker = _find_js_checker(near_path)
     if checker:
-        suffix, cmd = ".js", '"{checker}" "{temp}"'
+        suffix, cmd = ".js", [checker]
     else:
         node = shutil.which("node")
         if not node:
             return "skip", ""
-        checker, suffix, cmd = node, ".mjs", '"{checker}" --check "{temp}"'
+        checker, suffix, cmd = node, ".mjs", [node, "--check"]
     temp_path = None
     try:
         fd, temp_path = tempfile.mkstemp(
             suffix=suffix, dir=os.path.dirname(os.path.abspath(near_path)) or ".")
         with os.fdopen(fd, "w", encoding="utf-8") as tf:
             tf.write(js_text)
-        p = subprocess.run(cmd.format(checker=checker, temp=temp_path),
-                           shell=True, capture_output=True, text=True, timeout=30)
+        p = subprocess.run([*cmd, temp_path], env=_run_environment(),
+                           capture_output=True, text=True, timeout=30)
     except Exception:
         return "skip", ""
     finally:
@@ -4343,7 +4604,7 @@ def validate_path(path):
     'ok' | 'bad' | 'skip' ist. Unbekannte/nachsichtige Typen -> 'skip'."""
     ext = os.path.splitext(path)[1].lower()
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with _project_open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
     except Exception as e:
         return "bad", f"nicht lesbar: {e}"
@@ -4369,7 +4630,7 @@ def validate_path(path):
             return "bad", f"YAML ungueltig: {e}"
     if ext == ".php":
         try:
-            p = subprocess.run(["php", "-l", path], capture_output=True, text=True, timeout=15)
+            p = subprocess.run(["php", "-l", path], env=_run_environment(), capture_output=True, text=True, timeout=15)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return "skip", ""   # php nicht installiert -> nicht validierbar
         if p.returncode == 0:
@@ -4383,8 +4644,8 @@ def validate_path(path):
         if not checker:
             return "skip", ""
         try:
-            p = subprocess.run(f'"{checker}" "{os.path.abspath(path)}"',
-                               shell=True, capture_output=True, text=True,
+            p = subprocess.run([checker, os.path.abspath(path)], env=_run_environment(),
+                               capture_output=True, text=True,
                                timeout=30)
         except Exception:
             return "skip", ""
@@ -4555,7 +4816,7 @@ def _save_transcript(messages):
     if not RESUME:
         return
     try:
-        with open(MC_VERLAUF, "w", encoding="utf-8") as f:
+        with _project_open(MC_VERLAUF, "w", encoding="utf-8") as f:
             json.dump(messages, f, ensure_ascii=False)
     except OSError:
         pass
@@ -4566,7 +4827,7 @@ def _load_transcript():
     frisch gebaut, damit Prompt-Aenderungen und der aktuelle Projektstand
     gelten."""
     try:
-        with open(MC_VERLAUF, "r", encoding="utf-8") as f:
+        with _project_open(MC_VERLAUF, "r", encoding="utf-8") as f:
             alte = json.load(f)
         result = []
         for msg in alte:
@@ -4618,7 +4879,7 @@ def _run_task(messages, model):
     parse_error_streak = 0
     check_probe_done = False
     prose_end_nudged = False
-    prose_nudges = 0
+    action_seen = False
     empty_replies = 0
     last_ro_raw = None  # raw-JSON der letzten NUR-LESE-Aktion (Schleifen-Erkennung)
     read_only_streak = 0  # NUR-LESE-Aktionen seit dem letzten Schreiben (Schleifen-Erkennung
@@ -4843,10 +5104,19 @@ def _run_task(messages, model):
                 action, raw = None, None
 
         if action is None:
-            if TOOL_MODE == "native" and (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
+            working = TOOL_MODE == "native" or action_seen or TOUCHED or CHECK or EXPECTED_FILES
+            if working and not reply.endswith(DEGEN_MARKER):
+                if prose_end_nudged:
+                    print(f"{C.RED}UNVOLLSTAENDIG: wiederholt Text ohne echte Aktion. "
+                          f"Kein finish erhalten; Arbeitsstand bleibt erhalten.{C.RESET}")
+                    return None
                 prose_end_nudged = True
-                _append_obs(messages, "Keine Funktion aufgerufen. Nutze das naechste native "
-                            "Tool oder finish, falls die Arbeit fertig ist.", pending_actions)
+                protocol = "natives Tool" if TOOL_MODE == "native" else "action-Block"
+                _append_obs(messages, "Keine echte Aktion ausgefuehrt. Text-Protokolle und "
+                            "Zusammenfassungen sind keine Tool-Aufrufe. Nutze jetzt ein "
+                            + protocol + " fuer den naechsten Schritt oder finish, falls "
+                            "die Arbeit wirklich fertig ist. Ohne finish bleibt der Lauf "
+                            "unvollstaendig.", pending_actions)
                 continue
             if reply.endswith(DEGEN_MARKER):
                 # Kollabierte Antwort ohne brauchbare Aktion: NICHT als
@@ -4863,55 +5133,10 @@ def _run_task(messages, model):
                                            + "\n…[Rest degeneriert, entfernt]")
                 _append_obs(messages, obs, pending_actions)
                 continue
-            # Keine Aktion im Antworttext. Frueher galt das sofort als
-            # "Textantwort = fertig" — ein UNBEWACHTER Ausgang, der das
-            # komplette Check-/Finish-Gate umgeht. Zwei real beobachtete
-            # Varianten: (1) deepseek-v4-flash schrieb "(edit_file
-            # ausgefuehrt: ...)" als PROSA — es imitierte das Format der
-            # gekuerzten Kontext-Historie —, der Edit fand nie statt, der
-            # Lauf endete mitten in der Arbeit. (2) mimo-v2.5 KUENDIGTE in
-            # Schritt 1 nur an ("Ich lese zuerst die relevanten Dateien")
-            # — ohne Action-Block, Lauf nach 5s beendet, bevor irgendetwas
-            # geschah. Deshalb EINE Rueckfrage, wenn der Lauf erkennbar
-            # ein Arbeits-Lauf ist: bereits geschrieben (TOUCHED), ODER
-            # Check-Modus aktiv, ODER die Aufgabe nennt Dateien
-            # (EXPECTED_FILES). Fertig heisst finish (laeuft durchs Gate),
-            # sonst naechste echte Aktion. Eine zweite aktionslose Antwort
-            # gilt als bewusstes Prosa-Ende. Reine Frage-Antwort-Laeufe
-            # (nichts davon trifft zu) enden wie bisher sofort.
-            kaputt = [p for p in set(TOUCHED) if os.path.isfile(p)
-                      and validate_path(p)[0] == "bad"]
-            if kaputt and prose_nudges < 3:
-                # Hartnaeckig statt hoeflich: solange geschriebene Dateien
-                # nachweislich UNGUELTIG sind, beendet Prosa den Lauf nicht
-                # (real beobachtet: 'ist nur ein Linting-Problem' + Ausstieg
-                # mit 5 kaputten Dateien).
-                prose_nudges += 1
-                obs = ("Deine Antwort enthielt KEINEN action-Block — und es "
-                       "sind noch UNGUELTIGE Dateien offen: "
-                       + ", ".join(sorted(kaputt)[:5]) +
-                       ". Ein Prosa-Ende wird deshalb NICHT akzeptiert. "
-                       "Korrigiere die Dateien jetzt (read_file + edit_file) "
-                       "und gib danach finish aus.")
-                print(f"{C.RED}⚠ Prosa-Ende abgelehnt: ungueltige Dateien "
-                      f"offen ({prose_nudges}/3).{C.RESET}")
-                _append_obs(messages, obs, pending_actions)
-                continue
-            if (TOUCHED or CHECK or EXPECTED_FILES) and not prose_end_nudged:
-                prose_end_nudged = True
-                obs = ("Deine Antwort enthielt KEINEN action-Block — blosse "
-                       "Ankuendigungen ('Ich lese zuerst ...') oder Texte wie "
-                       "'(edit_file ausgefuehrt: ...)' fuehren KEINE Aktion aus, "
-                       "das war nur Prosa. Wenn die Aufgabe fertig ist: gib die "
-                       "finish-Aktion aus. Wenn nicht: gib die naechste echte "
-                       "Aktion als ```action Block aus (z.B. read_file).")
-                print(f"{C.YELLOW}⚠ Antwort ohne Aktion in einem Arbeits-Lauf "
-                      f"— einmalige Rueckfrage statt stillem Ende.{C.RESET}")
-                _append_obs(messages, obs, pending_actions)
-                continue
-            # Keine Aktion -> Modell ist mit einer Textantwort fertig.
+            # Pure text Q&A without tools/checks still allows a prose answer.
             return reply
 
+        action_seen = True
         if "_parse_error" in action:
             parse_error_streak += 1
             if TOOL_MODE == "native":
@@ -5470,7 +5695,7 @@ def _apply_setting(key, wert):
 
 def main():
     global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE, THINK
-    global TOOL_MODE, CONTEXT_LENGTH
+    global TOOL_MODE, CONTEXT_LENGTH, PROJECT_ROOT
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Modell (default {DEFAULT_MODEL})")
@@ -5580,6 +5805,7 @@ def main():
             os.chdir(args.dir)
         except OSError as e:
             raise SystemExit(f"{C.RED}--dir: {args.dir} nicht nutzbar: {e}{C.RESET}")
+    PROJECT_ROOT = os.path.realpath(os.getcwd())
 
     if args.debug_net:
         debug_net()
@@ -5614,6 +5840,7 @@ def main():
     if CHECK:
         info("Check-Modus aktiv: finish erst nach echter Ausfuehrung (run mit exit=0).")
     info(f"Arbeitsverzeichnis: {os.getcwd()}")
+    info("Projektgrenze aktiv; Shell-Schutz ist best effort, keine Betriebssystem-Sandbox.")
     cwd_warnung = _suspicious_cwd_warning()
     if cwd_warnung:
         print(f"{C.RED}{cwd_warnung}{C.RESET}")
@@ -5767,6 +5994,8 @@ def main():
             return
         result = run_task(messages, args.model)
         after_run(result if isinstance(result, str) else "")
+        if result is None:
+            raise SystemExit(1)
         return
 
     # Interaktiver Modus

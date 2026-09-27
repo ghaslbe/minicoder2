@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import po
 import mc_terminal
 from vibelove.terminal_backend import TerminalManager
+from vibelove import repair_guard
 
 app = Flask(__name__, root_path=os.path.dirname(os.path.abspath(__file__)))
 PROJECT_OPERATION_LOCK = threading.Lock()
@@ -1340,13 +1341,13 @@ def build():
 
             def run_one_pass(cmd):
                 """Fuehrt EINEN mc.py-Subprozess aus, streamt live. Liefert
-                (per 'return', abrufbar ueber 'yield from') True, wenn der
-                Nutzer waehrenddessen gestoppt hat."""
+                Liefert (gestoppt, erfolgreich) ueber 'yield from'."""
                 global BUILD_PROCESS
                 proc = None
                 start_time = time.time()
                 timeout_duration = 900
                 gestoppt = False
+                erfolgreich = False
                 try:
                     proc = subprocess.Popen(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1370,8 +1371,10 @@ def build():
                                 yield emit(decoder.decode(chunk))
                             else:
                                 yield emit(decoder.decode(b'', final=True))
+                                erfolgreich = proc.wait(timeout=5) == 0
                                 break
                         elif proc.poll() is not None:
+                            erfolgreich = proc.returncode == 0
                             break
                         else:
                             time.sleep(0.1)
@@ -1383,19 +1386,26 @@ def build():
                         terminate_build_process(proc)
                     if proc is not None and proc.stdout:
                         proc.stdout.close()
-                return gestoppt
+                return gestoppt, erfolgreich
 
             # Coder<->Evaluator-Schleife: ohne Akzeptanzkriterien (z.B. ein
             # per Skill/mehrteiligem Plan ausgeloester Bauauftrag) verhaelt
             # sich das exakt wie vorher -- EIN Durchlauf, keine Bewertung.
             current_instruction = full_instruction
             gestoppt_gesamt = False
+            pending_checkpoint = None
+            previous_evaluation = None
+            previous_checks = {}
+            check_plan = []
             try:
                 for iteration in range(1, MAX_EVAL_ITERATIONS + 1):
                     if iteration > 1:
+                        pending_checkpoint = repair_guard.checkpoint(aktives_projekt_dir)
                         yield emit(f"\n=== QA-Korrekturlauf {iteration}/{MAX_EVAL_ITERATIONS} ===\n")
+                        yield emit(f"[QA] Zwischenstand gesichert: {pending_checkpoint[:12]}\n")
                     cmd = base_command + [current_instruction]
-                    gestoppt = yield from run_one_pass(cmd)
+                    pass_output_start = len(output_lines)
+                    gestoppt, erfolgreich = yield from run_one_pass(cmd)
                     # Zwischen-Absicherung VOR einer moeglichen naechsten
                     # Iteration -- dieselbe Absicherung wie vor dem naechsten
                     # Bauauftrag, s. Docstring von stelle_sauberen_arbeitsbaum_sicher.
@@ -1403,17 +1413,38 @@ def build():
                     if gestoppt:
                         gestoppt_gesamt = True
                         break
+                    if not erfolgreich:
+                        yield emit('\n[QA] Bauprozess fehlgeschlagen; keine weitere automatische Reparatur.\n')
+                        break
                     if not acceptance:
                         break  # kein Evaluator konfiguriert -- wie bisher nach einem Lauf fertig
                     if BUILD_STOP.is_set():
                         gestoppt_gesamt = True
                         yield emit('\nBauauftrag gestoppt.\n')
                         break
+                    check_plan = sorted(set(check_plan) | set(repair_guard.discover_checks(aktives_projekt_dir)))
+                    checks = repair_guard.run_checks(aktives_projekt_dir, check_plan)
+                    if BUILD_STOP.is_set():
+                        gestoppt_gesamt = True
+                        yield emit('\nBauauftrag gestoppt.\n')
+                        break
+                    check_output = json.dumps(checks, ensure_ascii=False)
+                    yield emit('\n[QA] Lokale Pruefungen: ' + check_output + '\n')
                     project_context = po.gather_project_context(aktives_projekt_dir)
                     evaluation = po.evaluate(
-                        acceptance, project_context, "".join(output_lines),
+                        acceptance, project_context, "".join(output_lines[pass_output_start:]),
                         base_url, model, MC_SETTINGS.get('api_key', ''),
                         max_tokens=MC_SETTINGS.get('max_tokens'))
+                    if pending_checkpoint:
+                        improved, reason = repair_guard.improvement(
+                            previous_evaluation, evaluation, previous_checks, checks)
+                        if not improved:
+                            repair_guard.restore(aktives_projekt_dir, pending_checkpoint)
+                            pending_checkpoint = None
+                            yield emit(f'\n[QA] {reason} Besserer Zwischenstand wiederhergestellt; Reparatur beendet.\n')
+                            break
+                        pending_checkpoint = None
+                    previous_evaluation, previous_checks = evaluation, checks
                     if evaluation['status'] == 'error':
                         yield emit(f"\n[QA] Bewertung nicht moeglich "
                                    f"({evaluation['error']}) — Ergebnis wird "
@@ -1441,6 +1472,12 @@ def build():
             except Exception as e:
                 yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
+                if pending_checkpoint:
+                    try:
+                        repair_guard.restore(aktives_projekt_dir, pending_checkpoint)
+                        emit('\n[QA] Ungepruefte Reparatur verworfen; Zwischenstand wiederhergestellt.\n')
+                    except Exception as exc:
+                        emit(f'\n[QA] Wiederherstellung fehlgeschlagen: {exc}. Sicherung: {pending_checkpoint}\n')
                 BUILD_STATUS['laeuft'] = False
                 # Dieselbe Absicherung wie vor dem NAECHSTEN Bauauftrag, aber
                 # sofort statt erst verzoegert -- ein liegen gebliebener,
