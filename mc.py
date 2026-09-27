@@ -2079,6 +2079,29 @@ def _loaded_ctx_tokens(model):
             ctx = int(cap.get("max_prompt_tokens") or 0)
         except Exception:
             pass
+    if not ctx:
+        # Generischer Fallback fuer Engines ohne LM-Studio-/vMLX-Kennzeichen
+        # (z.B. Splash: owned_by="splash", weder /api/v0/models noch
+        # /v1/models/<id>/capabilities vorhanden). Viele OpenAI-kompatible
+        # Server melden in ihrer normalen /v1/models-Antwort trotzdem ein
+        # context_length/max_model_len-Feld -- bei Splash real erprobt:
+        # dieser Wert folgt zuverlaessig dem tatsaechlich konfigurierten
+        # --max-context (z.B. 49152 nach einem Server-Neustart mit 48K),
+        # nicht nur einem theoretischen Maximum. Ohne diesen Fallback nutzt
+        # maybe_prune() sonst blind die Cloud-Konstante CONTEXT_LENGTH
+        # (Default 32768) weiter, auch wenn der lokale Server laengst mit
+        # einem anderen Fenster laeuft.
+        try:
+            req = urllib.request.Request(base + "/v1/models")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            reached = True
+            for m in data.get("data", []):
+                if m.get("id") == model:
+                    ctx = int(m.get("context_length") or m.get("max_model_len") or 0)
+                    break
+        except Exception:
+            pass
     # oMLX bietet zwar /v1/models/status mit max_context_window an, aber das
     # ist -- real erprobt -- das THEORETISCHE Konfigurationsmaximum, nicht
     # das tatsaechlich nutzbare Fenster: gemeldet 262144, ein echter
