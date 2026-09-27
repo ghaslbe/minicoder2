@@ -7331,6 +7331,41 @@ weitere, echte Probleme zutage, die der kleinere Test nicht zeigte:
    Denk-Tokens). `mc.py` protokolliert bisher nicht, welcher Anteil
    Reasoning war -- ein sinnvoller naechster Diagnose-Schritt fuers Tool.
 
+5. **Der eigentliche Showstopper: die Batch-Kuerzung imitiert sich selbst
+   in einen stillen Lauf-Abbruch.** Nach den Fixes 1-4 lief derselbe
+   Benchmark 32 Requests weit -- Backend fertig geschrieben UND per
+   curl-Testreihe verifiziert (GET; POST gueltig/fehlender Name/leerer
+   Name/kein JSON; PUT gueltig/404/400; DELETE 204/404), Frontend in
+   Arbeit. Dann brach der Lauf in Schritt 33 trotzdem lautlos ab, ohne
+   Fehlermeldung, ohne `finish`. Ursache, an den rohen `mc_verlauf.json`-
+   Nachrichten nachvollzogen: `prune_messages()`/`_prune_native_messages()`
+   ersetzt eine aeltere Tool-Runde durch eine EINZIGE Text-Nachricht im
+   Format `[Fruehere Tool-Runde zusammengefasst; Inhalte bei Bedarf erneut
+   lesen]` gefolgt von Aktionsname + Argumenten + Ergebnis-Schnipsel --
+   optisch ununterscheidbar von einem echten Tool-Aufruf/Ergebnis-Paar.
+   Sobald diese Kuerzung einmal im Verlauf steht (ab der 70%-Schwelle,
+   siehe Kapitel 76/77), imitiert das Modell dieses Muster als PROSA statt
+   echte native Tool-Calls abzusetzen -- schreibt also selbst erfundene
+   `[Ergebnis von read_file]`-Bloecke mit frei erfundenem Dateiinhalt, statt
+   die Datei wirklich zu lesen. `mc.py` hat zwar eine Rueckfrage genau
+   gegen "Text statt Aktion" eingebaut (`prose_end_nudged`, siehe Kapitel
+   83), aber die feuert nur EINMAL pro Lauf; wiederholt das Modell das
+   Fake-Protokoll ein zweites Mal (Schritt 32 UND 33 im beobachteten Lauf),
+   faellt die Pruefung durch die Ruecknudge-Sperre und `mc.py` akzeptiert
+   die erfundene Textantwort kommentarlos als Laufende -- ohne
+   Check-/Finish-Gate, ohne dass das Frontend fertig wurde. Splash/das
+   Modell lieferten dabei technisch einwandfrei (kein Fehler, guter
+   Cache-Hit); der Fehler liegt komplett im Kuerzungs-Format von `mc.py`.
+   **Klarer Fix-Kandidat fuers naechste Mal:** die Zusammenfassung nicht
+   als nachahmbares Text-Protokoll schreiben, sondern die Struktur aus
+   echter `tool_calls`-Nachricht + echter `tool`-Ergebnis-Nachricht
+   erhalten und nur deren Inhalt kuerzen (z.B. `(gekuerzt, bei Bedarf neu
+   lesen)` als Tool-Ergebnis-Text) -- damit bleibt fuer das Modell
+   erkennbar, dass es sich um echte, bereits erledigte Tool-Runden handelt,
+   und es hat keinen Text-Mustervorlage zum Nachahmen. Nicht mehr in diesem
+   Testlauf umgesetzt, aber der wichtigste konkrete Verbesserungspunkt, der
+   aus dem gesamten Splash-M1-Test hervorging.
+
 **Cache-Verhalten, live am Server-Log beobachtet:** Ein Prompt-Cache-Treffer
 druecke die Zeit bis zum ersten Token von mehreren Sekunden auf 1-4s; ein
 Cache-Verfehler (0 von uebernommenen Tokens) kostete in einem beobachteten
