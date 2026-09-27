@@ -7454,6 +7454,19 @@ durch einen echten Patch in `mc.py` selbst loesen, nicht durch
 Parameter-Tuning. Der Splash-M1-Fork lieferte dabei durchgehend sauber:
 kein einziger der gefundenen Fehler lag am Server oder am Modell selbst.
 
+**Nachtrag, echter Browser-Test:** Trotz der ausfuehrlichen curl-Verifikation
+(alle vier REST-Endpunkte inkl. Fehlerfaelle, Vite-Build, oxlint) zeigte
+das tatsaechliche Oeffnen im Browser sofort einen React-Absturz: `<md-circular-progress
+style="display: none" />` -- ein String statt eines Objekts fuer die
+`style`-Prop, was React (anders als bei normalen HTML-Elementen) bei
+Custom Elements hart ablehnt. Weder curl noch `vite build` haetten das je
+gefunden -- beide pruefen nicht, ob React beim Mounten wirft. Kurzer,
+gezielter Fix (`style="..."` zu `style={{...}}`), sofort behoben. Lehre,
+die sich durch den ganzen Benchmark zieht: eine "vollstaendig verifizierte"
+App im Sinne von mc.py's Check-Modus heisst verifiziert auf API-/Build-
+Ebene -- ein echter Blick in den Browser bleibt trotzdem noetig, wenn
+Custom Elements (Material Web) im Spiel sind.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
