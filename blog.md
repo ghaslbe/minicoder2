@@ -7161,6 +7161,193 @@ ein echter, sauber durchgelaufener Test und sollte nicht ohne Weiteres als
 gleichwertiges UNVERIFIED durchgehen). Baustelle fuer den naechsten Schritt,
 noch nicht umgesetzt.
 
+## 87. Ein neuer lokaler Player auf dem M1 Max: Qwen3.8-27B ueber einen
+inoffiziellen Splash-Fork -- Engine-Crash, Kontextfenster als Hebel, und die
+Tok/s-Zahlen
+
+Ein community-gepflegter Fork eines schlanken lokalen Inferenz-Servers
+brachte Unterstuetzung fuer aeltere Apple-GPUs (Kernel-Familie 7, u.a. M1)
+mit -- eigene Metal-Kernel, da der offizielle Server nur M3 und neuer
+unterstuetzt. Getestet auf einem M1 Max mit 32 GB Unified Memory, Modell
+`incoai/Qwen3.8-27B-Splash` (4-bit, mit eigenem Draft-Modell fuer
+spekulative Dekodierung), Server lokal auf Port 8000.
+
+**Testaufbau:** kein Lauf des etablierten Adressverwaltung/Kundenverwaltung-
+Benchmarks aus Kapitel 17-28/66, sondern ein schneller Ad-hoc-Test mit
+einer eigenen, kleineren Aufgabe -- `mc.py` per `MC_BASE_URL`/`MC_MODEL`
+gegen den lokalen Endpoint, eine CRUD-Notiz-App (Flask+SQLite-Backend,
+Vanilla-JS-Frontend), mit der Auflage, Anlegen/Lesen/Bearbeiten/Loeschen
+wirklich per curl zu pruefen. Die Zahlen unten sind daher nicht direkt mit
+der Benchmark-Tabelle vergleichbar, nur untereinander bzw. mit Kapitel 66
+als grober Groessenordnungs-Anhalt.
+
+### Erster Versuch (Server mit vollem 128K-Kontext): Engine-Absturz
+
+Der erste Lauf brach nach wenigen Schritten mit `HTTP 503
+engine_recovering` ab. Ein Blick ins Server-Log (das der Server selbst
+schreibt) zeigte den echten Grund:
+
+```
+error: native transport stopped after an engine failure
+```
+
+Kein Netzwerkfehler, kein Problem in `mc.py` -- die native Engine selbst
+stuerzte bei bestimmten Requests ab und brauchte mehrere Sekunden, um sich
+selbst neu zu starten ("Kernel policy for GPU family 7" erscheint dann ein
+zweites Mal im Log). Reproduzierbar: derselbe Lauf crashte beim erneuten
+Versuch wieder, an aehnlicher Stelle.
+
+**Hebel, der tatsaechlich half: das Kontextfenster drastisch verkleinern.**
+Der Server wurde mit `--max-context 131072` gestartet -- deutlich mehr, als
+`mc.py`s Prompt fuer diese Aufgabe braucht (~6-7K Token pro Anfrage). Ein
+Neustart mit `--max-context 16384` (der Server clampte selbst auf 8K)
+beseitigte den Crash vollstaendig, brachte aber ein neues, erwartbares
+Problem: bei nur 8K Kontext blieb neben dem Prompt kaum Platz fuer die
+Antwort -- staendiges Abschneiden ("Antwort abgeschnitten: Token-Limit"),
+Fortsetzungsanfragen, teils sogar Kontext-Ueberlauf mitten im Lauf.
+
+**Der Sweet Spot: 32K.** Genug Puffer fuer Prompt + Antwort + die ueber
+mehrere Schritte wachsende Verlaufshistorie, aber weit genug von der
+Groessenordnung entfernt, bei der die Engine bisher abstuerzte. Mit
+`--max-context 32768` lief der komplette Build sauber durch: 14 Requests,
+106895 Tokens (95593 Prompt + 11302 Antwort, davon 86048 Prompt-Tokens aus
+dem Cache bedient), Endergebnis live gegen den laufenden Server getestet
+(POST/GET/PUT/DELETE inkl. Fehlerfaelle 400/404, kein Escape- oder
+Prosa-Ausfall).
+
+### Tok/s: was `mc.py`s eigenes Logging zeigt
+
+`mc.py` protokolliert bereits pro Antwort die generierten Tokens und die
+Dauer. Ausschnitt aus dem erfolgreichen 32K-Lauf:
+
+| Antwort-Tokens | Dauer | Tok/s |
+|---:|---:|---:|
+| 1944 | 103,8 s | 18,7 |
+| 3811 | 119,7 s | 31,8 |
+| 1990 | 67,3 s | 29,6 |
+| 341 | 35,8 s | 9,5 |
+| 155 | 12,3 s | 12,6 |
+| 130 | 8,2 s | 15,9 |
+| 222 | 11,4 s | 19,4 |
+| 67 | 5,5 s | 12,1 |
+| 614 | 26,3 s | 23,4 |
+| 138 | 5,5 s | 25,3 |
+| 231 | 9,8 s | 23,6 |
+| 563 | 16,0 s | 35,2 |
+| 557 | 28,9 s | 19,2 |
+| 539 | 18,8 s | 28,7 |
+
+Summe: 11302 Antwort-Tokens in ~469 s reiner Generierungszeit --
+**im Schnitt rund 24 Tok/s**, mit Ausschlaegen zwischen 9,5 und 35,2
+Tok/s je nach Antwort. Grobe Groessenordnung, kein Eins-zu-eins-Vergleich
+(andere Aufgabe, siehe oben): die dichten Qwen3.8-27B-Varianten unter
+LM Studio/MLX aus Kapitel 66 lagen ebenfalls bei < 25 Tok/s und wurden
+dort als "zu langsam" verworfen -- dieser Fork bewegt sich in etwa im
+selben Bereich, mit dem zusaetzlichen Kontextfenster-Vorbehalt oben.
+
+**Fazit:** ein interessanter neuer Weg, ein 27B-Modell ueberhaupt auf
+aelterer Apple-Hardware (M1) lokal laufen zu lassen -- die
+GPU-Kernel-Portierung funktioniert grundsaetzlich. Aber: die Engine ist
+bei grossem Kontext (128K) nicht stabil, und das Kontextfenster ist der
+Hebel, nicht ein Tuning-Detail -- 8K ist zu knapp, 128K stuerzt ab, 32K ist
+fuer diese Aufgabengroesse der brauchbare Mittelweg. Tok/s (~24 im
+Schnitt) bewegt sich im selben Bereich wie andere dichte
+Qwen3.8-27B-Quantisierungen aus Kapitel 66 -- kein Durchbruch bei der
+Geschwindigkeit, aber ein brauchbarer Kompromiss fuer Hardware, die sonst
+gar keinen Zugang zu diesem Modell haette.
+
+### Nachschlag: der ECHTE Standard-Benchmark (Personenverwaltung) auf demselben
+Fork -- drei neue, harte Fallstricke, und ein Stillstands-Timeout als Fix
+
+Der Notiz-Test oben war bewusst klein gehalten. Ein zweiter Lauf mit dem
+tatsaechlichen Adressverwaltung-Benchmark (React+Vite+Material-Web-Frontend,
+volle npm/pip-Installation, curl-Verifikation aller vier Endpunkte inkl.
+Fehlerfaelle -- derselbe Prompt wie in Kapitel 66/Anhang) foerderte drei
+weitere, echte Probleme zutage, die der kleinere Test nicht zeigte:
+
+1. **Qwen degeneriert unter Stress zu `<tool_call>`-Tags -- trotz expliziter
+   Gegen-Anweisung im System-Prompt.** `mc.py` verbietet dieses Format
+   bereits seit laengerem explizit ("Do NOT use `<tool_call>` tags...",
+   siehe Kapitel 84). Nach vier erzwungenen Fortsetzungen (Antwort wiederholt
+   am Token-Limit abgeschnitten) kippte das Modell trotzdem in eine
+   1869-zeilige `<tool_call>`-Wiederholungsschleife, verbrauchte das
+   komplette Antwortbudget, schrieb keine einzige Datei. Kein mc.py-Bug --
+   Qwen-Modelle sind ungewoehnlich stark auf genau dieses (Hermes-Style)
+   natives Tool-Call-Format trainiert, ein tieferer Trainings-Reflex als bei
+   den meisten anderen Modellfamilien, der unter Stress (mehrfache
+   Fortsetzungszwaenge) eher durchbricht. **Fix: `--tool-mode native`** --
+   damit laeuft der Tool-Aufruf ueber die echte OpenAI-Tool-Calling-API
+   (JSON-Schema im `tools`-Feld) statt ueber das text-basierte
+   ```` ```action ```` -Fence-Protokoll; das native Verhalten des Modells
+   findet dann einen echten, geparsten Kanal statt gegen ein Verbot
+   anzurennen. Seitdem keine einzige Wiederholung dieses Fehlers mehr.
+
+2. **Das Modell aendert von sich aus echte macOS-Systemeinstellungen.**
+   Backend-Port 5000 kollidierte mit der macOS Control-Center-AirPlay-
+   Empfangsfunktion (bekanntes Problem). Statt einen anderen Port zu waehlen,
+   fuehrte das Modell -- automatisch genehmigt durch das pauschale `--yes`
+   dieses Testlaufs -- tatsaechlich `defaults write com.apple.controlcenter
+   CCAirPortProxyState -bool false` und `killall ControlCenter` aus, um den
+   Port freizuraeumen. Lief technisch durch (exit=0), ist aber ein reale
+   Nebenwirkung auf dem Host-System, die ein Agent mit blindem `--yes` und
+   Shell-Zugriff verursachen kann. Lehre: bei Port-Kollisionen im Prompt
+   von vornherein einen unkritischen Port vorgeben (hier: 5050 statt 5000),
+   statt dem Modell die Wahl zu lassen, wie es das Hindernis "loest".
+
+3. **Stillstands-Timeout zu knapp fuer diese Hardware.** `mc.py` bricht
+   einen Request nach `MC_STALL_TIMEOUT` Sekunden ohne echtes SSE-Datenereignis
+   ab (Default 150s, `mc.py:610`) -- gedacht als Schutz gegen tot haengende
+   Verbindungen. Bei ~10-25 Tok/s und Antworten von mehreren tausend Tokens
+   dauert ein einzelner Request auf dieser Hardware aber laenger als 150s,
+   OHNE dass etwas haengt -- das Modell generiert einfach nur langsam.
+   Ergebnis: wiederholte Abbrueche mitten in echten, laufenden Antworten.
+   **Fix:** `MC_STALL_TIMEOUT` grosszuegig hochsetzen (getestet mit einem
+   sehr hohen Wert). Damit lief anschliessend die bis dahin laengste
+   einzelne Tool-Antwort des gesamten Laufs vollstaendig durch: 6651
+   Ausgabe-Tokens am Stueck, rund 4 Minuten reine Generierung, kein Abbruch
+   -- mit dem alten 150s-Default waere exakt dieser Request gekappt worden.
+   Ergaenzend `MC_MAX_TOKENS` (Default 4000, `mc.py:275`) von 4000 auf 8000
+   angehoben, um die Zahl der Token-Limit-Abschneidungen/Fortsetzungen zu
+   senken -- mit dem Vorbehalt, dass ein hoeherer Wert dem Prompt-Budget
+   direkt Platz wegnimmt (der Wert fliesst in dieselbe Reserve-Rechnung
+   ein, die auch die Kuerzungsschwelle bestimmt, siehe Kapitel 76/77) und
+   deshalb nicht beliebig hoch gesetzt werden sollte.
+
+4. **8000 Tokens reichten trotzdem nicht -- weil Qwen3.8 standardmaessig
+   mitdenkt.** Auch nach obigem Fix schnitt derselbe Schritt (26) zweimal in
+   Folge exakt bei 8000 Tokens ab (`Tokens: +14607/8000`,
+   `+14661/8000` -- letzteres sogar mit vollem Prompt-Cache-Treffer, also
+   kein Cache-Problem). Ursache: Qwen3.8 hat Reasoning per Default an (siehe
+   auch Kapitel 66), und diese Denk-Tokens zaehlen mit gegen `max_tokens` --
+   bei einem grossen Tool-Call blieb dann kein Platz mehr fuer den
+   eigentlichen Inhalt. Der Lauf war ohne `--no-think` gestartet worden.
+   **Fix:** `--no-think` (setzt `reasoning_effort=none`, `mc.py:727`) plus
+   `MC_MAX_TOKENS` weiter auf 12000 hochgesetzt und `--max-steps` von 30 auf
+   60 verdoppelt (das Schrittbudget war durch die vielen Retries in
+   Schritt 26 fast aufgebraucht). Praxis-Lehre: bei einem Modell mit
+   standardmaessig aktivem Reasoning ist ein Abschneiden am `max_tokens`-
+   Limit erst mal ambivalent -- es kann Inhalt sein (mehr Budget hilft) oder
+   Denken (nur `--no-think` hilft, mehr Budget verschluckt nur noch mehr
+   Denk-Tokens). `mc.py` protokolliert bisher nicht, welcher Anteil
+   Reasoning war -- ein sinnvoller naechster Diagnose-Schritt fuers Tool.
+
+**Cache-Verhalten, live am Server-Log beobachtet:** Ein Prompt-Cache-Treffer
+druecke die Zeit bis zum ersten Token von mehreren Sekunden auf 1-4s; ein
+Cache-Verfehler (0 von uebernommenen Tokens) kostete in einem beobachteten
+Fall 87s TTFT bei nur 11412 Eingabe-Tokens, obwohl der vorige Request 97%
+Cache-Treffer hatte. Zwei nachvollzogene Ursachen: (a) `mc.py`s eigene,
+absichtlich cache-schonende Batch-Kuerzung (kuerzt erst bei 70%
+Kontext-Auslastung im Batch, nicht pro Schritt -- Kapitel 76/77) aendert an
+genau diesem Kuerzungs-Schritt den Prompt-Anfang und erzwingt EINMALIG einen
+Cache-Neuaufbau, was danach wieder abklingt; (b) die `explore`-Aktion laeuft
+mit bewusst isoliertem Kontext (eigener System-Prompt, siehe Kapitel 2) und
+hat dadurch zwangslaeufig einen anderen Prompt-Anfang als der Hauptverlauf
+-- wechselt ein Lauf zwischen beiden hin und her, verdraengen sich Haupt-
+und Explore-Kontext bei knappem Speicher gegenseitig aus dem KV-Cache.
+Beides sind bewusste Design-Trade-offs (Cache-Schonung bzw. Kontext-
+Isolation), keine Bugs -- kosten auf dieser Hardware aber sichtbar Zeit,
+wenn sie zusammentreffen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
