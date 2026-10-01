@@ -105,6 +105,12 @@ MC_SETTINGS = {
     'api_key': '',
     'max_steps': 200,
     'max_tokens': 16000,
+    # manche Modelle/Endpoints haben Reasoning standardmaessig an und
+    # koennen bei einer grossen Antwort das komplette max_tokens-Budget
+    # beim Nachdenken verbrauchen, bevor sichtbarer Text entsteht --
+    # 'think': False haengt mc.py --no-think an (reasoning_effort=none +
+    # enable_thinking=false + chat_template_kwargs.enable_thinking=false).
+    'think': True,
     # name -> {"keep_running": bool, "backend_port": int, "frontend_port": int}
     # -- nur Projekte MIT keep_running bekommen ein eigenes, festes Port-Paar
     # und laufen beim Wegwechseln weiter; alle anderen teilen sich weiterhin
@@ -120,7 +126,7 @@ def save_settings():
     os.replace(f.name, SETTINGS_FILE_PATH)
 
 
-PROFILE_FIELDS = ('model', 'base_url', 'api_key', 'max_steps', 'max_tokens')
+PROFILE_FIELDS = ('model', 'base_url', 'api_key', 'max_steps', 'max_tokens', 'think')
 
 
 def ensure_profiles():
@@ -141,7 +147,8 @@ def apply_project_profile():
     if profile_id not in MC_SETTINGS['profiles']:
         profile_id = next(iter(MC_SETTINGS['profiles']))
     MC_SETTINGS['project_profiles'][CURRENT_PROJECT] = profile_id
-    MC_SETTINGS.update({key: MC_SETTINGS['profiles'][profile_id][key] for key in PROFILE_FIELDS})
+    profile = MC_SETTINGS['profiles'][profile_id]
+    MC_SETTINGS.update({key: profile.get(key, MC_SETTINGS.get(key, True)) for key in PROFILE_FIELDS})
 
 def load_settings():
     """Lädt Laufzeit-Einstellungen: erst Env-Variablen, dann mc_settings.json (hat Vorrang)."""
@@ -903,6 +910,7 @@ def get_settings():
         'base_url': MC_SETTINGS.get('base_url', DEFAULT_BASE_URL),
         'max_steps': MC_SETTINGS.get('max_steps', 200),
         'max_tokens': MC_SETTINGS.get('max_tokens', 16000),
+        'think': MC_SETTINGS.get('think', True),
         'api_key_gesetzt': bool(MC_SETTINGS.get('api_key'))
     })
 
@@ -1101,6 +1109,9 @@ def post_settings():
         except (TypeError, ValueError):
             pass
 
+    if 'think' in data:
+        MC_SETTINGS['think'] = bool(data.get('think'))
+
     # Persistieren – der Key wird gespeichert (nur lokal, nicht über GET ausgeliefert)
     ensure_profiles()
     MC_SETTINGS['profiles'][selected_profile()].update({key: MC_SETTINGS[key] for key in PROFILE_FIELDS})
@@ -1191,7 +1202,7 @@ def refine_instruction():
     decision, PO_HISTORY = po.refine_retrying(
         message, context_text, PO_HISTORY,
         MC_SETTINGS['base_url'], MC_SETTINGS['model'], MC_SETTINGS['api_key'],
-        max_tokens=MC_SETTINGS['max_tokens'])
+        max_tokens=MC_SETTINGS['max_tokens'], think=MC_SETTINGS.get('think', True))
     return jsonify(decision)
 
 
@@ -1318,6 +1329,8 @@ def build():
         "--base-url", base_url,
         "--model", model,
     ]
+    if not MC_SETTINGS.get('think', True):
+        base_command.append('--no-think')
     if request.form.get('analyse') == 'true':
         base_command.insert(3, '--analyse')
 
@@ -1437,7 +1450,7 @@ def build():
                     evaluation = po.evaluate(
                         acceptance, project_context, "".join(output_lines[pass_output_start:]),
                         base_url, model, MC_SETTINGS.get('api_key', ''),
-                        max_tokens=MC_SETTINGS.get('max_tokens'))
+                        max_tokens=MC_SETTINGS.get('max_tokens'), think=MC_SETTINGS.get('think', True))
                     if pending_checkpoint:
                         improved, reason = repair_guard.improvement(
                             previous_evaluation, evaluation, previous_checks, checks)

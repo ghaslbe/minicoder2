@@ -139,12 +139,20 @@ def _extra_headers():
     return out
 
 
-def _call_llm(messages, base_url, model, api_key, timeout=90, max_tokens=None,
-              _token_field="max_tokens"):
+def _call_llm(messages, base_url, model, api_key, timeout=240, max_tokens=None,
+              _token_field="max_tokens", think=True):
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": False}
     if max_tokens is not None:
         payload[_token_field] = max_tokens
+    if not think:
+        # Manche Endpoints haben Reasoning standardmaessig an und koennen bei
+        # einer langen PO-/Evaluator-Antwort das komplette Budget beim
+        # Nachdenken aufbrauchen, bevor sichtbarer Text entsteht (siehe
+        # mc.py --no-think, derselbe Mechanismus hier fuer PO/Evaluator).
+        payload["reasoning_effort"] = "none"
+        payload["enable_thinking"] = False
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -167,12 +175,13 @@ def _call_llm(messages, base_url, model, api_key, timeout=90, max_tokens=None,
         if (e.code == 400 and _token_field == "max_tokens"
                 and "max_completion_tokens" in body):
             return _call_llm(messages, base_url, model, api_key, timeout=timeout,
-                             max_tokens=max_tokens, _token_field="max_completion_tokens")
+                             max_tokens=max_tokens, _token_field="max_completion_tokens",
+                             think=think)
         raise urllib.error.HTTPError(e.url, e.code, e.msg, e.headers, io.BytesIO(raw)) from e
     return obj["choices"][0]["message"]["content"]
 
 
-def refine(user_message, project_context, history, base_url, model, api_key, max_tokens=None):
+def refine(user_message, project_context, history, base_url, model, api_key, max_tokens=None, think=True):
     """Fuehrt EINEN Schritt des Produktdialogs aus.
     'history' ist die bisherige [{role, content}, ...]-Liste (ohne
     System-Prompt, wird von vibelove zwischen Aufrufen gehalten).
@@ -191,7 +200,7 @@ def refine(user_message, project_context, history, base_url, model, api_key, max
     messages.extend(history)
 
     try:
-        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens)
+        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens, think=think)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]
         return {"type": "error", "error": f"HTTP {e.code} vom Endpoint: {body}",
@@ -259,7 +268,7 @@ def refine(user_message, project_context, history, base_url, model, api_key, max
             "raw": reply, "retryable": True}, history
 
 
-def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3, max_tokens=None):
+def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3, max_tokens=None, think=True):
     """Wie refine(), aber wiederholt automatisch bei RETRYABLE Fehlern
     (kaputtes Protokoll-Format -- bei einem kleinen Modell mit mehrteiliger
     strukturierter Ausgabe ein erwartbarer gelegentlicher Aussetzer, kein
@@ -270,7 +279,7 @@ def refine_retrying(user_message, project_context, history, base_url, model, api
     last = None
     for _ in range(attempts):
         decision, new_history = refine(user_message, project_context, history,
-                                        base_url, model, api_key, max_tokens=max_tokens)
+                                        base_url, model, api_key, max_tokens=max_tokens, think=think)
         if decision["type"] != "error" or not decision.get("retryable"):
             return decision, new_history
         last = (decision, new_history)
@@ -334,7 +343,7 @@ EVAL_CRITERIA_RE = re.compile(r"```criteria\s*\n?(.*?)```", re.DOTALL)
 EVAL_FEEDBACK_RE = re.compile(r"```feedback\s*\n?(.*?)```", re.DOTALL)
 
 
-def evaluate(acceptance, project_context, build_output, base_url, model, api_key, max_tokens=None):
+def evaluate(acceptance, project_context, build_output, base_url, model, api_key, max_tokens=None, think=True):
     """Prueft ein fertig gebautes Ergebnis gegen die vom Product Owner
     festgelegten Akzeptanzkriterien -- unabhaengig von mc.py's eigener
     Check-Nachfrage, die nur generisch fragt "hast du wirklich getestet",
@@ -359,7 +368,7 @@ def evaluate(acceptance, project_context, build_output, base_url, model, api_key
             + "\n\nBUILD/TEST OUTPUT (tail):\n" + build_output[-6000:]}
     ]
     try:
-        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens)
+        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens, think=think)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]
         return {"status": "error", "error": f"HTTP {e.code} vom Endpoint: {body}", "raw": ""}
