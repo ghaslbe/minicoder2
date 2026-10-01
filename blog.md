@@ -7467,6 +7467,85 @@ App im Sinne von mc.py's Check-Modus heisst verifiziert auf API-/Build-
 Ebene -- ein echter Blick in den Browser bleibt trotzdem noetig, wenn
 Custom Elements (Material Web) im Spiel sind.
 
+## 88. Reasoning-Fallstrick bei mlx_lm.server, und ein echter mc.py-Deadlock
+gefunden & gefixt
+
+Derselbe CRUD-Benchmark (Personenverwaltung) gegen einen anderen Rechner
+im lokalen Netz: `mlx_lm.server --model gemma-4-26b-a4b-it-mxfp4 --host
+0.0.0.0 --port 8081 --prefill-step-size 1024 --prompt-cache-size 1
+--prompt-cache-bytes 1073741824 --temp 0` -- der offizielle MLX-Referenz-
+server, kein LM Studio, kein vMLX/oMLX.
+
+### Reasoning ist hier an, trotz Kapitel 66 -- und `mc.py`s Abschalt-Flags
+wirken nur in Kombination
+
+Kapitel 66 hatte beobachtet, dass `gemma-4-26b-a4b-it` kein aggressives
+Standard-Nachdenken zeigt (anders als Qwen3.8). Auf diesem Server zeigt
+genau dasselbe Modell trotzdem ein "reasoning"-Feld in jeder Antwort --
+Server-/Build-Unterschied, keine Modelleigenschaft. Folge: bei einer
+grossen, echten Coding-Antwort kann das Reasoning so lang werden, dass
+selbst `MC_MAX_TOKENS=12000` komplett darin verschwindet -- 3x leere
+Antwort in Folge, Lauf bricht ab.
+
+Direkt am Server mit `curl` nachgestellt: einzeln gesendet wirken weder
+`reasoning_effort: "none"` noch `enable_thinking: false` (Top-Level) --
+identische Antwort, identisches Reasoning-Feld, als waeren sie gar nicht
+im Request. Erst alle drei Felder zusammen, wie `mc.py --no-think`
+(`reasoning_effort`, `enable_thinking` UND das verschachtelte
+`chat_template_kwargs: {enable_thinking: false}`) schalten es ab -- nur
+Letzteres wirkt tatsaechlich, weil es direkt ins Jinja-Chat-Template des
+Tokenizers durchgereicht wird; die beiden Top-Level-Felder sind fuer
+diesen Server reine Nullen. Praxis-Lehre: ein Endpoint, der nur EINES der
+drei ueblichen Abschalt-Felder kennt, schaltet mit den anderen beiden
+gar nichts ab -- ohne Gegenprobe (wie hier per curl) sieht man das nicht.
+
+### Der eigentliche Fund: ein echter mc.py-Deadlock in der pip-Guard-Logik
+
+Mit `--no-think` lief der naechste Versuch rund 15 Schritte sauber,
+haengte sich dann aber in einer echten Endlosschleife auf: immer derselbe
+Befehl, immer dieselbe Ablehnung --
+
+```
+run python3 -m venv .venv && ./.venv/bin/python -m pip install flask flask-cors
+ABGELEHNT: pip install nur projektlokal; erst python3 -m venv .venv,
+dann .venv/bin/python -m pip install ...
+```
+
+Das Modell befolgte die Empfehlung der eigenen Fehlermeldung EXAKT -- und
+wurde trotzdem wieder abgelehnt, in jedem weiteren Versuch identisch.
+Root Cause in `_shell_guard()`/`_local_venv_python()` (`mc.py`): der Guard
+prueft bei einem `pip install`, ob irgendein Token im Kommando ein
+EXISTIERENDER venv-Python-Interpreter ist (`os.path.isfile(path)`). Bei
+genau dem empfohlenen Einzeiler existiert `.venv/bin/python` zum
+Pruefzeitpunkt aber noch nicht -- er wird ja erst von der ERSTEN Haelfte
+desselben `&&`-verketteten Kommandos angelegt. Der Guard widerspricht sich
+also selbst: er empfiehlt ein Muster, das er im selben Atemzug ablehnt.
+Ohne menschliches Eingreifen waere dieser Lauf an dieser Stelle fuer immer
+haengen geblieben (begrenzt nur durch `--max-steps`).
+
+**Fix** (`mc.py`, neue Helfer `_declared_venv_dirs()` und
+`_declared_venv_python()`): bevor der Guard ablehnt, prueft er zusaetzlich,
+ob dasselbe Kommando selbst per `python -m venv <dir>` oder `virtualenv
+<dir>` genau dieses Venv-Verzeichnis anlegt -- dann zaehlt der
+nachfolgende `<dir>/bin/python`-Aufruf als lokal, auch wenn die Datei
+beim Validieren noch nicht existiert. Direkt verifiziert (`mc._shell_guard(...)`):
+der zuvor blockierende Einzeiler wird jetzt akzeptiert, waehrend echte
+Verstoesse (globales `pip install`, direkter `pip`-Aufruf statt `python -m
+pip`) weiterhin korrekt abgelehnt werden. Alle 312 Tests gruen. Mit dem
+Fix lief der komplette Benchmark anschliessend durch: 30 Requests, 253012
+Tokens (89490 aus Cache), echter, verifizierter `finish` nach Check-Modus-
+Rueckfragen (Backend-CRUD inkl. 404 getestet, Frontend konfiguriert).
+
+**Fazit:** zwei unabhaengige, uebertragbare Funde aus einem einzigen
+Nachmittag -- (1) Reasoning-Abschalt-Flags muessen als vollstaendiges Set
+gesendet werden, ein Endpoint kann Teilmengen stillschweigend ignorieren;
+(2) ein sicherheitsmotivierter Guard, der eine chronologische Abfolge
+innerhalb EINES Kommandos nicht kennt, kann genau die Empfehlung seiner
+eigenen Fehlermeldung blockieren und einen Agenten in einen echten,
+unendlichen Deadlock schicken -- erst das Nachvollziehen am rohen
+Tokenstream (`shlex`) und ein direkter Funktionsaufruf auf dem Guard
+legten das offen.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
