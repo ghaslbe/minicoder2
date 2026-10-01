@@ -139,7 +139,7 @@ def _extra_headers():
     return out
 
 
-def _call_llm(messages, base_url, model, api_key, timeout=240, max_tokens=None,
+def _call_llm(messages, base_url, model, api_key, timeout=600, max_tokens=None,
               _token_field="max_tokens", think=True):
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = {"model": model, "messages": messages, "stream": False}
