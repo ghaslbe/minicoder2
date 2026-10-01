@@ -3569,6 +3569,36 @@ def _local_venv_python(path):
             and os.path.isfile(path) and os.access(path, os.X_OK))
 
 
+def _declared_venv_dirs(tokens):
+    """Venv directories a THIS SAME command creates (`python -m venv <dir>` or
+    `virtualenv <dir>`), so a chained `&&`-follow-up install into that venv
+    isn't rejected just because the interpreter doesn't exist on disk YET --
+    real deadlock observed: the guard's own rejection message recommends
+    exactly `python3 -m venv .venv && .venv/bin/python -m pip install ...`
+    as ONE command, but _local_venv_python() checks os.path.isfile(path) at
+    validation time, before the venv-creation half has run -- so the model
+    gets rejected for following the rejection message's own advice, and
+    repeats the identical, identically-rejected command forever."""
+    dirs = []
+    for i, token in enumerate(tokens):
+        if token == "venv" and i >= 2 and tokens[i - 1] == "-m" and i + 1 < len(tokens):
+            dirs.append(os.path.abspath(os.path.expanduser(os.path.expandvars(tokens[i + 1]))))
+        elif os.path.basename(token) == "virtualenv" and i + 1 < len(tokens):
+            dirs.append(os.path.abspath(os.path.expanduser(os.path.expandvars(tokens[i + 1]))))
+    return dirs
+
+
+def _declared_venv_python(path, declared_dirs):
+    """Like _local_venv_python(), but for a venv this same command is about
+    to create -- no on-disk check, just: does the path look like
+    <declared venv dir>/bin/python* and stay inside the project?"""
+    if not os.path.basename(path).startswith("python"):
+        return False
+    lexical = os.path.abspath(path)
+    venv = os.path.dirname(os.path.dirname(lexical))
+    return venv in declared_dirs and not _project_path_error(venv)
+
+
 def _shell_guard(command):
     """Best-effort checks for visible hazards, NOT a shell security boundary."""
     if not isinstance(command, str) or not command.strip():
@@ -3622,7 +3652,8 @@ def _shell_guard(command):
             executable = False
     # Plain pip may point at mc's own environment, outside the project.
     if "install" in tokens and any(os.path.basename(t) in ("pip", "pip3") for t in tokens):
-        local_python = any(_local_venv_python(t) for t in tokens)
+        declared = _declared_venv_dirs(tokens)
+        local_python = any(_local_venv_python(t) or _declared_venv_python(t, declared) for t in tokens)
         if not local_python:
             return "ABGELEHNT: pip install nur projektlokal; erst python3 -m venv .venv, dann .venv/bin/python -m pip install ..."
     return ""
