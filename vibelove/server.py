@@ -30,6 +30,7 @@ import po
 import mc_terminal
 from vibelove.terminal_backend import TerminalManager
 from vibelove import repair_guard
+from vibelove import template_manager
 
 app = Flask(__name__, root_path=os.path.dirname(os.path.abspath(__file__)))
 PROJECT_OPERATION_LOCK = threading.Lock()
@@ -1153,7 +1154,8 @@ def _po_project_context(mit_verlauf=False):
     Produktdialog sonst bei jeder Rueckfrage denselben (ggf. langen) Verlauf
     erneut mitschickt; der Nutzer aktiviert es gezielt per Checkbox im Chat."""
     text = (f"Aktives Projekt: {CURRENT_PROJECT}\n\n"
-            + po.gather_project_context(projekt_dir(CURRENT_PROJECT)))
+            + po.gather_project_context(projekt_dir(CURRENT_PROJECT))
+            + template_manager.project_hint(projekt_dir(CURRENT_PROJECT)))
     if mit_verlauf:
         verlauf = _bauverlauf_kontext_text()
         if verlauf:
@@ -1272,6 +1274,7 @@ def build():
               f'{{"command": "python3 app.py"}} -- nur so erkennt und startet die Live-Vorschau '
               f"das Backend automatisch.")
     full_instruction += suffix
+    full_instruction += template_manager.project_hint(projekt_dir(CURRENT_PROJECT))
 
     found_urls = extract_urls(instruction)
     if found_urls:
@@ -1468,7 +1471,7 @@ def build():
                         + "\n\nBehebe GENAU das oben Beschriebene am BESTEHENDEN "
                         "Projekt (nicht komplett neu anfangen). Es gelten "
                         "weiterhin ALLE urspruenglichen Akzeptanzkriterien:\n"
-                        + acceptance)
+                        + acceptance + template_manager.project_hint(aktives_projekt_dir))
             except Exception as e:
                 yield emit(f"\nFehler während des Prozesses: {str(e)}")
             finally:
@@ -1514,7 +1517,7 @@ def list_projects():
     try:
         if os.path.isdir(PROJEKTE_ROOT):
             projekte += sorted(d for d in os.listdir(PROJEKTE_ROOT)
-                               if os.path.isdir(os.path.join(PROJEKTE_ROOT, d)))
+                               if not d.startswith('.') and os.path.isdir(os.path.join(PROJEKTE_ROOT, d)))
     except OSError:
         pass
     _, aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
@@ -1524,27 +1527,36 @@ def list_projects():
                     'keep_running': keep_running, 'frontend_port': aktiver_frontend_port})
 
 
+@app.route('/project-templates', methods=['GET'])
+def list_project_templates():
+    return jsonify({'templates': template_manager.templates()})
+
+
 @app.route('/projects', methods=['POST'])
 def create_project():
     """Legt ein neues Projekt an und macht es aktiv."""
     data = request.get_json(silent=True) or {}
-    name = re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get('name', '')))
-    if not name or name == 'workspace':
+    if not isinstance(data, dict) or not isinstance(data.get('name', ''), str):
+        return jsonify({'ok': False, 'error': 'Ungueltige Projektdaten'}), 400
+    name = data.get('name', '').strip()
+    template_id = data.get('template', 'empty')
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', name) or name == 'workspace':
         return jsonify({'ok': False, 'error': 'Ungueltiger Projektname'}), 400
     project_path = os.path.join(PROJEKTE_ROOT, name)
-    os.makedirs(project_path, exist_ok=True)
-    with open(os.path.join(project_path, '.gitignore'), 'w', encoding='utf-8') as f:
-        f.write('node_modules/\ndist/\n*.log\n.DS_Store\n')
+    if os.path.lexists(project_path):
+        return jsonify({'ok': False, 'error': 'Ein Projekt mit diesem Namen existiert bereits.'}), 409
     try:
-        subprocess.run(['git', 'init'], cwd=project_path, capture_output=True)
-        subprocess.run(['git', 'add', '-A'], cwd=project_path, capture_output=True)
-        subprocess.run(
-            ['git', 'commit', '-m', f'Erst-Commit: {name} aus vibelove', '--allow-empty'],
-            cwd=project_path,
-            capture_output=True
-        )
-    except Exception:
-        pass
+        os.makedirs(PROJEKTE_ROOT, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='.new-', dir=PROJEKTE_ROOT) as staging:
+            template_manager.populate(staging, template_id)
+            template_manager.prepare(staging, template_id)
+            if os.path.lexists(project_path):
+                return jsonify({'ok': False, 'error': 'Projekt existiert bereits.'}), 409
+            os.rename(staging, project_path)
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    except (OSError, subprocess.SubprocessError) as exc:
+        return jsonify({'ok': False, 'error': 'Projekt konnte nicht gesichert werden: ' + str(exc)}), 500
     switch_project(name)
     _, _aktiver_frontend_port = _project_ports(CURRENT_PROJECT)
     return jsonify({'ok': True, 'aktiv': CURRENT_PROJECT, 'frontend_port': _aktiver_frontend_port})

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.mc-runtime/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example

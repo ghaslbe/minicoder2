@@ -9,6 +9,36 @@
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 h-screen flex overflow-hidden">
+    <dialog id="newProjectDialog" aria-labelledby="newProjectTitle">
+        <form id="newProjectForm">
+            <h2 id="newProjectTitle">Neues Projekt</h2>
+            <label for="newProjectName">Projektname</label>
+            <input id="newProjectName" name="name" required pattern="[a-zA-Z0-9_-]{1,64}" maxlength="64" autocomplete="off" autofocus>
+            <label for="newProjectTemplate">Vorlage</label>
+            <select id="newProjectTemplate" name="template"><option value="empty">Leeres Projekt</option></select>
+            <p id="newProjectStatus" role="status" aria-live="polite"></p>
+            <p id="newProjectError" role="alert" hidden></p>
+            <div class="new-project-actions">
+                <button id="newProjectCancel" type="button">Abbrechen</button>
+                <button id="newProjectSubmit" type="submit"><i data-lucide="plus"></i><span>Projekt erstellen</span></button>
+            </div>
+        </form>
+    </dialog>
+    <style>
+        #newProjectDialog { width: 440px; max-width: calc(100vw - 32px); border: 1px solid #d1d5db; border-radius: 8px; padding: 24px; color: #1f2937; background: #fff; margin: auto; }
+        #newProjectDialog::backdrop { background: #11182770; }
+        #newProjectForm { display: flex; flex-direction: column; gap: 10px; }
+        #newProjectForm h2 { font-size: 18px; font-weight: 600; margin: 0 0 10px; }
+        #newProjectForm label { font-size: 13px; margin-top: 6px; }
+        #newProjectForm input, #newProjectForm select { width: 100%; min-width: 0; padding: 9px; border: 1px solid #d1d5db; border-radius: 5px; font-size: 14px; background: white; }
+        .new-project-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+        .new-project-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #d1d5db; border-radius: 5px; padding: 8px 12px; font-size: 13px; }
+        .new-project-actions svg { width: 16px; height: 16px; }
+        #newProjectSubmit { background: #2563eb; border-color: #2563eb; color: white; }
+        #newProjectForm button:disabled { opacity: .6; cursor: wait; }
+        #newProjectStatus { font-size: 12px; color: #475569; min-height: 18px; }
+        #newProjectError { font-size: 13px; color: #b91c1c; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 150px; overflow: auto; }
+    </style>
     <nav id="appNav" aria-label="Hauptnavigation">
         <span class="nav-brand">V</span>
         <button type="button" data-view="build" title="Build" aria-label="Build" aria-current="page"><i data-lucide="hammer"></i><span>Build</span></button>
@@ -1394,25 +1424,65 @@
         projektAktivieren(projektSelect.value);
     });
 
+    const newProjectDialog = document.getElementById('newProjectDialog');
+    const newProjectForm = document.getElementById('newProjectForm');
+    const newProjectStatus = document.getElementById('newProjectStatus');
+    const newProjectError = document.getElementById('newProjectError');
+    let creatingProject = false;
+    newProjectDialog.addEventListener('cancel', event => { if (creatingProject) event.preventDefault(); });
+    document.getElementById('newProjectCancel').onclick = () => newProjectDialog.close();
     neuesProjektBtn.addEventListener('click', async function () {
         if (!mayLeaveEditor()) return;
-        const name = prompt('Name des neuen Projekts (Buchstaben/Zahlen/-/_):');
-        if (!name) return;
-        const res = await fetch('/projects', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
-        });
-        if (res.ok) {
+        newProjectForm.reset();
+        newProjectError.hidden = true;
+        newProjectStatus.textContent = '';
+        newProjectDialog.showModal();
+        document.getElementById('newProjectName').focus();
+        document.getElementById('newProjectSubmit').disabled = true;
+        try {
+            const res = await fetch('/project-templates');
+            if (!res.ok) throw new Error('Vorlagen konnten nicht geladen werden.');
+            const data = await res.json();
+            document.getElementById('newProjectTemplate').replaceChildren(...data.templates.map(t =>
+                new Option(t.name, t.id)));
+            document.getElementById('newProjectSubmit').disabled = false;
+        } catch (error) {
+            newProjectError.textContent = error.message;
+            newProjectError.hidden = false;
+        }
+    });
+    newProjectForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        if (creatingProject) return;
+        creatingProject = true;
+        const name = document.getElementById('newProjectName').value.trim();
+        const template = document.getElementById('newProjectTemplate').value;
+        newProjectError.hidden = true;
+        newProjectStatus.textContent = template === 'empty' ? 'Projekt wird angelegt…' : 'Vorlage wird installiert und Build geprueft…';
+        newProjectForm.setAttribute('aria-busy', 'true');
+        for (const control of newProjectForm.elements) control.disabled = true;
+        try {
+            const res = await fetch('/projects', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, template })
+            });
             const daten = await res.json();
+            if (!res.ok) throw new Error(daten.error || 'Projekt konnte nicht angelegt werden.');
+            newProjectDialog.close();
             setzePreviewPort(daten.frontend_port);
             resetFileEditor();
             await ladeProjekte();
             await ladeGitLogUndRenderChat();
             reloadPreview();
             ladeDateiListe();
-        } else {
-            alert('Projekt konnte nicht angelegt werden.');
+        } catch (error) {
+            newProjectError.textContent = error.message;
+            newProjectError.hidden = false;
+        } finally {
+            creatingProject = false;
+            newProjectStatus.textContent = '';
+            newProjectForm.removeAttribute('aria-busy');
+            for (const control of newProjectForm.elements) control.disabled = false;
         }
     });
 

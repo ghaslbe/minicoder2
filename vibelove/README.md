@@ -44,3 +44,31 @@ Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Li
 * Der Bauverlauf bleibt pro Projekt erhalten. Neue Bauschritte speichern ihren Git-Stand davor und danach, sodass Rueckgaengig auch nach einem Reload verfuegbar bleibt. Alte Eintraege ohne Git-Zuordnung werden weiterhin angezeigt.
 * Waehrend eines Bauauftrags sind konkurrierende Aenderungen und Projektwechsel gesperrt, auch aus einem zweiten Browser-Tab.
 * Die Vorschau wird nach dem Build neu geladen. Neben Vite werden statische Seiten und Backends mit `backend/vibelove-backend.json` unterstuetzt.
+## Projektvorlagen
+
+Unter **Neues Projekt** stehen **Leeres Projekt** und **Vite Business App** zur
+Auswahl. Die Business-Vorlage enthaelt React, TypeScript, Vite, Lucide-Icons und
+eine lokale Kundenverwaltung mit Suche, Statusfilter, Anlegen, Bearbeiten und
+Loeschen. Ein Python-Backend ist nicht erforderlich. Die Beispielkontakte sind
+fiktiv; Aenderungen liegen nur im Browser, getrennt nach Projektkennung.
+
+Voraussetzungen: Git, npm und Node.js 20.19+ oder 22.12+ (neuere Versionen
+werden ebenfalls unterstuetzt). Bei der Anlage werden die festgeschriebenen
+Pakete per `npm ci --ignore-scripts` installiert und TypeScript/Build geprueft.
+Erst danach wird das Projekt mit einem Git-Ausgangsstand aktiviert. Die erste
+Installation braucht Netzwerkzugriff zur npm-Registry. Bei Fehlern bleibt das
+bisherige Projekt aktiv; der temporaere Ordner wird entfernt.
+
+Vorlagen liegen unter `vibelove/project_templates/<id>/`: `template.json`
+enthaelt `id`, `name`, `stack` und `version`; `files/` enthaelt das eigentliche
+Projekt. Nur mitgelieferte, vertrauenswuerdige Vorlagen verwenden. Die aktuelle
+Vorbereitung erwartet fuer nicht-leere Vorlagen ein `frontend/` mit Lockfile
+und `build`-Skript. `node_modules`, `dist` und Git-Metadaten werden nicht kopiert.
+
+`DESIGN.md` und `ARCHITECTURE.md` werden ins Projekt kopiert. PO und Bauauftrag
+bekommen einen kurzen Hinweis auf das vorhandene Grundgeruest; die ganze
+Vorlage wird nicht in den Prompt geladen. Der Coding-Agent bleibt generisch.
+
+Tests: `python3 -m pytest tests/test_project_templates.py -q`. Der optionale
+Playwright-Test `tests/test_vibelove_templates.cjs` benoetigt Playwright und
+`VIBELOVE_TEST_URL` auf eine isolierte Testinstanz, da er ein Projekt anlegt.
