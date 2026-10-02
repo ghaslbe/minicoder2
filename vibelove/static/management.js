@@ -23,7 +23,8 @@
             models: byId('profileModels').value.split('\n').map(s => s.trim()).filter(Boolean),
             base_url: byId('profileUrl').value, api_key: byId('profileKey').value,
             clear_api_key: byId('profileClearKey').checked,
-            max_steps: byId('profileSteps').value, max_tokens: byId('profileTokens').value };
+            max_steps: byId('profileSteps').value, max_tokens: byId('profileTokens').value,
+            think: byId('profileThink').checked };
     }
     function skillValue() {
         return { name: byId('skillName').value, scope: byId('skillScope').value,
@@ -63,6 +64,7 @@
         byId('profileClearKey').checked = false;
         byId('profileSteps').value = profile?.max_steps || 200;
         byId('profileTokens').value = profile?.max_tokens || 16000;
+        byId('profileThink').checked = profile?.think !== false;
         byId('deleteProfile').disabled = !profileId;
         byId('profileStatus').textContent = '';
         profileSnapshot = JSON.stringify(profileValue());

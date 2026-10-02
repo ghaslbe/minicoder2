@@ -14,6 +14,9 @@
             <label class="check-label"><input id="profileClearKey" type="checkbox">Gespeicherten Key entfernen</label>
             <label>Max. Schritte<input id="profileSteps" type="number" min="1" required value="200"></label>
             <label>Max. Tokens pro Antwort<input id="profileTokens" type="number" min="1" required value="16000"></label>
+            <label class="check-label" title="Manche Modelle/Endpunkte haben Reasoning standardmaessig an und koennen dabei das komplette Antwort-Budget aufs Nachdenken verwenden, ohne je sichtbaren Text zu liefern. Ausschalten sendet mc.py's --no-think-aequivalente Felder (reasoning_effort=none, enable_thinking=false, chat_template_kwargs.enable_thinking=false).">
+                <input id="profileThink" type="checkbox" checked>Denken/Reasoning aktiv (bei Problemen abschalten)
+            </label>
             <div class="manage-actions">
                 <button class="manage-command primary" type="submit"><i data-lucide="save"></i>Speichern</button>
                 <button class="manage-command" id="deleteProfile" type="button"><i data-lucide="trash-2"></i>Löschen</button>

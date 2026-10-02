@@ -985,6 +985,12 @@ def profiles():
                 seen.add(m)
                 deduped.append(m)
         profile['models'] = deduped
+        # 'think' ist eine Modell-/Endpunkt-Eigenschaft (manche Modelle haben
+        # Reasoning standardmaessig an und brauchen --no-think-aequivalente
+        # Felder) -- gehoert deshalb zum Profil, nicht zu einer globalen
+        # Einstellung. Default True (wie THINK in mc.py), damit bestehende
+        # Profile ohne das Feld sich nicht veraendern.
+        profile['think'] = bool(data.get('think', old.get('think', True)))
         MC_SETTINGS['profiles'][profile_id] = profile
     apply_project_profile()
     save_settings()
