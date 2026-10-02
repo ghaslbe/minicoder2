@@ -36,9 +36,19 @@ app = Flask(__name__, root_path=os.path.dirname(os.path.abspath(__file__)))
 PROJECT_OPERATION_LOCK = threading.Lock()
 
 
+PROJECT_OPERATION_LOCK_EXEMPT = ('stop_build', 'chat_stop', 'post_settings', 'profiles', 'select_project_profile')
+
+
 @app.before_request
 def reserve_project_operation():
-    if request.method == 'POST' and request.endpoint not in ('stop_build', 'chat_stop') and request.blueprint != 'terminal':
+    # Reine Einstellungsaenderungen (Modell/Profil/Settings) wirken erst auf
+    # den NAECHSTEN Auftrag -- ein laufender PO-/Bau-Job hat Base-URL/Modell/
+    # Key schon beim Start als Payload uebernommen (siehe chat_runtime.py),
+    # liest MC_SETTINGS waehrenddessen nicht erneut. Sie muessen deshalb
+    # NICHT auf das globale Lock warten; ohne diese Ausnahme blockierte ein
+    # mehrminuetiger PO-Aufruf (Reasoning) sogar einen simplen Modellwechsel
+    # fuers naechste Mal mit "Ein Vorgang laeuft noch".
+    if request.method == 'POST' and request.endpoint not in PROJECT_OPERATION_LOCK_EXEMPT and request.blueprint != 'terminal':
         if not PROJECT_OPERATION_LOCK.acquire(blocking=False):
             return jsonify({'ok': False, 'error': 'Ein Vorgang laeuft noch. Bitte warten.'}), 409
         g.project_operation_reserved = True

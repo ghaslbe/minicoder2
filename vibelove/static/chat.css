@@ -25,7 +25,11 @@
 .chat-actions:empty, .chat-connection:empty { display: none; }
 .chat-actions button, .chat-message>button, .chat-jump { border: 1px solid #ced8d3; border-radius: 5px; padding: 7px 12px; font-size: 13px; background: #fff; }
 .chat-actions .primary { background: #176b50; border-color: #176b50; color: white; }
+.chat-actions .danger { background: #c0273b; border-color: #c0273b; color: white; }
 .chat-actions button:disabled { opacity: .5; }
+.chat-actions-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: #6b7280; }
+.chat-actions-status::before { content: ''; display: inline-block; width: 12px; height: 12px; flex-shrink: 0; border: 2px solid #f0bcc3; border-top-color: #c0273b; border-radius: 50%; animation: po-spin .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .chat-actions-status::before { animation: none; } }
 .chat-message>button { margin-top: 12px; }
 .chat-connection { flex-shrink: 0; padding: 8px 12px; color: #805b18; background: #fff8e7; font-size: 12px; overflow-wrap: anywhere; }
 .chat-jump { flex-shrink: 0; align-self: center; color: #176b50; margin: 4px; }.chat-jump[hidden] { display: none; }

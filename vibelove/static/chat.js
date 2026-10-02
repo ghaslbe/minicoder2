@@ -192,10 +192,21 @@
                 if (active(m.status) && m.attempt > 1) ui.status.textContent += ` · Versuch ${m.attempt}`;
                 if (ui.rollback) ui.rollback.disabled = this.messagesArray().some(m => active(m.status));
             }
+            this.updateActionsStatus();
+        }
+        updateActionsStatus() {
+            if (!this.actionsStatus) return;
+            const job = this.messagesArray().find(m => active(m.status));
+            if (!job) { this.actionsStatus = null; return; }
+            const elapsed = Math.floor(Date.now() / 1000 - job.created);
+            let text = `${job.phase || 'Wird gestartet'} · ${elapsed} s`;
+            const silent = Math.floor(Date.now() / 1000 - job.updated);
+            if (silent > 30) text += ` · seit ${silent} s keine neuen Daten`;
+            this.actionsStatus.textContent = text;
         }
         messagesArray() { return [...this.messages.values()]; }
-        button(label, action, primary = false) {
-            const button = element('button', primary ? 'primary' : '', label);
+        button(label, action, variant = '') {
+            const button = element('button', variant, label);
             button.type = 'button'; button.onclick = action; return button;
         }
         updateActions() {
@@ -213,10 +224,13 @@
                 this.actions.append(this.button('Stoppen', async () => {
                     try { await this.api('/chat/stop', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: job.id }) }); await this.poll(); }
                     catch (error) { this.notice(error.message); }
-                }));
+                }, 'danger'));
                 this.actions.firstChild.disabled = job.status === 'stopping';
+                this.actionsStatus = element('span', 'chat-actions-status');
+                this.actions.append(this.actionsStatus);
+                this.updateActionsStatus();
             } else if (decision) {
-                this.actions.append(this.button('Bauen', () => this.start({ kind: 'build', source_id: decision.id }), true));
+                this.actions.append(this.button('Bauen', () => this.start({ kind: 'build', source_id: decision.id }), 'primary'));
                 this.actions.append(this.button('Anpassen', () => { this.input.focus(); this.input.placeholder = 'Was soll am Auftrag geaendert werden?'; }));
             } else if (retryable) {
                 this.actions.append(this.button('Erneut versuchen', () => this.start({ kind: 'po', text: last.request_text, mit_verlauf: true })));

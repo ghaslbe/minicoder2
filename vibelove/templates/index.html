@@ -1129,6 +1129,8 @@
         }
     });
 
+    let letztePofilDaten = null; // zuletzt geladene /profiles-Antwort -- fuers Umschalten im change-Handler
+
     async function ladeSchnellModellFeld() {
         const feld = document.getElementById('quickModel');
         try {
@@ -1136,29 +1138,48 @@
             if (!profilRes.ok || !settingsRes.ok) return;
             const profilData = await profilRes.json();
             const settingsData = await settingsRes.json();
-            const aktiv = profilData.profiles.find(p => p.id === profilData.selected);
-            const optionen = (aktiv?.models?.length ? aktiv.models : [settingsData.model]).slice();
-            if (settingsData.model && !optionen.includes(settingsData.model)) optionen.unshift(settingsData.model);
+            letztePofilDaten = profilData;
             feld.replaceChildren();
-            optionen.forEach(m => {
-                const option = document.createElement('option');
-                option.value = m; option.textContent = m;
-                feld.appendChild(option);
+            // Jedes Profil als eigene optgroup, damit auch Modelle anderer
+            // Endpunkte (nicht nur des aktiven Profils) direkt waehlbar sind --
+            // der Wert kodiert Profil-ID + Modell, damit der change-Handler
+            // bei Bedarf das ganze Profil (Endpunkt/Key) mitwechselt.
+            profilData.profiles.forEach(profil => {
+                const gruppe = document.createElement('optgroup');
+                gruppe.label = profil.name || profil.id;
+                const modelle = profil.models?.length ? profil.models : [profil.model];
+                modelle.forEach(m => {
+                    const option = document.createElement('option');
+                    option.value = `${profil.id}::${m}`;
+                    option.textContent = m;
+                    gruppe.appendChild(option);
+                });
+                feld.appendChild(gruppe);
             });
-            feld.value = settingsData.model;
+            feld.value = `${profilData.selected}::${settingsData.model}`;
         } catch (err) { /* stiller Fallback -- Feld behaelt zuletzt bekannten Zustand */ }
     }
 
     document.getElementById('quickModel').addEventListener('change', async function () {
         const wert = this.value;
         if (!wert) { ladeSchnellModellFeld(); return; }
+        const [profilId, modell] = wert.split('::');
         try {
+            if (letztePofilDaten && profilId !== letztePofilDaten.selected) {
+                const profilRes = await fetch('/projects/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project: letztePofilDaten.project, id: profilId })
+                });
+                if (!profilRes.ok) throw new Error();
+            }
             const res = await fetch('/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: wert })
+                body: JSON.stringify({ model: modell })
             });
             if (!res.ok) throw new Error();
+            ladeSchnellModellFeld();
         } catch (err) {
             ladeSchnellModellFeld();
         }
