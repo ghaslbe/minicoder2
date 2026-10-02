@@ -30,6 +30,36 @@ Das Formular links sendet Anweisungen an mc.py im Verzeichnis workspace/. Die Li
 * Backend (falls vorhanden): 5001
 
 ## Projekte und Chat
+* PO und Build laufen als serverseitige Hintergrundauftraege. Neuladen oder
+  eine unterbrochene Browser-Verbindung beendet keinen Auftrag; der Chat holt
+  Ereignisse nach. Alte Bauverlaeufe werden beim ersten Laden uebernommen.
+* Der neue Verlauf liegt projektweise unter `chat_state/` neben der
+  Settings-Datei, nicht im generierten Projekt. Er enthaelt Nachrichten,
+  PO-Auftraege und begrenzte Prozessausgaben (jeweils die letzten 2 Mio.
+  Zeichen). Laufende Auftraege werden nach einem Serverneustart als
+  unterbrochen markiert, nicht automatisch erneut ausgefuehrt.
+* PO-Antworten werden gestreamt, sofern der Endpunkt SSE unterstuetzt.
+  Wartephase, Reasoning-Aktivitaet, Ausgabe und vergangene Zeit sind sichtbar.
+  Stoppen beendet den separaten PO-/QA-Prozess, auch bei einem wartenden
+  Netzwerkaufruf. Es gilt ein Gesamtlimit von 30 Minuten pro PO-Aufruf,
+  zusaetzlich zum 600-Sekunden-Netzwerklesetimeout. Der Browser wartet nicht
+  minutenlang auf einen einzelnen Request.
+* Formatierte Texte, Listen, Tabellen und Code werden mit lokal gebuendeltem
+  Marked 17.0.1 und DOMPurify 3.3.1 dargestellt; HTML wird bereinigt.
+  Die Lizenzen liegen unter `static/vendor/chat/`. Das Rohprotokoll bleibt
+  separat aufklappbar. Automatisches Scrollen pausiert beim Hochscrollen.
+* Bauen, Anpassen und Stoppen stehen fest oberhalb der Eingabe. Abgebrochene
+  Bauauftraege koennen erneut gestartet werden; veraltete PO-Vorschlaege sind
+  nicht mehr ausfuehrbar, nachdem ein neuer Auftrag besprochen wurde.
+* Folgeaenderungen erhalten den aktuellen Dateikontext, die letzten relevanten
+  Auftraege und Bauergebnisse. Der Auftrag lautet, das bestehende Projekt
+  weiterzuentwickeln. Ein mehrteiliger Plan endet beim ersten unvollstaendigen
+  Schritt. Builds werden nicht mehr nach pauschal 900 Sekunden Gesamtlaufzeit
+  beendet, sondern nach 900 Sekunden ohne Prozessausgabe.
+* `/refine` und `/build` bleiben als bisherige APIs verfuegbar. Die GUI nutzt
+  `/chat/start`, `/chat/state`, `/chat/events` und `/chat/stop`. Ein Auftrag
+  reserviert das Projekt bis zum Ende; andere mutierende Aktionen werden
+  abgewiesen. `mc.py` wurde fuer den Chat-Umbau nicht veraendert.
 * Im Dateien-Tab ist unten zunaechst nur die Terminalleiste sichtbar. Anklicken oeffnet eine Shell im Projektverzeichnis; der obere Trenner passt die Hoehe an. Hoehe und Einklappzustand werden pro Projekt im Browser gespeichert. Sitzungen bleiben beim Einklappen und Projektwechsel erhalten, bis Vibelove beendet oder die Terminalsitzung neu gestartet wird.
 * Das Terminal nutzt lokale xterm.js-Assets (5.5.0, Fit-Addon 0.10.0) und ein Unix-Pseudoterminal. Es braucht keine zusaetzlichen Python-Pakete. Ausgaben werden gepuffert; Strg+C und interaktive Programme werden unterstuetzt.
 * Vorschau neu starten zeigt Beenden, Backend-Start, Vorschau-Start und Bereit an. Erst nach HTTP-Pruefung wird die Vorschau neu geladen. Startfehler bleiben mit Prozessausgabe und Erneut-versuchen-Button sichtbar; nach 30 Sekunden pro Dienst wird ein Timeout gemeldet.

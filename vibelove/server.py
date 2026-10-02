@@ -38,7 +38,7 @@ PROJECT_OPERATION_LOCK = threading.Lock()
 
 @app.before_request
 def reserve_project_operation():
-    if request.method == 'POST' and request.endpoint != 'stop_build' and request.blueprint != 'terminal':
+    if request.method == 'POST' and request.endpoint not in ('stop_build', 'chat_stop') and request.blueprint != 'terminal':
         if not PROJECT_OPERATION_LOCK.acquire(blocking=False):
             return jsonify({'ok': False, 'error': 'Ein Vorgang laeuft noch. Bitte warten.'}), 409
         g.project_operation_reserved = True
@@ -1210,6 +1210,7 @@ def refine_instruction():
 def refine_reset():
     global PO_HISTORY
     PO_HISTORY = []
+    app.extensions['chat_runtime'].store().history([])
     return jsonify({'ok': True})
 
 
@@ -1360,7 +1361,7 @@ def build():
                 Liefert (gestoppt, erfolgreich) ueber 'yield from'."""
                 global BUILD_PROCESS
                 proc = None
-                start_time = time.time()
+                last_output = time.monotonic()
                 timeout_duration = 900
                 gestoppt = False
                 erfolgreich = False
@@ -1377,13 +1378,14 @@ def build():
                             yield emit('\nBauauftrag gestoppt.\n')
                             gestoppt = True
                             break
-                        if time.time() - start_time > timeout_duration:
-                            yield emit("\nFehler: Bauprozess hat das Timeout von 900 Sekunden überschritten.\n")
+                        if time.monotonic() - last_output > timeout_duration:
+                            yield emit("\nFehler: Bauprozess hat seit 900 Sekunden keine Ausgabe geliefert.\n")
                             break
                         ready, _, _ = select.select([proc.stdout], [], [], 1.0)
                         if ready:
                             chunk = os.read(proc.stdout.fileno(), 65536)
                             if chunk:
+                                last_output = time.monotonic()
                                 yield emit(decoder.decode(chunk))
                             else:
                                 yield emit(decoder.decode(b'', final=True))
@@ -1413,6 +1415,7 @@ def build():
             previous_evaluation = None
             previous_checks = {}
             check_plan = []
+            outcome = 'incomplete'
             try:
                 for iteration in range(1, MAX_EVAL_ITERATIONS + 1):
                     if iteration > 1:
@@ -1433,6 +1436,7 @@ def build():
                         yield emit('\n[QA] Bauprozess fehlgeschlagen; keine weitere automatische Reparatur.\n')
                         break
                     if not acceptance:
+                        outcome = 'complete'
                         break  # kein Evaluator konfiguriert -- wie bisher nach einem Lauf fertig
                     if BUILD_STOP.is_set():
                         gestoppt_gesamt = True
@@ -1447,10 +1451,22 @@ def build():
                     check_output = json.dumps(checks, ensure_ascii=False)
                     yield emit('\n[QA] Lokale Pruefungen: ' + check_output + '\n')
                     project_context = po.gather_project_context(aktives_projekt_dir)
-                    evaluation = po.evaluate(
-                        acceptance, project_context, "".join(output_lines[pass_output_start:]),
-                        base_url, model, MC_SETTINGS.get('api_key', ''),
-                        max_tokens=MC_SETTINGS.get('max_tokens'), think=MC_SETTINGS.get('think', True))
+                    eval_args = dict(acceptance=acceptance, project_context=project_context,
+                                     build_output="".join(output_lines[pass_output_start:]),
+                                     base_url=base_url, model=model, api_key=MC_SETTINGS.get('api_key', ''),
+                                     max_tokens=MC_SETTINGS.get('max_tokens'), think=MC_SETTINGS.get('think', True))
+                    if getattr(g, 'chat_job', None):
+                        job = g.chat_job
+                        job['store'].update(job['id'], phase='QA prueft das Ergebnis')
+                        result = app.extensions['chat_runtime'].run_po(job, {'_operation': 'evaluate', **eval_args})
+                        if result is None:
+                            gestoppt_gesamt = True
+                            break
+                        evaluation = result['evaluation']
+                    else:
+                        evaluation = po.evaluate(
+                            acceptance, project_context, eval_args['build_output'], base_url, model,
+                            eval_args['api_key'], max_tokens=eval_args['max_tokens'], think=eval_args['think'])
                     if pending_checkpoint:
                         improved, reason = repair_guard.improvement(
                             previous_evaluation, evaluation, previous_checks, checks)
@@ -1469,6 +1485,7 @@ def build():
                     yield emit(f"\n[QA] Status: {evaluation['status']}\n"
                                f"{evaluation['criteria']}\n")
                     if evaluation['status'] == 'PASS':
+                        outcome = 'complete'
                         break
                     if iteration == MAX_EVAL_ITERATIONS:
                         yield emit(f"\n[QA] BLOCKIERT nach {MAX_EVAL_ITERATIONS} "
@@ -1507,6 +1524,14 @@ def build():
                 output = full_output
                 summary = ('Bauauftrag gestoppt. Zwischenstand gesichert.'
                            if gestoppt_gesamt else _extract_run_summary(full_output))
+                clean = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', full_output)
+                if not re.search(r'^✓ ', clean, re.M):
+                    outcome = 'incomplete'
+                g.chat_build_result = {
+                    'status': 'stopped' if gestoppt_gesamt else outcome,
+                    'text': summary if outcome == 'complete' or gestoppt_gesamt else 'Bauauftrag nicht vollstaendig abgeschlossen. Ausgabe und QA-Pruefung beachten.',
+                    'phase': 'Abgeschlossen' if outcome == 'complete' else 'Nicht abgeschlossen',
+                    'rollback_to': before_commit}
                 schreibe_verlauf_eintrag(aktives_projekt_dir, instruction, summary, model, before_commit)
                 BUILD_HISTORY.append({"instruction": instruction, "result_summary": summary})
             yield ""
@@ -1566,6 +1591,7 @@ def create_project():
             if os.path.lexists(project_path):
                 return jsonify({'ok': False, 'error': 'Projekt existiert bereits.'}), 409
             os.rename(staging, project_path)
+            app.extensions['chat_runtime'].new_project(name)
     except ValueError as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2084,6 +2110,7 @@ def preview_status():
 @app.route('/reset', methods=['POST'])
 def reset():
     reset_history()
+    app.extensions['chat_runtime'].store().history([])
     return "OK"
 
 
@@ -2149,6 +2176,8 @@ def generate_container():
 
 
 def cleanup():
+    if 'chat_runtime' in app.extensions:
+        app.extensions['chat_runtime'].shutdown()
     TERMINALS.close()
     stop_vite_server()
     stop_backend_server()
@@ -2171,6 +2200,9 @@ def _beende_sauber(signum, frame):
 
 signal.signal(signal.SIGTERM, _beende_sauber)
 signal.signal(signal.SIGINT, _beende_sauber)
+
+from vibelove.chat_runtime import register_chat
+register_chat(app, globals())
 
 if __name__ == '__main__':
     # Beim Start von server.py: Einstellungen laden, dann Vite starten

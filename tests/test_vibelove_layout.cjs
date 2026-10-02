@@ -31,7 +31,7 @@ const context = vm.createContext({
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
 });
 const start = html.indexOf("        const chatPanel =");
-const end = html.indexOf('        let gitCommits', start);
+const end = html.indexOf('        const chat =', start);
 vm.runInContext(html.slice(start, end), context);
 vm.runInContext("loadChatLayout('alpha'); chatLayout.width = 360; applyChatLayout(); saveChatLayout(); toggleChatBtn.onclick();", context);
 assert.equal(element('chatPanel').hidden, true);

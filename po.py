@@ -140,9 +140,9 @@ def _extra_headers():
 
 
 def _call_llm(messages, base_url, model, api_key, timeout=600, max_tokens=None,
-              _token_field="max_tokens", think=True):
+              _token_field="max_tokens", think=True, on_event=None):
     url = f"{base_url.rstrip('/')}/chat/completions"
-    payload = {"model": model, "messages": messages, "stream": False}
+    payload = {"model": model, "messages": messages, "stream": on_event is not None}
     if max_tokens is not None:
         payload[_token_field] = max_tokens
     if not think:
@@ -160,7 +160,11 @@ def _call_llm(messages, base_url, model, api_key, timeout=600, max_tokens=None,
     headers.update(_extra_headers())
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
+        if on_event:
+            on_event({'type': 'phase', 'phase': 'waiting'})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if on_event and 'text/event-stream' in resp.headers.get('Content-Type', ''):
+                return _read_stream(resp, on_event)
             obj = json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         raw = e.read()  # NUR einmal lesbar -- Aufrufer (refine()/evaluate())
@@ -176,12 +180,61 @@ def _call_llm(messages, base_url, model, api_key, timeout=600, max_tokens=None,
                 and "max_completion_tokens" in body):
             return _call_llm(messages, base_url, model, api_key, timeout=timeout,
                              max_tokens=max_tokens, _token_field="max_completion_tokens",
-                             think=think)
+                             think=think, on_event=on_event)
         raise urllib.error.HTTPError(e.url, e.code, e.msg, e.headers, io.BytesIO(raw)) from e
     return obj["choices"][0]["message"]["content"]
 
 
-def refine(user_message, project_context, history, base_url, model, api_key, max_tokens=None, think=True):
+def _read_stream(response, on_event):
+    parts, size, reasoning = [], 0, 0
+    finish = None
+    event_lines = []
+
+    def consume(lines):
+        nonlocal size, reasoning, finish
+        data = '\n'.join(lines)
+        if not data or data == '[DONE]':
+            return
+        obj = json.loads(data)
+        if obj.get('error'):
+            raise ValueError('Modell-Stream meldet einen Fehler: ' + str(obj['error'])[:400])
+        choices = obj.get('choices') or []
+        if not choices:
+            return
+        choice = choices[0]
+        finish = choice.get('finish_reason') or finish
+        delta = choice.get('delta') or {}
+        thought = delta.get('reasoning_content') or delta.get('reasoning') or ''
+        if thought or delta.get('reasoning_details'):
+            reasoning += len(thought)
+            on_event({'type': 'phase', 'phase': 'reasoning', 'reasoning_chars': reasoning})
+        token = delta.get('content') or ''
+        if token:
+            size += len(token)
+            if size > 1000000:
+                raise ValueError('PO-Antwort zu gross; Generierung abgebrochen.')
+            parts.append(token)
+            on_event({'type': 'delta', 'text': token})
+
+    for raw in response:
+        line = raw.decode('utf-8', 'replace').rstrip('\r\n')
+        if not line:
+            if '\n'.join(event_lines) == '[DONE]':
+                event_lines = []
+                break
+            consume(event_lines)
+            event_lines = []
+        elif line.startswith('data:'):
+            event_lines.append(line[5:].lstrip())
+    consume(event_lines)
+    if finish == 'length':
+        raise ValueError('PO-Antwort am Token-Limit abgeschnitten. Teilantwort bleibt sichtbar; Tokenbudget pruefen.')
+    if finish not in ('stop', 'end_turn'):
+        raise ValueError('PO-Stream ohne vollstaendigen Abschluss beendet. Teilantwort bleibt erhalten.')
+    return ''.join(parts)
+
+
+def refine(user_message, project_context, history, base_url, model, api_key, max_tokens=None, think=True, on_event=None):
     """Fuehrt EINEN Schritt des Produktdialogs aus.
     'history' ist die bisherige [{role, content}, ...]-Liste (ohne
     System-Prompt, wird von vibelove zwischen Aufrufen gehalten).
@@ -200,7 +253,8 @@ def refine(user_message, project_context, history, base_url, model, api_key, max
     messages.extend(history)
 
     try:
-        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens, think=think)
+        options = {'on_event': on_event} if on_event else {}
+        reply = _call_llm(messages, base_url, model, api_key, max_tokens=max_tokens, think=think, **options)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]
         return {"type": "error", "error": f"HTTP {e.code} vom Endpoint: {body}",
@@ -268,7 +322,7 @@ def refine(user_message, project_context, history, base_url, model, api_key, max
             "raw": reply, "retryable": True}, history
 
 
-def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3, max_tokens=None, think=True):
+def refine_retrying(user_message, project_context, history, base_url, model, api_key, attempts=3, max_tokens=None, think=True, on_event=None):
     """Wie refine(), aber wiederholt automatisch bei RETRYABLE Fehlern
     (kaputtes Protokoll-Format -- bei einem kleinen Modell mit mehrteiliger
     strukturierter Ausgabe ein erwartbarer gelegentlicher Aussetzer, kein
@@ -277,9 +331,12 @@ def refine_retrying(user_message, project_context, history, base_url, model, api
     Versuchen typischerweise nicht und sollen nicht mehrfach denselben
     vermutlich falsch konfigurierten Endpunkt treffen."""
     last = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
+        options = {'on_event': on_event} if on_event else {}
+        if on_event:
+            on_event({'type': 'attempt', 'attempt': attempt + 1})
         decision, new_history = refine(user_message, project_context, history,
-                                        base_url, model, api_key, max_tokens=max_tokens, think=think)
+                                        base_url, model, api_key, max_tokens=max_tokens, think=think, **options)
         if decision["type"] != "error" or not decision.get("retryable"):
             return decision, new_history
         last = (decision, new_history)
