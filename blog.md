@@ -7546,6 +7546,69 @@ unendlichen Deadlock schicken -- erst das Nachvollziehen am rohen
 Tokenstream (`shlex`) und ein direkter Funktionsaufruf auf dem Guard
 legten das offen.
 
+## 89. `ornith-1.5:35b` auf einer gemieteten RTX 5090 (Ollama): ein echter
+Text-Protokoll-Loop, und `--tool-mode native` als zuverlaessiger Fix
+
+Noch ein neuer Endpoint am selben Nachmittag: ein zweiter gemieteter Rechner
+(`79.187.222.197:40053`), diesmal Ollama (`fp_ollama`-System-Fingerprint)
+statt LM Studio/mlx_lm, Modell `ornith-1.5:35b`, auf einer RTX 5090. Deutlich
+der schnellste lokale/gemietete Endpoint bisher getestet: 70-170 Tok/s, oft
+naeher an 150 als an 100 -- die MLX-basierten M1/M2-Setups aus den
+vorherigen Kapiteln lagen durchweg bei 5-40 Tok/s.
+
+### Text-Modus: ein echter, wiederholter Protokoll-Fehler
+
+Der Standard-Benchmark (Personenverwaltung) im normalen Text-Modus lief in
+ein Muster, das sich klar von einem einmaligen Ausrutscher unterschied:
+
+```
+```action
+{"action":"write_file","path":"backend/app.py"}
+```
+```
+
+...und dann nichts mehr -- keine Spur eines ` ```content `-Blocks, die
+Antwort war komplett zu Ende (teils nur 46-60 Zeichen total). mc.py meldete
+entsprechend "write_file ohne Inhalt", das Modell versuchte es erneut, und
+wieder nur der nackte `action`-Block. Ueber den ganzen Lauf verteilt trat
+das **mehr als zehnmal** auf, bei unterschiedlichen Zieldateien -- kein
+einmaliger Zufall, sondern ein systematisches Problem, dem text-basierten
+Zwei-Block-Protokoll (`action` dann `content`) zuverlaessig zu folgen. Nicht
+jede Antwort war betroffen (zwischendurch klappten grosse, korrekte
+Schreibvorgaenge mit tausenden Tokens Inhalt einwandfrei), aber haeufig
+genug, um den Lauf spuerbar zu verlangsamen.
+
+**Fix: `--tool-mode native`.** Ollama unterstuetzt natives OpenAI-Tool-
+Calling; derselbe Benchmark, derselbe Endpoint, derselbes Modell, nur mit
+`--tool-mode native` gestartet -- seitdem trat dieser Fehler **kein
+einziges Mal mehr** auf, ueber zwei Laeufe (30 + 60 Schritte) und 51
+Requests hinweg. Der strukturierte Tool-Call-Kanal umgeht offenbar genau
+die Schwachstelle, an der das Modell beim unstrukturierten Zwei-Block-
+Text-Format haengen blieb. Praxis-Regel: wiederholt derselbe "Content fehlt"-
+Fehler bei verschiedenen Dateien, ist das ein Hinweis, `--tool-mode native`
+zu probieren, bevor man am Prompt herumschraubt -- vorausgesetzt der
+Endpoint unterstuetzt es (bei reinem Ollama/vielen lokalen Stacks der Fall).
+
+### Nebenbefund: ein 404, das nichts mit dem generierten Code zu tun hatte
+
+Waehrend der Verifikation meldete `curl http://localhost:5050/...` zunaechst
+404/405 statt echter Antworten. Das Modell grub selbst nach der Ursache und
+fand sie: ein voellig unabhaengiges, aelteres Projekt (`kigraph`) auf
+demselben Host hatte bereits einen eigenen Flask-Prozess mit
+`SO_REUSEPORT` auf genau diesem Port laufen -- der nahm die Anfragen
+entgegen, bevor der neue Server es konnte. Statt den fremden Prozess zu
+toeten (der Auftrag warnte explizit davor, "moeglicherweise gemeinsam
+genutzte Infrastruktur"), wich das Modell sauber auf einen dedizierten Port
+(5075) aus und dokumentierte den Grund in `MC-NOTIZEN.md`. Gute
+Fehlerdiagnose unter Unsicherheit: nicht vorschnell loeschen/killen, wenn
+die Ursache unklar ist.
+
+**Ergebnis nach beiden Fixes:** vollstaendig verifizierte CRUD-App --
+Backend (4 REST-Endpunkte inkl. Fehlerfaelle 400/404 per curl, keine
+Tracebacks, `py_compile` sauber) und Frontend (`npm run build` 230 Module,
+Dev-Server antwortet) --, 51 Requests, 758010 Tokens gesamt (624472 aus dem
+Cache).
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
