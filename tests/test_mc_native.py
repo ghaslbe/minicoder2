@@ -101,6 +101,23 @@ def test_native_incomplete_response_is_bounded(native, monkeypatch):
         mc.native_chat_stream(history(), "m", mc._native_tools())
 
 
+def test_native_length_triggert_notfall_prune_vor_naechstem_versuch(native, monkeypatch):
+    # Real beobachtet (qwen3.8:27b ueber Ollama): der Prompt fuellte das
+    # geladene Fenster fast komplett (32745 von 32768 Token), fuer die Antwort
+    # blieb kaum Platz -> IMMER finish_reason=length, nie eine vollstaendige
+    # Antwort, bis der Lauf nach 3 Versuchen mit SystemExit abstuerzte. Ein
+    # Notfall-Prune (keep=1, bypasst --no-prune) VOR dem naechsten Versuch
+    # muss greifen, statt denselben ueberfuellten Verlauf einfach zu
+    # wiederholen.
+    calls = []
+    monkeypatch.setattr(mc, "prune_messages", lambda messages, keep=None: calls.append(keep))
+    monkeypatch.setattr(mc, "_chat_once_retry",
+                         lambda *a, **kw: (mc.NativeReply(), "length"))
+    with pytest.raises(SystemExit, match="3 Versuchen"):
+        mc.native_chat_stream(history(), "m", mc._native_tools())
+    assert calls == [1, 1, 1]
+
+
 @pytest.mark.parametrize("name,args", [
     ("run", {"command": "x", "timeout": True}),
     ("run", {"command": "x", "timeout": 301}),

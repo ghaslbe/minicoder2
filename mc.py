@@ -277,6 +277,18 @@ THINKING_BUDGET = int(_setting("MC_THINKING_BUDGET", "thinking_budget", 0))
 # begrenzte Aufrufe verteilt. 0 = kein Limit (alter Zustand).
 MAX_TOKENS_PER_CALL = int(_setting("MC_MAX_TOKENS", "max_tokens_per_call", 4000))
 
+# Sampling-Temperatur fuer den Request. Standard: NICHT mitschicken (None) --
+# der Endpunkt nutzt dann sein eigenes Default (bei Ollama z.B. das im
+# Modelfile hinterlegte general.sampling.temp, oft 1.0). Explizit setzbar
+# (--temperature / MC_TEMPERATURE), z.B. niedriger fuer praezisere, weniger
+# abschweifende Tool-Aufrufe (reale Beobachtung: ein Modell verfing sich in
+# einer sed-Inspektionsschleife statt read_file zu nutzen -- ob eine
+# niedrigere Temperatur solche Schleifen seltener macht, ist unbestaetigt;
+# dies macht das Experimentieren damit moeglich, ohne es zu behaupten).
+_temp_raw = _setting("MC_TEMPERATURE", "temperature", None)
+TEMPERATURE = float(_temp_raw) if _temp_raw is not None else None
+_TEMP_OVERRIDE = None  # einmaliger Temperatur-Ausreisser, siehe _bump_temperature_for_escape()
+
 # OpenRouter-spezifisch: pinnt einen Request auf einen bestimmten Backend-
 # Anbieter statt OpenRouters automatischem Load-Balancing zwischen mehreren
 # Providern desselben Modells (z.B. "z-ai" statt wahlweise "novita" fuer
@@ -789,6 +801,17 @@ def _chat_once(messages, model, tools=None):
         payload["session_id"] = SESSION_ID
     if MAX_TOKENS_PER_CALL > 0:
         payload[MAX_TOKENS_FIELD] = MAX_TOKENS_PER_CALL
+    # Einmaliger Temperatur-Ausreisser statt der statischen TEMPERATURE: siehe
+    # _bump_temperature_for_escape() -- gesetzt von Schleifen-Erkennungen
+    # (Shell-Lese-Schleife, Wiederholungs-Eskalation beim Schreiben), um dem
+    # Modell eine Chance auf eine ANDERE Fortsetzung zu geben statt der
+    # immer gleichen. Gilt nur fuer DIESEN Request, wird danach sofort
+    # zurueckgesetzt (kein dauerhafter Nebeneffekt auf spaetere Schritte).
+    global _TEMP_OVERRIDE
+    effective_temp = _TEMP_OVERRIDE if _TEMP_OVERRIDE is not None else TEMPERATURE
+    if effective_temp is not None:
+        payload["temperature"] = effective_temp
+    _TEMP_OVERRIDE = None
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -1263,6 +1286,31 @@ def _detect_local_engine():
 
 
 _LOCAL_ENGINE_CACHE = {}
+
+
+def _ollama_supports_tools(model):
+    """Fragt Ollamas eigenen /api/show-Endpunkt, ob DIESES Modell natives
+    Tool-Calling kann (Feld "capabilities" enthaelt "tools" -- vom
+    Chat-Template her entschieden, nicht vom Nutzer konfigurierbar). Real
+    beobachtet: ornith-1.5:35b im Text-Modus (Action-Bloecke als Prosa)
+    scheiterte wiederholt daran, nach einem action-Block auch einen
+    content-Block zu liefern (10+ Vorkommen in einem Lauf); --tool-mode
+    native loeste das vollstaendig. Gibt False bei jedem Fehler zurueck
+    (fehlender Endpunkt, kein Ollama, Netzwerkfehler) -- bewusst
+    fail-safe Richtung TEXT, dem bisherigen, breiter erprobten Default."""
+    base = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+    try:
+        req = urllib.request.Request(
+            base + "/api/show",
+            data=json.dumps({"model": model}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return "tools" in (data.get("capabilities") or [])
+    except Exception:
+        return False
 
 
 def _is_local_engine():
@@ -2067,6 +2115,28 @@ def _loaded_ctx_tokens(model):
     except Exception:
         pass
     if not ctx:
+        # Ollama: /v1/models (generischer Fallback unten) liefert dort keinen
+        # Kontext-Hinweis; /api/show nennt nur das THEORETISCHE GGUF-Maximum
+        # (z.B. 262144 bei ornith-1.5:35b) -- real geladen war das Fenster via
+        # /api/ps (laufende Modelle) auf 32768 begrenzt. Ohne diesen Probe
+        # erkennt _is_local_engine() den Endpunkt zwar korrekt als 'ollama'
+        # (auch bei gemieteten Remote-Servern -- die Erkennung prueft nur die
+        # API-Form, nicht die IP), aber ctx blieb 0: der CONTEXT_LENGTH-
+        # Fallback in maybe_prune() gilt NUR fuer NICHT-lokale Engines, also
+        # kuerzte jeder Schritt die Historie neu -- genau der Cache-Killer,
+        # den dieser Function-Docstring eigentlich vermeiden soll.
+        try:
+            req = urllib.request.Request(base + "/api/ps")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            reached = True
+            for m in data.get("models", []):
+                if m.get("model") == model or m.get("name") == model:
+                    ctx = int(m.get("context_length") or 0)
+                    break
+        except Exception:
+            pass
+    if not ctx:
         # vMLX: kein loaded_context_length wie LM Studio, aber /v1/capabilities
         # meldet max_prompt_tokens -- das (nicht das theoretische Maximum) ist
         # das tatsaechlich nutzbare Fenster (siehe Blog: 10326 statt 262144).
@@ -2580,6 +2650,64 @@ def _shrink_warning(path, new_len):
     return ""
 
 
+def _quick_content_check(path, text):
+    """Schneller, abhaengigkeitsfreier Syntax-Check direkt aus dem STRING, ohne
+    die Datei zu beruehren -- nur fuer Typen, die das ohne Subprocess/Datei
+    koennen (.py via ast.parse, .json via json.loads). Andere validierte Typen
+    (php/jsx/tsx/html) brauchen einen Subprocess auf eine reale Datei und
+    werden hier bewusst NICHT geprueft -- die reguläre validate_written()-
+    Pruefung NACH dem Schreiben bleibt fuer die deren einziger Weg. Gibt True
+    zurueck, wenn der Inhalt als SYNTAKTISCH UNGUELTIG erkannt wurde."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".py":
+        import ast
+        try:
+            ast.parse(text)
+            return False
+        except SyntaxError:
+            return True
+    if ext == ".json":
+        try:
+            json.loads(text)
+            return False
+        except json.JSONDecodeError:
+            return True
+    return False
+
+
+def _shrink_and_broken_block(path, new_content):
+    """Haelt einen Schreibvorgang HART an (statt nur zu warnen), wenn zwei
+    unabhaengige Signale gleichzeitig zutreffen: die neue Version ist
+    drastisch kuerzer als die alte (gleiche Schwelle wie _shrink_warning) UND
+    syntaktisch ungueltig. Jedes Signal allein kommt vor (absichtliches
+    Kuerzen; ein Tippfehler in sonst vollstaendigem Code) -- BEIDE zusammen
+    sind praktisch nie beabsichtigt. Real beobachtet (ornith-1.5:35b ueber
+    Ollama): eine lange, tief verschachtelte SQL-UPDATE-Parameterzeile brach
+    beim Generieren mitten im Statement ab; db.py schrumpfte von 2009 auf 414
+    Zeichen und blieb syntaktisch kaputt ('unterminated triple-quoted
+    string'). Die bisherige Schrumpf-WARNUNG liess den Schreibvorgang
+    trotzdem durch (nur eine Randnotiz in der Tool-Antwort) und kostete
+    danach mehrere weitere Schritte, bis das Schrittlimit erreicht war --
+    bevor der eigentliche Fix kam. Gibt eine Ablehnungsmeldung zurueck (Datei
+    bleibt UNVERAENDERT), oder "" wenn der Schreibvorgang normal
+    weiterlaufen darf."""
+    try:
+        old_len = os.path.getsize(path)
+    except OSError:
+        return ""
+    if old_len <= 40 or len(new_content) >= old_len * 0.4:
+        return ""
+    if not _quick_content_check(path, new_content):
+        return ""
+    return (f"ABGELEHNT: {path} wuerde von {old_len} auf {len(new_content)} "
+            f"Zeichen schrumpfen UND ist syntaktisch ungueltig -- beides "
+            f"zusammen ist praktisch immer ein abgebrochener Schreibvorgang, "
+            f"nicht Absicht. Die Datei wurde NICHT veraendert. Sende den "
+            f"VOLLSTAENDIGEN, korrekten Inhalt erneut (bei sehr langen "
+            f"Zeilen: wie in den Systemregeln beschrieben aufteilen), oder "
+            f"nutze edit_file fuer eine gezielte kleine Aenderung.")
+
+
 def _check_repetition(path, new_content):
     """Erkennt eine Wiederholungsschleife: dieselbe Datei wird wiederholt fast
     unveraendert neu geschrieben, ohne dass sich etwas am eigentlichen Problem
@@ -2598,6 +2726,7 @@ def _check_repetition(path, new_content):
         count = count + 1 if ratio > 0.9 else 0
     WRITE_HISTORY[path] = (new_content, count)
     if count >= 2:
+        _bump_temperature_for_escape()
         return (f"\nACHTUNG: {path} wurde jetzt {count + 1}x in Folge fast "
                 f"identisch komplett neu geschrieben, ohne den Fehler zu "
                 f"beheben. Wechsle die Strategie: Nutze 'edit_file', um NUR "
@@ -2634,6 +2763,10 @@ def do_write_file(args):
     print(f"{C.DIM}{preview}{C.RESET}")
     if not confirm(f"Datei '{path}' schreiben?"):
         return False, user_reject_msg()
+    block = _shrink_and_broken_block(path, content)
+    if block:
+        print(f"{C.RED}✗ Schrumpf+Syntax-Bremse: {path}{C.RESET}")
+        return False, block
     warn = (_shrink_warning(path, len(content)) + _check_repetition(path, content)
             + _blind_overwrite_warning(path))
     try:
@@ -2707,6 +2840,10 @@ def do_write_files(args):
         path, content = f.get("path", ""), f.get("content", "")
         if not path:
             errors.append("(Eintrag ohne 'path' uebersprungen)")
+            continue
+        block = _shrink_and_broken_block(path, content)
+        if block:
+            errors.append(block)
             continue
         warn = (_shrink_warning(path, len(content)) + _check_repetition(path, content)
                 + _blind_overwrite_warning(path))
@@ -3485,6 +3622,22 @@ def _generator_conflict(cmd):
     return ""
 
 
+def _bump_temperature_for_escape():
+    """Setzt einen EINMALIGEN Temperatur-Ausreisser fuer den naechsten Request
+    (siehe _TEMP_OVERRIDE, ausgewertet in _chat_once()). Gedacht fuer genau
+    den Moment, in dem eine Schleifen-Erkennung bereits einen Text-Hinweis an
+    das Modell angehaengt hat (Shell-Lese-Schleife, Wiederholungs-Eskalation
+    beim Schreiben) -- derselbe Prompt mit etwas hoeherer Temperatur gibt dem
+    Modell eine echte Chance auf eine ANDERE Fortsetzung, statt mit der
+    gleichen (ggf. fast deterministischen) Sampling-Trajektorie denselben
+    Trott zu wiederholen. Nur eine Heuristik -- ob das eine Schleife
+    tatsaechlich bricht, haengt vom Modell/Endpoint ab; der Text-Hinweis
+    bleibt die PRIMAERE Massnahme, dies nur eine Zusatzchance."""
+    global _TEMP_OVERRIDE
+    baseline = TEMPERATURE if TEMPERATURE is not None else 0.7
+    _TEMP_OVERRIDE = min(baseline + 0.4, 1.5)
+
+
 SHELL_READS = {}  # Pfad -> Anzahl Shell-Lesezugriffe in diesem Lauf
 READ_CMD_RE = re.compile(r"^\s*(cat|head|tail|awk|sed|more|type)\b")
 
@@ -3513,6 +3666,7 @@ def _shell_read_hint(cmd):
                          f"SOFORT die geplante Aenderung mit edit_file aus.")
                 print(f"{C.YELLOW}⚠ Shell-Lese-Schleife: {tok} zum {n}. Mal "
                       f"— Hinweis angehaengt.{C.RESET}")
+                _bump_temperature_for_escape()
     return hint
 
 
@@ -3936,6 +4090,24 @@ def native_chat_stream(messages, model, tools):
         if reason in ("stop", "tool_calls") and valid:
             print()
             return reply
+        if reason == "length":
+            # Echter Kontext-Engpass, kein Formatfehler: der Prompt fuellt das
+            # geladene Fenster fast komplett, fuer die Antwort bleibt kaum noch
+            # Platz (real beobachtet: 32745 von 32768 geladenen Token, nur noch
+            # 23 Completion-Token moeglich -> IMMER finish_reason=length, nie
+            # eine vollstaendige Antwort). maybe_prune()s zeichenbasierte
+            # Schaetzung hatte hier zwar schon gekuerzt, aber nicht hart genug
+            # (Code tokenisiert dichter als die Schaetzung CHARS_PER_TOKEN
+            # annimmt). Ein Notfall-Prune (dieselbe Eskalationsstufe wie bei
+            # echtem Overflow in maybe_prune, keep=1, bypasst --no-prune
+            # bewusst -- siehe prune_messages()-Docstring) VOR dem naechsten
+            # Versuch schafft wirklich Platz; die bisherige blosse Bitte um
+            # 'weniger Inhalt' half nicht, wenn fuer die Antwort selbst kein
+            # Platz mehr da war.
+            print(f"\n{C.YELLOW}⚠ Kontext fast voll (finish_reason=length) — "
+                  f"Notfall-Kuerzung vor dem naechsten Versuch.{C.RESET}")
+            prune_messages(messages, keep=1)
+            continue
         print("\nUnvollstaendige native Antwort; keine Aktion ausgefuehrt.")
     raise SystemExit("Native Tool-Antwort nach 3 Versuchen unvollstaendig. "
                      "Token-Budget pruefen oder --tool-mode text verwenden.")
@@ -4081,6 +4253,13 @@ COMMON_AGENT_RULES = """- Stay inside the project directory. Never change host s
   <script src="..."> load order right yourself (no import/export without a
   bundler or type="module") — do not let file-splitting itself introduce a
   load-order bug.
+- Avoid single VERY LONG lines with deeply nested calls (e.g. an SQL
+  UPDATE/INSERT parameter list built from many chained data.get(...) calls
+  packed into one line). Break such statements across multiple lines
+  (named locals first, then the call/query using them) instead of one long
+  line. Reason, real failure seen: a model's own generation of exactly this
+  shape broke off mid-statement, silently writing a much shorter, syntactically
+  invalid file instead of the intended one.
 - Once the task is done, emit a finish action.
 - Write clean, working code. Follow existing conventions.
 """
@@ -5748,7 +5927,7 @@ def _apply_setting(key, wert):
 
 
 def main():
-    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE, THINK
+    global AUTO_YES, BASE_URL, PROXY, CA_BUNDLE, INSECURE, VERBOSE, MAX_STEPS, VALIDATE, GIT_ROLLBACK, KEEP_CONTEXT, PRUNE, FENCE, CHECK, ANALYSE, RESUME, MODE, THINK, TEMPERATURE
     global TOOL_MODE, CONTEXT_LENGTH, PROJECT_ROOT
     ap = argparse.ArgumentParser(description="Mini Coding Tool (Ollama / OpenAI-kompatibel)")
     ap.add_argument("task", nargs="*", help="Aufgabe / Prompt (optional; sonst interaktiv)")
@@ -5802,6 +5981,10 @@ def main():
                          "das Antwort-Token-Budget beim Nachdenken aufbrauchen, "
                          "bevor sichtbarer Text entsteht (z.B. gemma4 ueber vMLX); "
                          "von Endpoints ohne Reasoning folgenlos ignoriert")
+    ap.add_argument("--temperature", type=float, default=TEMPERATURE,
+                    help="Sampling-Temperatur im Request (default: nicht gesetzt, "
+                         "der Endpunkt nutzt sein eigenes Default -- bei Ollama z.B. "
+                         "general.sampling.temp aus dem Modelfile)")
     ap.add_argument("--resume", action="store_true",
                     help=f"Verlauf nach jedem Schritt in {MC_VERLAUF} sichern "
                          f"und einen dort gesicherten Verlauf beim Start "
@@ -5839,6 +6022,7 @@ def main():
         FENCE = True
     if args.no_think:
         THINK = False
+    TEMPERATURE = args.temperature
     # Plan-Phase: opt-in per --plan (mit --yes nicht sinnvoll, daher aus).
     # --plan funktioniert jetzt auch zusammen mit --yes: plan_phase() nutzt
     # input() direkt (nicht confirm()) und behandelt EOF bereits als "Plan
@@ -5850,6 +6034,19 @@ def main():
     CA_BUNDLE = args.ca_bundle
     INSECURE = args.insecure
     VERBOSE = VERBOSE or args.verbose
+
+    # Auto-Erkennung nur, wenn der Nutzer --tool-mode NICHT explizit gesetzt
+    # hat (sonst wuerde eine bewusste Wahl -- z.B. --tool-mode text gegen
+    # einen bekanntermassen instabilen nativen Modus -- stillschweigend
+    # ueberschrieben). Ollamas eigener Capability-Check (_ollama_supports_tools)
+    # ist zuverlaessiger als ein pauschaler Default-Wechsel fuer ALLE
+    # Engines: er schaltet nur dort auf native um, wo das Chat-Template des
+    # konkreten Modells das auch wirklich unterstuetzt.
+    if "--tool-mode" not in sys.argv and TOOL_MODE == "text" and _ollama_supports_tools(args.model):
+        TOOL_MODE = "native"
+        info(f"Ollama meldet Tool-Calling-Unterstuetzung fuer {args.model} -- "
+             f"automatisch auf --tool-mode native umgeschaltet (text mit --tool-mode "
+             f"text erzwingbar).")
 
     # Ins Zielverzeichnis wechseln, damit mc.py raeumlich getrennt vom Projekt
     # liegen kann. Alles Weitere (Projektueberblick, find, Schreiben, Git) bezieht

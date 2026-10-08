@@ -7609,6 +7609,129 @@ Tracebacks, `py_compile` sauber) und Frontend (`npm run build` 230 Module,
 Dev-Server antwortet) --, 51 Requests, 758010 Tokens gesamt (624472 aus dem
 Cache).
 
+## 90. Ein zweites gemietetes Ollama, opencode als Vergleich, und vier echte
+mc.py-Bugs: Kontext-Erkennung, Auto-Native-Modus, eine Schrumpf+Syntax-Bremse
+und ein Notfall-Prune gegen Kontext-Absturz
+
+Derselbe Modell-Typ (`ornith-1.5:35b`) nochmal geladen, diesmal auf einem
+ZWEITEN gemieteten Rechner (`83.27.30.232:45053`, Ollama 0.40.1) -- Anlass
+fuer einen Seitenvergleich mit `opencode` (ein separat installiertes
+CLI-Agenten-Tool) und, daraus folgend, eine ganze Serie echter mc.py-Fixes.
+
+### opencode gegen denselben Endpoint: schnell, aber mit einem echten Bug
+
+Die einfache `crud-personen.md`-Aufgabe (Flask+SQLite+HTML, kein
+React/Vite) lief ueber opencode in **94 Sekunden**, 6 Steps, kein Retry --
+beeindruckend schnell. Der Nutzer stellte die gebaute App aber direkt auf
+die Probe: "aber es wird nichts gespeichert? die anwendung macht nur GET."
+Ein echter, reproduzierbarer Bug: `templates/index.html` hatte in der
+`esc()`-Funktion (HTML-Escaping) ein fehlendes Komma im Objekt-Literal --
+ein JS-Syntaxfehler, der das GESAMTE `<script>` beim Laden crashen liess.
+Dadurch tat der Submit-Handler nichts; nur das initiale `load()` (GET) kam
+noch durch. opencode selbst wurde zur Diagnose herangezogen, installierte
+Playwright und fuhr einen echten Headless-Browser-Flow (CREATE->EDIT->
+DELETE ueber das Formular, nicht nur curl gegen die API) -- fand und fixte
+die fehlende Komma-Stelle. Dabei fiel allerdings ein zweiter, subtilerer
+Fehler auf: der Fix selbst vergab den Schluessel `"'"` (Apostroph) **zweimal**
+im selben Objekt-Literal, der zweite ueberschrieb den ersten; der Schluessel
+fuer `"` fehlte komplett -- ein doppeltes Anfuehrungszeichen in Nutzereingaben
+wuerde zu `undefined` im HTML gerendert statt zu `&quot;`. Lehre: ein
+curl-Check gegen die API allein beweist nichts ueber ein kaputtes Frontend --
+und selbst eine "verifizierte" Browser-Korrektur verdient einen zweiten Blick.
+
+### Vier Fixes in mc.py, aus dem direkten Vergleich motiviert
+
+**1. Ollamas tatsaechlich geladenes Kontextfenster erkennen.** `_is_local_engine()`
+erkennt Ollama rein an der API-Form (kein `/v1/models/<id>/capabilities`,
+aber `/api/tags`) -- unabhaengig von der IP, also auch bei einem gemieteten
+Server. `_loaded_ctx_tokens()` kannte aber bisher nur LM Studios
+`/api/v0/models` und vMLX' `/capabilities`; fuer Ollama blieb `ctx` immer 0.
+Da der CONTEXT_LENGTH-Cloud-Fallback in `maybe_prune()` NUR fuer NICHT-lokal
+erkannte Engines greift, wurde die Historie bei JEDEM Schritt neu gekuerzt --
+der Cache-Killer, den die Funktion eigentlich vermeiden soll. Fix: ein
+zusaetzlicher Probe gegen Ollamas `/api/ps` (laufende Modelle), das das
+TATSAECHLICH geladene Fenster meldet (bei `ornith-1.5:35b`: 32768 -- nicht
+die 262144 aus dem theoretischen GGUF-Maximum in `/api/show`). Sofort
+messbar: ein mc.py-Lauf gegen denselben Endpoint erreichte danach
+Cache-Raten von 85-99% statt eines Prunes pro Schritt.
+
+**2. Natives Tool-Calling automatisch nutzen, wenn Ollama es meldet.**
+Ollamas `/api/show` liefert ein `capabilities`-Feld (`["tools","thinking",
+"completion","vision"]` bei diesem Modell). Neue Funktion
+`_ollama_supports_tools()`: wenn der Nutzer `--tool-mode` nicht explizit
+gesetzt hat, schaltet mc.py jetzt automatisch auf `native` um -- genau der
+Modus, der im vorigen Kapitel den Text-Protokoll-Loop komplett behoben
+hatte. Eine explizite `--tool-mode text/native`-Wahl wird nie ueberschrieben.
+
+**3. Schrumpf+Syntax-Bremse.** Ein mc.py-Lauf (`ornith-1.5:35b`, 40 Schritte)
+schrieb `db.py` mit einer langen, tief verschachtelten SQL-UPDATE-
+Parameterzeile -- die Generierung brach mittendrin ab, die Datei schrumpfte
+von 2009 auf 414 Zeichen und blieb syntaktisch kaputt ("unterminated
+triple-quoted string"). Die bisherige Schrumpf-WARNUNG liess den
+Schreibvorgang trotzdem durch (nur eine Randnotiz), kostete mehrere weitere
+Schritte, bis das Schrittlimit erreicht war -- ohne dass der Fix noch kam.
+Neue Funktion `_shrink_and_broken_block()`: wenn eine Datei auf unter 40%
+ihrer vorherigen Groesse schrumpft UND der neue Inhalt syntaktisch ungueltig
+ist (`.py` via `ast.parse`, `.json` via `json.loads` -- die beiden Typen,
+die sich ohne Subprocess direkt aus dem String pruefen lassen), wird der
+Schreibvorgang jetzt HART verweigert, die Datei bleibt unveraendert. Dazu
+eine generische Stil-Regel im System-Prompt: lange Einzelzeilen mit tief
+verschachtelten Aufrufen vermeiden, stattdessen aufteilen.
+
+**4. Notfall-Prune bei `finish_reason=length` im nativen Modus.** Ein Lauf
+mit `qwen3.8:27b` (32768 Token Fenster) lief in eine andere Falle: der
+Prompt fuellte das Fenster fast komplett (32745 von 32768 Token), fuer die
+Antwort blieb kaum Platz -- IMMER `finish_reason=length`, nie eine
+vollstaendige Tool-Antwort, bis `native_chat_stream()` nach 3 Versuchen mit
+`SystemExit` abstuerzte. Grund: `maybe_prune()`s zeichenbasierte Schaetzung
+(CHARS_PER_TOKEN) hatte zwar schon gekuerzt, aber nicht hart genug -- Code
+tokenisiert dichter, als die Schaetzung annimmt. Fix: wenn `reason ==
+"length"` zurueckkommt, loest `native_chat_stream()` jetzt VOR dem naechsten
+Versuch einen Notfall-Prune aus (`prune_messages(messages, keep=1)`,
+dieselbe Eskalationsstufe wie bei echtem Overflow in `maybe_prune()`).
+Ein Nachtest zeigte die Grenze davon ehrlich auf: der Fix griff
+(dreimal "Notfall-Kuerzung" im Log bestaetigt), aber wenn das Modell sich
+zuvor in einer `sed`-Debugging-Schleife auf dieselbe Datei verfangen hat,
+kann selbst die aggressivste Kuerzung den Floor nicht unter die
+Fenstergrenze druecken -- der Absturz bleibt dann ein ehrliches Symptom
+einer echten Debugging-Endlosschleife, kein mc.py-Bug mehr.
+
+### Temperatur als Stellschraube, und ein Eskalations-Experiment
+
+Auf die Frage, ob man die Sampling-Temperatur variieren koennte, um aus
+genau solchen Schleifen auszubrechen: mc.py schickte bisher NIE ein
+`temperature`-Feld (der Endpunkt nutzt sein eigenes Default -- bei Ollama
+z.B. `general.sampling.temp` aus dem Modelfile, hier 1.0). Neue, optionale
+Einstellung `--temperature`/`MC_TEMPERATURE`. Darauf aufbauend ein
+Experiment: ein einmaliger Temperatur-Ausreisser (`_bump_temperature_for_escape()`,
+Baseline+0.4, max. 1.5), ausgeloest genau an den beiden Stellen, an denen
+mc.py bereits Schleifen textuell erkennt und einen Hinweis anhaengt (die
+Shell-Lese-Schleifen-Erkennung und die Wiederholungs-Eskalation beim
+Schreiben) -- fuer GENAU den naechsten Request, danach zurueck zur
+Baseline. Ob das Schleifen in der Praxis tatsaechlich zuverlaessig bricht,
+ist unbestaetigt (eine Heuristik, keine harte Garantie); der Text-Hinweis
+bleibt die primaere Massnahme, dies nur eine Zusatzchance.
+
+### Die eigentliche Loesung: ein groesseres Kontextfenster
+
+Waehrend der Fixes entstand nebenbei die naheliegendste Loesung: der Nutzer
+konfigurierte auf demselben Endpoint eine zweite Modell-Variante,
+`qwen3.8:27b-64k` -- 65536 statt 32768 Token Fenster, Temperatur serverseitig
+auf 0.3 gesetzt. Ergebnis: ein **vollstaendig durchgelaufener** Benchmark,
+sauberer `finish`, Git-Commit als Sicherungspunkt -- **30 Schritte, 213
+Sekunden, 446730 Tokens (396668 aus dem Cache, 88.8%), Tok/s-Schnitt 115
+(Spanne 65-172)**. Zum Vergleich: dieselbe Aufgabe mit `qwen3.8:27b` (32k)
+brauchte vorher 35+ Schritte und endete im Kontext-Absturz; mit
+`ornith-1.5:35b` (32k) wurden 40 bzw. 60 Schritte verbraucht, ohne
+durchzukommen (einmal kaputtes `db.py`, einmal ein unvollstaendiges
+`app.js` -- das Modell selbst gestand am Ende offen: "ich bin
+Python-Backend-Entwickler... das erklaert die unsaubere JS-Phase"). Fast
+halb so viele Schritte wie bei 32k, keine Debugging-Schleife, kein
+Kontext-Druck: die simple Antwort auf "wie bekomme ich einen zuverlaessigen
+Lauf" war am Ende nicht ein cleverer mc.py-Fix, sondern schlicht ein
+groesseres Kontextfenster UND eine niedrigere, praezisere Temperatur beim
+Modell selbst.
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.

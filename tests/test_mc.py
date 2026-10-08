@@ -37,6 +37,7 @@ def _clean_state(tmp_path, monkeypatch):
     mc.EDIT_FAIL_STREAK.clear()
     mc.EXPLORED = False
     mc.HAS_CODE = None
+    mc._TEMP_OVERRIDE = None
     yield
 
 
@@ -775,6 +776,53 @@ def test_neubau_bremse_ignoriert_leeres_projekt():
     assert ok is True  # Greenfield: keine Bremse
 
 
+def test_schrumpf_und_syntax_bremse_blockiert_schreiben():
+    # Real beobachtet (ornith-1.5:35b ueber Ollama): eine lange db.py schrumpfte
+    # beim Schreiben von 2009 auf 414 Zeichen und blieb syntaktisch kaputt --
+    # nur ein unbeabsichtigter Generierungsabbruch kann das erklaeren. Beide
+    # Signale (Schrumpfung UND Syntaxfehler) zusammen muessen das Schreiben
+    # HART verhindern, nicht nur warnen.
+    original = "def f():\n    return 1\n" * 100  # > 40 Zeichen, deutlich laenger
+    with open("gross.py", "w") as f:
+        f.write(original)
+    mc.do_read_file({"path": "gross.py"})  # Overwrite-Gate oeffnen
+    ok, msg = mc.do_write_file({"path": "gross.py", "content": "def f(:\n"})
+    assert ok is False
+    assert "ABGELEHNT" in msg and "gross.py" in msg
+    assert open("gross.py").read() == original  # Datei blieb UNVERAENDERT
+
+
+def test_schrumpf_und_syntax_bremse_laesst_gueltigen_kurzen_inhalt_durch():
+    # Schrumpfung ALLEIN (ohne Syntaxfehler) ist weiterhin nur eine Warnung,
+    # kein Blocker -- ein absichtliches Kuerzen bleibt moeglich.
+    original = "def f():\n    return 1\n" * 100
+    with open("gross.py", "w") as f:
+        f.write(original)
+    mc.do_read_file({"path": "gross.py"})
+    ok, msg = mc.do_write_file({"path": "gross.py", "content": "def f():\n    return 2\n"})
+    assert ok is True
+    assert "ABGELEHNT" not in msg
+    assert open("gross.py").read() == "def f():\n    return 2\n"
+
+
+def test_schrumpf_und_syntax_bremse_in_write_files_blockiert_nur_betroffene_datei():
+    original = "def f():\n    return 1\n" * 100
+    with open("a.py", "w") as f:
+        f.write(original)
+    with open("b.py", "w") as f:
+        f.write("print('alt')\n")
+    mc.do_read_file({"path": "a.py"})
+    mc.do_read_file({"path": "b.py"})
+    ok, msg = mc.do_write_files({"files": [
+        {"path": "a.py", "content": "def f(:\n"},
+        {"path": "b.py", "content": "print('neu')\n"},
+    ]})
+    assert ok is False  # a.py ist fehlgeschlagen -> Gesamtergebnis False
+    assert "ABGELEHNT" in msg and "a.py" in msg
+    assert open("a.py").read() == original          # a.py unveraendert
+    assert open("b.py").read() == "print('neu')\n"   # b.py trotzdem geschrieben
+
+
 def test_repo_brief_erkennt_python_und_node():
     with open("requirements.txt", "w") as f:
         f.write("flask\n")
@@ -1327,6 +1375,64 @@ _SSE_NUR_CONTENT = [
 ]
 
 
+def test_chat_once_ohne_temperature_default_sendet_kein_feld(monkeypatch):
+    # Default: TEMPERATURE ist None -> Feld wird NICHT mitgeschickt, der
+    # Endpunkt nutzt sein eigenes Default (unveraendertes Verhalten).
+    monkeypatch.setattr(mc, "TEMPERATURE", None)
+    opener = _FakeStreamOpener(list(_SSE_NUR_CONTENT))
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert "temperature" not in opener.capture[0]
+
+
+def test_chat_once_mit_temperature_wird_mitgeschickt(monkeypatch):
+    monkeypatch.setattr(mc, "TEMPERATURE", 0.2)
+    opener = _FakeStreamOpener(list(_SSE_NUR_CONTENT))
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert opener.capture[0]["temperature"] == 0.2
+
+
+def test_bump_temperature_for_escape_wirkt_nur_einmal(monkeypatch):
+    # Schleifen-Erkennung (z.B. Wiederholungs-Eskalation beim Schreiben)
+    # soll dem naechsten Request eine hoehere Temperatur mitgeben -- als
+    # einmaliger Ausreisser, nicht dauerhaft fuer den Rest des Laufs.
+    monkeypatch.setattr(mc, "TEMPERATURE", 0.3)
+    mc._bump_temperature_for_escape()
+    assert mc._TEMP_OVERRIDE == pytest.approx(0.7)
+    opener = _FakeStreamOpener(list(_SSE_NUR_CONTENT) * 2)
+    monkeypatch.setattr(mc, "build_opener", lambda: opener)
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert opener.capture[0]["temperature"] == pytest.approx(0.7)
+    assert mc._TEMP_OVERRIDE is None  # verbraucht
+    mc._chat_once([{"role": "user", "content": "hi"}], "m")
+    assert opener.capture[1]["temperature"] == pytest.approx(0.3)  # zurueck zur Baseline
+
+
+def test_wiederholungs_eskalation_loest_temperatur_ausreisser_aus(monkeypatch):
+    monkeypatch.setattr(mc, "TEMPERATURE", None)
+    monkeypatch.setattr(mc, "WRITE_HISTORY", {})
+    mc._check_repetition("a.py", "x = 1\n")
+    mc._check_repetition("a.py", "x = 1\n")
+    assert mc._TEMP_OVERRIDE is None  # noch nicht eskaliert (count < 2)
+    hint = mc._check_repetition("a.py", "x = 1\n")
+    assert "ACHTUNG" in hint
+    assert mc._TEMP_OVERRIDE == pytest.approx(1.1)  # 0.7 Default-Baseline + 0.4
+
+
+def test_shell_lese_schleife_loest_temperatur_ausreisser_aus(monkeypatch):
+    with open("a.py", "w") as f:
+        f.write("print(1)\n")
+    monkeypatch.setattr(mc, "TEMPERATURE", None)
+    monkeypatch.setattr(mc, "SHELL_READS", {})
+    for _ in range(2):
+        mc._shell_read_hint("cat a.py")
+        assert mc._TEMP_OVERRIDE is None
+    hint = mc._shell_read_hint("cat a.py")
+    assert "HINWEIS" in hint
+    assert mc._TEMP_OVERRIDE == pytest.approx(1.1)
+
+
 def test_chat_once_401_nennt_api_key_als_vermutliche_ursache(monkeypatch):
     # Real beobachtet: ein abgelaufener OpenRouter-Key lieferte 401 "User
     # not found." -- ohne Hinweis liest sich das wie ein Konto-/Modell-
@@ -1621,6 +1727,91 @@ def test_loaded_ctx_vmlx_fallback(monkeypatch):
     monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
     assert mc._loaded_ctx_tokens("m") == 10326
     assert mc._LOADED_CTX_TOKENS["m"] == 10326
+
+
+def test_ollama_supports_tools_true(monkeypatch):
+    # /api/show meldet "tools" in capabilities -> natives Tool-Calling moeglich.
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+
+    def _fake_urlopen(req, timeout=5):
+        assert req.full_url == "http://host:11434/api/show"
+        assert json.loads(req.data) == {"model": "ornith-1.5:35b"}
+        return _FakeResp({"capabilities": ["tools", "thinking", "completion"]})
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._ollama_supports_tools("ornith-1.5:35b") is True
+
+
+def test_ollama_supports_tools_false_ohne_tools_capability(monkeypatch):
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+    monkeypatch.setattr(mc.urllib.request, "urlopen",
+                         lambda req, timeout=5: _FakeResp({"capabilities": ["completion"]}))
+    assert mc._ollama_supports_tools("m") is False
+
+
+def test_ollama_supports_tools_false_bei_fehler(monkeypatch):
+    # Kein Ollama / Endpunkt nicht erreichbar -> fail-safe Richtung False
+    # (bisheriger Text-Default bleibt unangetastet).
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:8000/v1")
+
+    def _fake_urlopen(req, timeout=5):
+        raise OSError("nicht erreichbar")
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._ollama_supports_tools("m") is False
+
+
+def test_loaded_ctx_ollama_api_ps_fallback(monkeypatch):
+    # Real erprobt (gemieteter RTX5090-Ollama-Server): /api/v0/models (LM
+    # Studio) fehlt, generische /v1/models liefert fuer Ollama keinen
+    # Kontext-Hinweis -- ohne den /api/ps-Probe bliebe ctx bei 0. Da
+    # _is_local_engine() einen Ollama-Endpunkt unabhaengig von der IP als
+    # 'lokal' erkennt, griff der CONTEXT_LENGTH-Cloud-Fallback in
+    # maybe_prune() NICHT, und jeder Schritt wurde neu gekuerzt -- der
+    # Cache-Killer, den maybe_prune() eigentlich vermeiden soll. /api/ps
+    # meldet das TATSAECHLICH geladene Fenster (hier 32768), nicht das
+    # theoretische GGUF-Maximum aus /api/show (bei ornith-1.5:35b: 262144).
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+
+    def _fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/api/v0/models"):
+            raise OSError("kein LM Studio")
+        if req.full_url.endswith("/api/ps"):
+            return _FakeResp({"models": [
+                {"model": "ornith-1.5:35b", "context_length": 32768},
+            ]})
+        raise OSError("sollte vor /v1/models/capabilities oder generischem "
+                       "/v1/models bereits aufgeloest sein: " + req.full_url)
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._loaded_ctx_tokens("ornith-1.5:35b") == 32768
+    assert mc._LOADED_CTX_TOKENS["ornith-1.5:35b"] == 32768
+
+
+def test_loaded_ctx_ollama_api_ps_ohne_treffer_faellt_weiter(monkeypatch):
+    # /api/ps antwortet, aber ohne Eintrag fuer DIESES Modell (z.B. noch
+    # nicht geladen) -- ctx bleibt 0; da der Endpunkt aber erreichbar war
+    # (reached=True), bleibt der Fall bewusst UNGECACHT (transient, siehe
+    # Docstring von _loaded_ctx_tokens), damit ein spaeter ladendes Modell
+    # beim naechsten Aufruf erneut geprueft wird.
+    monkeypatch.setattr(mc, "_LOADED_CTX_TOKENS", {})
+    monkeypatch.setattr(mc, "BASE_URL", "http://host:11434/v1")
+
+    def _fake_urlopen(req, timeout=5):
+        if req.full_url.endswith("/api/v0/models"):
+            raise OSError("kein LM Studio")
+        if req.full_url.endswith("/api/ps"):
+            return _FakeResp({"models": [{"model": "anderes-modell", "context_length": 8192}]})
+        if req.full_url.endswith("/v1/models/ornith-1.5%3A35b/capabilities"):
+            raise OSError("kein vMLX")
+        if req.full_url.endswith("/v1/models"):
+            return _FakeResp({"data": [{"id": "ornith-1.5:35b"}]})
+        raise OSError("unerwartet: " + req.full_url)
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake_urlopen)
+    assert mc._loaded_ctx_tokens("ornith-1.5:35b") == 0
+    assert "ornith-1.5:35b" not in mc._LOADED_CTX_TOKENS
 
 
 def test_reset_model_vmlx_meldet_ehrlich_keine_laufzeit_aenderung(monkeypatch):
