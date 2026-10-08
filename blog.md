@@ -7561,11 +7561,11 @@ vorherigen Kapiteln lagen durchweg bei 5-40 Tok/s.
 Der Standard-Benchmark (Personenverwaltung) im normalen Text-Modus lief in
 ein Muster, das sich klar von einem einmaligen Ausrutscher unterschied:
 
-```
+````
 ```action
 {"action":"write_file","path":"backend/app.py"}
 ```
-```
+````
 
 ...und dann nichts mehr -- keine Spur eines ` ```content `-Blocks, die
 Antwort war komplett zu Ende (teils nur 46-60 Zeichen total). mc.py meldete
