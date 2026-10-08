@@ -7732,6 +7732,156 @@ Lauf" war am Ende nicht ein cleverer mc.py-Fix, sondern schlicht ein
 groesseres Kontextfenster UND eine niedrigere, praezisere Temperatur beim
 Modell selbst.
 
+## 91. Ein Nachmittag mit groesseren Kontextfenstern: ein echter Regressions-Fix,
+ein Port-Scanner mit vier Nachruestungen, ein gescheiterter C64-Assembler-Test
+und eine native macOS-App, viermal in Folge von mc.py gebaut
+
+### Ein selbst eingebauter Bug: Notfall-Prune bei JEDEM finish_reason=length
+
+Der Notfall-Prune-Fix aus Kapitel 90 (siehe dort: `native_chat_stream()` kuerzt
+die Historie, wenn eine Antwort mit `finish_reason=length` abbricht) hatte
+einen eigenen Fehler: er griff bei JEDER Laengen-Abbruch-Antwort, nicht nur bei
+echtem Kontext-Druck. Real beobachtet bei einer C64-Assembler-Aufgabe
+(`qwen3.8:27b-128k`, 131072 Token Fenster): drei `finish_reason=length` in
+Folge bei nur ~22000 genutzten Token -- WEIT vom Fenster entfernt, `completion_tokens`
+traf aber jedesmal exakt `MAX_TOKENS_PER_CALL` (4000). Die Antwort selbst war
+schlicht lang (das Modell "dachte" sehr ausfuehrlich), kein Kontext-Problem.
+Der Notfall-Prune zerstoerte trotzdem den Prompt-Cache (97% -> 15% Cache-Anteil
+gemessen), loeste das eigentliche Problem nicht, und der Lauf stuerzte nach 3
+Versuchen trotzdem mit `SystemExit` ab.
+
+**Fix:** ein neuer Merker `LAST_COMPLETION_TOKENS` (gleiches Muster wie das
+bestehende `LAST_REASONING_CHARS`) haelt fest, wie viele Tokens der letzte
+Request tatsaechlich generiert hat. `native_chat_stream()` prunt jetzt nur
+noch, wenn `completion_tokens` UNTER `MAX_TOKENS_PER_CALL` blieb (= die Antwort
+wurde abgeschnitten, OBWOHL noch Ausgabe-Budget da gewesen waere -- ein
+verlaessliches Zeichen fuer echten Kontext-Engpass). Traf die Antwort exakt das
+Output-Limit, wird stattdessen wie zuvor nur um eine kuerzere Antwort gebeten,
+ohne den Cache anzufassen. 340 Tests gruen, inklusive eines neuen Tests, der
+genau diesen Unterschied festnagelt.
+
+### `ornith-1.5:35b-64k`, gleiche Einstellungen: schneller, aber eine neue Schleifenart
+
+Mit identischem Setup (64k Kontext, Temperatur 0.3) lief `ornith-1.5:35b`
+nochmal gegen denselben Standard-CRUD-Benchmark: **189.5 Tok/s** im Schnitt
+(91-251 Tok/s) -- deutlich schneller als `qwen3.8:27b-64k` (115.4 Tok/s) im
+direkten Vergleich. Trotzdem kein sauberer `finish`: Schrittlimit (60)
+erreicht, diesmal wegen einer **`edit_file`-Textmatching-Schleife** -- ein
+Tippfehler ("leared" statt "leeres") in einer Fehlermeldung, den das Modell
+wiederholt per `edit_file` korrigieren wollte, aber das `old`-Textfragment traf
+nie exakt. Die bestehenden Eskalations-Mechanismen (Notfall-Prune, Wiederholungs-
+Warnung beim kompletten Neuschreiben) deckten dieses Muster nicht ab -- eine
+neue, noch unbehandelte Schleifenart.
+
+### Temperatur als Stellschraube: ein neues `--temperature`-Setting plus Eskalations-Experiment
+
+Auf die Frage, ob man die Sampling-Temperatur gezielt variieren koennte, um
+genau aus solchen Schleifen auszubrechen: mc.py schickte bisher NIE ein
+`temperature`-Feld (Endpunkt-Default, bei Ollama oft das Modelfile-`sampling.temp`).
+Neue, optionale Einstellung `--temperature`/`MC_TEMPERATURE`. Darauf aufbauend:
+`_bump_temperature_for_escape()` setzt einen EINMALIGEN Temperatur-Ausreisser
+(Baseline+0.4, max. 1.5) genau an den beiden Stellen, an denen mc.py bereits
+Schleifen textuell erkennt (Shell-Lese-Schleife, Wiederholungs-Eskalation beim
+Schreiben) -- nur fuer den naechsten Request, danach zurueck zur Baseline. Ob
+das Schleifen in der Praxis zuverlaessig bricht, bleibt unbestaetigt (eine
+Heuristik, keine Garantie); der Text-Hinweis an das Modell bleibt die primaere
+Massnahme.
+
+### Ein Port-Scanner, viermal nachgeruestet -- und zwei echte Bugs in den eigenen Erweiterungen
+
+`qwen3.8:27b-128k` (131072 Token) baute auf Anfrage eine Webanwendung, die eine
+IP nach offenen TCP-Ports scannt (Flask-Backend, React+Vite-Frontend) -- diesmal
+NICHT der Standard-Benchmark, sondern eine freie Aufgabe. Ergebnis: Schrittlimit
+(60) erreicht, aber die App war real funktionsfaehig (py_compile sauber, echte
+curl-Verifikation, Frontend-Build erfolgreich). Direkt im Anschluss vier
+Erweiterungen, diesmal von mir selbst per Edit umgesetzt (nicht vom Modell):
+
+1. **Domain-Unterstuetzung** (`resolve_host()`): IP ODER Domain eingeben, DNS-
+   Aufloesung per `socket.gethostbyname`.
+2. **Netzblock-/Hoster-Anzeige** (`netinfo.py`): RDAP-Abfrage (WHOIS-Nachfolger)
+   ueber `rdap.org`, parallel zum Scan, degradiert sauber bei Fehler/privater IP.
+3. **SQLite-Verlauf** (`db.py`): jeder Scan landet in `scans.db`, neuer
+   `GET /api/history`-Endpunkt, Verlaufstabelle im Frontend.
+4. **Software/Versions-Erkennung** (`version_detect.py`, Banner-Grabbing):
+   passiver Lesebversuch, sonst ein minimaler `HEAD /`-HTTP(S)-Request gegen
+   den `Server:`-Header -- nur fuer bereits offene Ports, nach dem Scan.
+
+**Zwei echte Bugs in diesen eigenen Erweiterungen, vom Nutzer gemeldet und
+gefixt:**
+- DNS-Aufloesung schlug bei vollstaendigen URLs fehl (`https://www.beispiel.de`)
+  -- `socket.gethostbyname()` versteht nur nackte Hostnamen. Fix:
+  `urllib.parse.urlparse()` mit einem `//`-Praefix-Trick extrahiert den
+  Hostnamen robust aus beliebigem Format (Schema, Pfad, Port).
+- MySQL-Banner zeigte nur `"n"` statt der echten Version. Ursache: MySQLs
+  Handshake-Paket enthaelt Byte `0x0A` (Protokollversion 10) -- zufaellig
+  exakt das ASCII-Newline-Zeichen. Die generische "erste Zeile"-Heuristik
+  (`splitlines()[0]`) schnitt also GENAU vor der eigentlichen Versionsangabe
+  ab. Fix: ein dedizierter `_mysql_banner()`-Parser fuer dieses eine, sehr
+  verbreitete Binaerprotokoll, end-to-end gegen einen simulierten Handshake
+  verifiziert ("MySQL 8.0.35" statt "n").
+
+### C64-Assembler: oberflaechliches Wissen ja, echte Low-Level-Konventionen nein
+
+Test ausserhalb der ueblichen CRUD-Benchmarks: kann `qwen3.8:27b-128k` 6502er-
+Assembler fuer den Commodore 64 schreiben (ACME-Cross-Assembler, lokal
+installiert)? Drei Versuche, zwei echte mc.py-Bugs dabei gefunden (s.o.), am
+Ende aber **kein lauffaehiges `.prg`**. Das Modell hatte die 6502-Opcodes und
+die richtigen Hardware-Adressen (`$D020`, `$D021`, `$0400`) korrekt parat, aber:
+- **PETSCII/Screencodes falsch** -- Werte wie `$D4`/`$78`/`$A8` statt der
+  echten Screencodes 1-26 fuer Buchstaben.
+- **BASIC-Stub grundlegend missverstanden** -- es versuchte, den Lade-Stub
+  ("10 SYS ...") per `STA`/`LDX`/`STX`-Befehlen ZUR LAUFZEIT zu schreiben,
+  statt ihn als fertige Bytes in der Datei selbst zu hinterlegen (ein
+  Henne-Ei-Problem: BASIC interpretiert den Stub, BEVOR der eigene Code
+  je laeuft).
+
+30 Schritte wurden mit Debugging-Experimenten verbraucht, ohne das selbst
+herauszufinden. Fazit: Mainstream-Wissen (Register, Opcodes, Hardware-Adressen)
+sitzt, aber die wirklich nischigen, nur in C64-spezifischen Tutorials
+dokumentierten Konventionen (BASIC-Loader-Trick, korrekte Screencodes) fehlen
+zuverlaessig -- und werden in 30 Schritten auch nicht selbst erschlossen.
+
+### Eine native macOS-App, viermal in Folge sauber durchgelaufen
+
+Ganz anderes Baufeld: kann mc.py auch echte macOS-Anwendungen bauen (Swift,
+SwiftUI, Swift Package Manager -- kein Xcode-Projekt noetig)? Aufgabe: ein
+RSS-Reader fuer `https://www.spiegel.de/schlagzeilen/index.rss`. Vier
+aufeinanderfolgende `qwen3.8:27b-128k`-Laeufe, JEDER mit sauberem `finish`,
+JEDER unabhaengig nachverifiziert (nicht nur dem eigenen `swift build`/`swift test`
+des Laufs vertraut):
+
+| Lauf | Schritte | Ergebnis |
+|---|---|---|
+| Grundgeruest (Parser + SwiftUI + XCTest gegen den echten Feed) | 41 | sauber `finish` |
+| Master-Detail-Ansicht (Liste links, Artikeltext rechts) | 34 | sauber `finish` |
+| Automatische Auswahl des ersten Artikels + kopierbare URL | 17 | sauber `finish` |
+| Eingebettetes Browserfenster (WKWebView statt nur "im Browser oeffnen") | 24 | sauber `finish` |
+
+Bemerkenswerter Fund dabei: das Modell hatte seine eigene `swift build`-Pruefung
+als `swift build 2>&1 | tail -10; echo exit=$?` geschrieben -- ein klassischer
+Shell-Fehler, `$?` zeigt hier den Exit-Code von `tail`, NICHT von `swift build`.
+Waere der Build fehlgeschlagen, haette das Modell trotzdem "exit=0" gemeldet.
+In diesem konkreten Fall stimmte das Ergebnis zufaellig (unabhaengig mit einem
+echten `swift build` nachgeprueft), aber es zeigt: Modell-eigene Verifikation
+braucht trotzdem einen zweiten, unabhaengigen Blick. Ab dem naechsten Auftrag
+wurde das Problem explizit im Prompt benannt -- das Modell setzte dann von
+selbst `set -o pipefail`.
+
+Jede Erweiterung wurde per `swift run` tatsaechlich gestartet (nicht nur
+kompiliert) und per `ps` an zwei Zeitpunkten als stabil laufend bestaetigt --
+der einzige praktikable Funktionstest fuer eine GUI-App ohne Display-Zugriff
+in dieser Umgebung. Visuelles Rendering (Fenster-Layout) blieb entsprechend
+ungeprueft, aber Build, Logik-Tests (4 echte Netzwerk-Tests gegen den Live-Feed)
+und Prozessstabilitaet liessen sich genauso zuverlaessig verifizieren wie bei
+den Web-Apps.
+
+**Fazit des Nachmittags:** `qwen3.8:27b` zeigt bei Mainstream-Aufgaben (Web,
+jetzt auch natives Swift/SwiftUI) durchgehend saubere Laeufe ohne Schrittlimit-
+oder Kontext-Abstuerze -- bei einer echten Nischen-Domaene (6502-Assembler)
+reisst dieselbe Zuverlaessigkeit dagegen ab. `ornith-1.5:35b` bleibt roh
+schneller (ca. 190 vs. 115 Tok/s bei identischem Setup), neigt aber zu anderen,
+noch nicht abgedeckten Schleifenarten (`edit_file`-Textmismatch).
+
 ## Gesamttabelle: alle 24 Modelle im CRUD-Benchmark
 
 Alle Läufe der Kapitel 17–28, sortiert nach Ausgang und Lauf-Kosten.
