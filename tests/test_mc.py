@@ -38,6 +38,7 @@ def _clean_state(tmp_path, monkeypatch):
     mc.EXPLORED = False
     mc.HAS_CODE = None
     mc._TEMP_OVERRIDE = None
+    mc.LAST_COMPLETION_TOKENS = 0
     yield
 
 

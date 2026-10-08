@@ -354,6 +354,17 @@ USAGE = {"prompt": 0, "completion": 0, "cached": 0, "cost": 0.0, "reqs": 0}
 # unterschiedlichem Gegenmittel.
 LAST_REASONING_CHARS = 0
 
+# Vom Provider gemeldete completion_tokens des letzten Requests (0, wenn der
+# Endpoint keine usage liefert). Unterscheidet in native_chat_stream() zwei
+# Ursachen von finish_reason=length, die GEGENSAETZLICHE Gegenmittel brauchen:
+# (a) completion_tokens erreichte MAX_TOKENS_PER_CALL genau -> die Antwort
+# selbst war lang, der Kontext hat damit nichts zu tun (ein Notfall-Prune
+# haette hier nur sinnlos den Prompt-Cache zerstoert, real beobachtet: drei
+# Laenge-Abbrueche in Folge bei 22000 von 131072 geladenen Token -- weit
+# entfernt vom Fenster); (b) completion_tokens blieb DEUTLICH darunter ->
+# echter Kontext-Engpass (kaum Platz mehr fuer die Antwort selbst).
+LAST_COMPLETION_TOKENS = 0
+
 
 # ----------------------------- Farben / UI ---------------------------------
 
@@ -760,7 +771,7 @@ class NativeReply:
 
 def _chat_once(messages, model, tools=None):
     """Streaming-Aufruf: (Text oder NativeReply, finish_reason)."""
-    global LAST_REASONING_CHARS, SUPPORTS_FREQUENCY_PENALTY, SUPPORTS_SESSION_ID, MAX_TOKENS_FIELD
+    global LAST_REASONING_CHARS, LAST_COMPLETION_TOKENS, SUPPORTS_FREQUENCY_PENALTY, SUPPORTS_SESSION_ID, MAX_TOKENS_FIELD
     url = f"{BASE_URL}/chat/completions"
     payload = {"model": model, "messages": _payload_messages(messages), "stream": True,
                # Token-/Kostenabrechnung anfordern (OpenAI-Standard-Feld, auch
@@ -819,6 +830,7 @@ def _chat_once(messages, model, tools=None):
     headers.update(extra_headers())
 
     LAST_REASONING_CHARS = 0
+    LAST_COMPLETION_TOKENS = 0
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     parts = []
     calls = {}
@@ -930,6 +942,7 @@ def _chat_once(messages, model, tools=None):
                     usage = obj["usage"]
         if usage:
             account_usage(usage)
+            LAST_COMPLETION_TOKENS = usage.get("completion_tokens") or 0
         diagnostic_status = finish_reason or "eof_without_finish"
     except urllib.error.HTTPError as e:
         diagnosis.finish(usage, f"http_{e.code}")
@@ -4090,23 +4103,35 @@ def native_chat_stream(messages, model, tools):
         if reason in ("stop", "tool_calls") and valid:
             print()
             return reply
-        if reason == "length":
-            # Echter Kontext-Engpass, kein Formatfehler: der Prompt fuellt das
-            # geladene Fenster fast komplett, fuer die Antwort bleibt kaum noch
-            # Platz (real beobachtet: 32745 von 32768 geladenen Token, nur noch
-            # 23 Completion-Token moeglich -> IMMER finish_reason=length, nie
-            # eine vollstaendige Antwort). maybe_prune()s zeichenbasierte
-            # Schaetzung hatte hier zwar schon gekuerzt, aber nicht hart genug
-            # (Code tokenisiert dichter als die Schaetzung CHARS_PER_TOKEN
-            # annimmt). Ein Notfall-Prune (dieselbe Eskalationsstufe wie bei
-            # echtem Overflow in maybe_prune, keep=1, bypasst --no-prune
-            # bewusst -- siehe prune_messages()-Docstring) VOR dem naechsten
-            # Versuch schafft wirklich Platz; die bisherige blosse Bitte um
-            # 'weniger Inhalt' half nicht, wenn fuer die Antwort selbst kein
-            # Platz mehr da war.
+        # finish_reason=length hat ZWEI verschiedene, gegenteilige Ursachen --
+        # real beide beobachtet, mit entgegengesetztem Gegenmittel:
+        # (a) echter Kontext-Engpass: der Prompt fuellt das geladene Fenster
+        #     fast komplett, fuer die Antwort bleibt kaum noch Platz (real
+        #     beobachtet: 32745 von 32768 geladenen Token, nur noch 23
+        #     Completion-Token moeglich). Ein Notfall-Prune schafft hier
+        #     wirklich Platz.
+        # (b) die Antwort selbst war einfach lang: completion_tokens erreichte
+        #     exakt MAX_TOKENS_PER_CALL, der Prompt war dabei WEIT vom
+        #     Fenster entfernt (real beobachtet: 22000 von 131072 geladenen
+        #     Token -- drei Laenge-Abbrueche in Folge fuehrten OHNE jeden
+        #     Kontext-Druck direkt in den SystemExit). Ein Notfall-Prune
+        #     haette hier nur sinnlos den Prompt-Cache zerstoert (real
+        #     gemessen: Cache-Anteil faellt von 97% auf 15%), ohne das
+        #     eigentliche Problem (eine zu lange Einzelantwort) zu loesen --
+        #     dagegen hilft nur die bereits bestehende Bitte um 'weniger
+        #     Inhalt' beim naechsten Versuch.
+        ctx_knapp = (reason == "length"
+                     and (MAX_TOKENS_PER_CALL <= 0
+                          or LAST_COMPLETION_TOKENS < MAX_TOKENS_PER_CALL))
+        if ctx_knapp:
             print(f"\n{C.YELLOW}⚠ Kontext fast voll (finish_reason=length) — "
                   f"Notfall-Kuerzung vor dem naechsten Versuch.{C.RESET}")
             prune_messages(messages, keep=1)
+            continue
+        if reason == "length":
+            print(f"\n{C.YELLOW}⚠ Antwort zu lang (finish_reason=length, "
+                  f"{LAST_COMPLETION_TOKENS} Completion-Token) — kein "
+                  f"Kontext-Engpass, fordere eine kuerzere Antwort an.{C.RESET}")
             continue
         print("\nUnvollstaendige native Antwort; keine Aktion ausgefuehrt.")
     raise SystemExit("Native Tool-Antwort nach 3 Versuchen unvollstaendig. "

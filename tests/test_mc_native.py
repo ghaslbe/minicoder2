@@ -118,6 +118,30 @@ def test_native_length_triggert_notfall_prune_vor_naechstem_versuch(native, monk
     assert calls == [1, 1, 1]
 
 
+def test_native_length_bei_ausgabe_limit_prunt_nicht(native, monkeypatch):
+    # Real beobachtet (qwen3.8:27b-128k, C64-Assembler-Aufgabe): drei
+    # finish_reason=length-Abbrueche in Folge bei 22000 von 131072 geladenen
+    # Token -- WEIT entfernt vom Fenster. completion_tokens erreichte dabei
+    # jedesmal exakt MAX_TOKENS_PER_CALL: die Antwort selbst war lang, kein
+    # Kontext-Engpass. Der (vorherige) unbedingte Notfall-Prune zerstoerte
+    # hier nur sinnlos den Prompt-Cache (97% -> 15% gemessen), ohne das
+    # eigentliche Problem zu loesen, und der Lauf stuerzte trotzdem nach 3
+    # Versuchen ab. prune_messages() darf in diesem Fall NICHT aufgerufen
+    # werden.
+    monkeypatch.setattr(mc, "MAX_TOKENS_PER_CALL", 4000)
+    calls = []
+    monkeypatch.setattr(mc, "prune_messages", lambda messages, keep=None: calls.append(keep))
+
+    def _fake(*a, **kw):
+        mc.LAST_COMPLETION_TOKENS = 4000  # Ausgabe-Limit exakt erreicht
+        return mc.NativeReply(), "length"
+
+    monkeypatch.setattr(mc, "_chat_once_retry", _fake)
+    with pytest.raises(SystemExit, match="3 Versuchen"):
+        mc.native_chat_stream(history(), "m", mc._native_tools())
+    assert calls == []
+
+
 @pytest.mark.parametrize("name,args", [
     ("run", {"command": "x", "timeout": True}),
     ("run", {"command": "x", "timeout": 301}),
